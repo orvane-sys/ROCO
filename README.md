@@ -60,6 +60,10 @@ The quickest start is the launcher (Python only, no Node on the test PC). Build 
 It starts the bridge, serves `dist/` on loopback only (default port 8780) and prints the link to open. Ctrl-C, closing the
 terminal or `kill` stops the bridge too. `--port` and `--web-port` change the ports.
 
+The bridge reads g1_ctrl's config, the robot model, the test manual and its log from the deploy folder
+(`~/unitree_rl_mjlab/deploy_lock` by default; read only). If yours is elsewhere, pass `--deploy-dir DIR` or set
+`ROCO_DEPLOY_DIR`. Without the folder the bridge warns and starts with ROCO's own default limits.
+
 For development, with Node:
 
 ```bash

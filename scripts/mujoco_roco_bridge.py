@@ -1632,7 +1632,8 @@ def run_self_test() -> bool:
     print(f"  [✓] MuJoCo: {'Available' if HAS_MUJOCO else 'Not detected (Standalone NumPy simulator ready)'}")
     print(f"  [✓] WebSockets: {'Native websockets' if HAS_WEBSOCKETS else 'Built-in Asyncio RFC-6455'}")
 
-    sample_onnx = "/home/crl/.local/lib/python3.10/site-packages/onnxruntime/datasets/mul_1.onnx"
+    # a small model that ships with onnxruntime, wherever it is installed
+    sample_onnx = os.path.join(os.path.dirname(ort.__file__), "datasets", "mul_1.onnx") if HAS_ONNX else ""
     if HAS_ONNX and HAS_YAML and os.path.exists(sample_onnx):
         import tempfile
         test_cfg = {

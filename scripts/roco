@@ -28,20 +28,24 @@ DIST = os.path.join(ROOT, "dist")
 LOOPBACK = "127.0.0.1"
 
 
-def page_url(web_port: int, bridge_port: int) -> str:
-    """The address to open: the page, told which bridge to read (it opens in monitor mode, so it never offers drive controls)."""
-    ws = f"ws://localhost:{bridge_port}"
+def page_url(web_port: int, bridge_port: int, token=None) -> str:
+    """The address to open: the page, told which bridge to read (it opens in monitor mode, so it never offers drive controls).
+    The token is the bridge's, when it has one: without it the page cannot connect."""
+    ws = f"ws://localhost:{bridge_port}" + (f"/?token={token}" if token else "")
     return f"http://localhost:{web_port}/?monitor=1&ws={quote(ws, safe='')}"
 
 
 def bridge_command(args) -> list:
-    cmd = [sys.executable, BRIDGE, "--port", str(args.port)]
+    # --page-port makes the bridge print the address of this page, not the dev server's
+    cmd = [sys.executable, BRIDGE, "--port", str(args.port), "--page-port", str(args.web_port)]
     if args.mode == "replay":
         cmd += ["--replay", args.target]
     elif args.mode == "robot":
         cmd += ["--iface", args.target, "--source", "robot"]
     else:
         cmd += ["--iface", args.iface]
+    if args.deploy_dir:
+        cmd += ["--deploy-dir", args.deploy_dir]
     return cmd
 
 
@@ -84,6 +88,8 @@ def parse(argv):
         p.add_argument("--port", type=int, default=8765, help="bridge WebSocket port (default 8765)")
         p.add_argument("--web-port", type=int, default=8780, help="port the page is served on (default 8780)")
         p.add_argument("--open", action="store_true", help="open the page in the default browser")
+        p.add_argument("--deploy-dir", default=None, metavar="DIR",
+                       help="g1_ctrl's deploy folder (default: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock)")
     ap.add_argument("--self-test", action="store_true")
     return ap, ap.parse_args(argv)
 
@@ -106,7 +112,7 @@ def run(args) -> int:
     cmd = bridge_command(args)
     print("[roco] starting the bridge: " + " ".join(cmd[1:]))
     bridge = subprocess.Popen(cmd)
-    url = page_url(args.web_port, args.port)
+    url = page_url(args.web_port, args.port, os.environ.get("ROCO_BRIDGE_TOKEN"))
     print(f"[roco] open {url}")
     if args.open:
         import webbrowser
@@ -141,12 +147,15 @@ def self_test() -> bool:
 
     print("roco launcher self-test")
     _, a = parse(["sim"])
-    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--iface", "lo"], "sim: bridge on the loopback interface")
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "8780", "--iface", "lo"], "sim: bridge on the loopback interface")
     _, a = parse(["robot", "enp2s0", "--port", "9000"])
-    check(bridge_command(a)[1:] == [BRIDGE, "--port", "9000", "--iface", "enp2s0", "--source", "robot"], "robot: interface and source 'robot'")
-    _, a = parse(["replay", "/x/log.zip:stand"])
-    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--replay", "/x/log.zip:stand"], "replay: the path as given")
-    check(page_url(8780, 8765) == "http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765", "page address names the bridge and monitor mode")
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "9000", "--page-port", "8780", "--iface", "enp2s0", "--source", "robot"], "robot: interface and source 'robot'")
+    _, a = parse(["replay", "/x/log.zip:stand", "--web-port", "9100"])
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "9100", "--replay", "/x/log.zip:stand"], "replay: the path as given, the bridge told the page's port")
+    _, a = parse(["sim", "--deploy-dir", "/opt/dl"])
+    check(bridge_command(a)[-2:] == ["--deploy-dir", "/opt/dl"], "the deploy folder is passed on only when given")
+    check(page_url(8780, 8765) =="http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765", "page address names the bridge and monitor mode")
+    check(page_url(8780, 8765, "s3") == "http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765%2F%3Ftoken%3Ds3", "with a bridge token the address carries it")
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "index.html"), "w") as f:
             f.write("<title>ok</title>")

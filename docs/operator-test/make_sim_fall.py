@@ -14,9 +14,9 @@ from Xlib import X, XK, display
 from Xlib.ext import xtest
 
 OUT = sys.argv[1]
-DL = "/home/crl/unitree_rl_mjlab/deploy_lock"
+DL = os.path.expanduser(os.environ.get("ROCO_DEPLOY_DIR") or "~/unitree_rl_mjlab/deploy_lock")
 BUILD = DL + "/robots/g1/build"
-SIM = "/home/crl/unitree_mujoco/simulate/build"
+SIM = os.path.expanduser("~/unitree_mujoco/simulate/build")
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 sim = subprocess.Popen(["./unitree_mujoco", "-s", DL + "/sim/g1/scene_type6.xml"], cwd=SIM, stdout=open(OUT + "/sim.log", "w"), stderr=subprocess.STDOUT)

@@ -76,12 +76,28 @@ KNEE = (3, 9)
 # 24.8 Nm (real_log.py ANK_PEAK). real_log compares the ankle pitch PD demand against this value.
 ANKLE_MOTOR_PEAK_NM = 24.8
 
-DEPLOY_LOCK = os.path.expanduser("~/unitree_rl_mjlab/deploy_lock")
-DEFAULT_MODEL = os.path.join(DEPLOY_LOCK, "sim/g1/g1_29dof_type6.xml")
-DEFAULT_CFG_SIM = os.path.join(DEPLOY_LOCK, "robots/g1/config/config.yaml")
-DEFAULT_CFG_HW = os.path.join(DEPLOY_LOCK, "robots/g1/config/config_hw.yaml")
-DEFAULT_CTRL_LOG = os.path.join(DEPLOY_LOCK, "robots/g1/log/log.txt")
-MANUAL_PATH = os.path.join(DEPLOY_LOCK, "TEST_MANUAL.md")
+# Where the controller's folder is: --deploy-dir, else $ROCO_DEPLOY_DIR, else the usual place. ROCO only reads from it.
+DEPLOY_LOCK = os.path.expanduser(os.environ.get("ROCO_DEPLOY_DIR") or "~/unitree_rl_mjlab/deploy_lock")
+
+
+def deploy_paths(root: str) -> dict:
+    root = os.path.expanduser(root)
+    return {
+        "root": root,
+        "model": os.path.join(root, "sim/g1/g1_29dof_type6.xml"),
+        "cfg_sim": os.path.join(root, "robots/g1/config/config.yaml"),
+        "cfg_hw": os.path.join(root, "robots/g1/config/config_hw.yaml"),
+        "ctrl_log": os.path.join(root, "robots/g1/log/log.txt"),
+        "manual": os.path.join(root, "TEST_MANUAL.md"),
+    }
+
+
+_DEPLOY = deploy_paths(DEPLOY_LOCK)
+DEFAULT_MODEL = _DEPLOY["model"]
+DEFAULT_CFG_SIM = _DEPLOY["cfg_sim"]
+DEFAULT_CFG_HW = _DEPLOY["cfg_hw"]
+DEFAULT_CTRL_LOG = _DEPLOY["ctrl_log"]
+MANUAL_PATH = _DEPLOY["manual"]
 
 PROFILE_JOINT_NAMES = [name for name, _, _ in ROBOT_PROFILES["g1_29dof"]["joints"]]
 
@@ -1185,6 +1201,24 @@ class Store:
                 if n.endswith("_lowstate.csv") and n[: -len("_lowstate.csv")] + "_lowcmd.csv" in names]
 
 
+class ReplayError(Exception):
+    """A recording that cannot be played, said in one line for the operator (main prints it and exits with code 2)."""
+
+
+NO_SAMPLES = "has no samples (was g1_record stopped before the robot started?)"
+
+
+def _row_time(line: bytes, it: int, ncols: int) -> Optional[float]:
+    """The time of a complete row, or None for a cut-off or damaged line (g1_record killed or the disk full mid-write)."""
+    if not line.endswith(b"\n") or line.count(b",") != ncols - 1:
+        return None
+    try:
+        t = float(line.split(b",", it + 1)[it])
+    except ValueError:
+        return None
+    return t if math.isfinite(t) else None
+
+
 def resolve_replay(spec: str) -> Tuple[Store, str]:
     """<prefix> | <dir> | <zip> | <zip>:<prefix|name> | <dir>:<prefix|name>  ->  (store, recording prefix inside it)."""
     path, _, inner = spec.partition(".zip:") if ".zip:" in spec else (spec, "", "")
@@ -1197,18 +1231,18 @@ def resolve_replay(spec: str) -> Tuple[Store, str]:
         store = Store(d)
         return store, os.path.relpath(os.path.abspath(path), d)
     if not os.path.exists(path):
-        raise SystemExit(f"replay source not found: {spec}")
+        raise ReplayError(f"replay source not found: {spec}")
     store = Store(path)
     recs = store.recordings()
     if inner:
         match = [r for r in recs if r == inner or r.endswith("/" + inner) or os.path.basename(r) == inner]
         if len(match) != 1:
-            raise SystemExit(f"'{inner}' matches {len(match)} recordings in {path}:\n  " + "\n  ".join(recs))
+            raise ReplayError(f"'{inner}' matches {len(match)} recordings in {path}:\n  " + "\n  ".join(recs))
         return store, match[0]
     if len(recs) == 1:
         return store, recs[0]
     listing = "\n  ".join(f"{r}  ({store.size(r + '_lowstate.csv') / 1e6:.0f} MB)" for r in recs)
-    raise SystemExit(f"{path} holds {len(recs)} recordings, pick one with {path}:<name>:\n  {listing}")
+    raise ReplayError(f"{path} holds {len(recs)} recordings, pick one with {path}:<name>:\n  {listing}")
 
 
 class CsvStream:
@@ -1219,7 +1253,12 @@ class CsvStream:
     def __init__(self, store: Store, name: str, kind: str):
         self.store, self.name, self.kind = store, name, kind
         self.f = store.open(name)
-        header = self.f.readline().decode().strip().split(",")
+        try:
+            header = self.f.readline().decode().strip().split(",")
+        except UnicodeDecodeError:
+            raise ReplayError(f"{name} is not a g1_record CSV")
+        if header == [""]:
+            raise ReplayError(f"{name} is empty")
         self.cols = {c: i for i, c in enumerate(header)}
         self.data_offset = self.f.tell()
         self.ncols = len(header)
@@ -1228,40 +1267,63 @@ class CsvStream:
         self.t_last: Optional[float] = None
         self.index_done = False
         col = lambda pre: [self.cols[f"{pre}{i}"] for i in range(N_BODY)]
-        self.it = self.cols["unix_t"]
-        if kind == "ls":
-            self.ci = {k: col(p) for k, p in (("q", "q"), ("dq", "dq"), ("tau", "tau_est"), ("t0", "temp0_"),
-                                               ("t1", "temp1_"), ("vol", "vol_"), ("ms", "motorstate_"))}
-            self.hi = [self.cols[c] for c in ("tick", "mode_pr", "mode_machine", "quat_w", "quat_x", "quat_y", "quat_z",
-                                              "gyro_x", "gyro_y", "gyro_z", "acc_x", "acc_y", "acc_z",
-                                              "rpy_r", "rpy_p", "rpy_y")]
-        else:
-            self.ci = {k: col(k) for k in ("q", "dq", "kp", "kd", "tau")}
+        try:
+            self.it = self.cols["unix_t"]
+            if kind == "ls":
+                self.ci = {k: col(p) for k, p in (("q", "q"), ("dq", "dq"), ("tau", "tau_est"), ("t0", "temp0_"),
+                                                   ("t1", "temp1_"), ("vol", "vol_"), ("ms", "motorstate_"))}
+                self.hi = [self.cols[c] for c in ("tick", "mode_pr", "mode_machine", "quat_w", "quat_x", "quat_y", "quat_z",
+                                                  "gyro_x", "gyro_y", "gyro_z", "acc_x", "acc_y", "acc_z",
+                                                  "rpy_r", "rpy_p", "rpy_y")]
+            else:
+                self.ci = {k: col(k) for k in ("q", "dq", "kp", "kd", "tau")}
+        except KeyError as e:
+            raise ReplayError(f"{name} has no '{e.args[0]}' column: not a g1_record CSV")
         self.peeked = None
         self.eof = False
 
     def build_index(self):
-        """Background pass over the file (own handle): offsets every INDEX_EVERY rows and the last time."""
-        f = self.store.open(self.name)
-        f.readline()
-        off, n, last = f.tell(), 0, None
-        time_of = lambda ln: float(ln.split(b",", self.it + 1)[self.it])
-        for line in f:
-            if n % self.INDEX_EVERY == 0:
-                t = time_of(line)
-                self.index.append((t, off))
-                if self.t_first is None:
-                    self.t_first = t
-            last = line
-            off += len(line)
-            n += 1
-        if last:
-            self.t_last = time_of(last)
-        self.rows = n
-        f.close()
-        self.index_done = True
+        """Background pass over the file (own handle): offsets every INDEX_EVERY rows and the last time. A last line cut off
+        by a killed recorder is not a row (playback skips it too), and a failure here never leaves the page "indexing"."""
+        self.rows = 0
+        try:
+            f = self.store.open(self.name)
+            try:
+                f.readline()
+                off, n = f.tell(), 0
+                tail = deque(maxlen=16)
+                for line in f:
+                    if n % self.INDEX_EVERY == 0:
+                        t = _row_time(line, self.it, self.ncols)
+                        if t is not None:
+                            self.index.append((t, off))
+                            if self.t_first is None:
+                                self.t_first = t
+                    tail.append(line)
+                    off += len(line)
+                    n += 1
+            finally:
+                f.close()
+            self.rows = n
+            skipped = 0
+            for line in reversed(tail):
+                t = _row_time(line, self.it, self.ncols)
+                if t is not None and (self.t_first is None or t >= self.t_first):
+                    self.t_last = t
+                    break
+                skipped += 1
+            else:
+                skipped = len(tail)
+            if skipped:
+                print(f"[ROCO DDS] {self.name}: the last {skipped} line(s) are cut off (the recording stopped mid-write) and are ignored")
+        except Exception as e:      # a damaged file or a vanished zip: report it, and let the page stop waiting
+            print(f"[ROCO DDS] reading the end of {self.name} failed: {e!r}")
+        finally:
+            self.index_done = True
 
     def _parse(self, line: bytes):
+        if not line.endswith(b"\n"):
+            return None         # cut off at the end of the file (index and playback agree on what a row is)
         v = np.fromstring(line, sep=",")
         if v.size != self.ncols:
             return None
@@ -1355,9 +1417,10 @@ class Replayer:
         self.lc = CsvStream(store, prefix + "_lowcmd.csv", "lc")
         first = self.ls.peek()
         if first is None:
-            raise SystemExit(f"{prefix}_lowstate.csv has no rows")
+            raise ReplayError(f"{prefix}_lowstate.csv {NO_SAMPLES}")
         self.t0 = first.t
         self.cursor = self.t0
+        self.stats_from = self.t0   # statistics (segments, alerts) cover the data from here: a seek restarts them
         self.log_events = sorted(log_events)
         self.log_i = 0
         self.speed = 1.0
@@ -1436,6 +1499,7 @@ class Replayer:
             m.segments = []
             m.fsm_rebuilt = True
         self.cursor = t
+        self.stats_from = t
         self.ended = False
         # the row at t, so a paused seek shows that moment (playback would feed it next anyway)
         first = self.ls.peek()
@@ -1448,7 +1512,7 @@ class Replayer:
 
     def status(self) -> dict:
         return {"type": "replay", "file": self.prefix, "store": os.path.basename(self.store.path),
-                "t0": self.t0, "t1": self.t1, "t": self.cursor, "speed": self.speed, "playing": self.playing,
+                "t0": self.t0, "t1": self.t1, "t": self.cursor, "statsFrom": self.stats_from, "speed": self.speed, "playing": self.playing,
                 "ended": self.ended, "indexing": not (self.ls.index_done and self.lc.index_done),
                 "busy": self.busy, "speeds": list(self.SPEEDS)}
 
@@ -1478,15 +1542,37 @@ def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl
         logs.append(ctrl_log)
 
     # window: first row now, last row from the file tail (cheap for folders; zips use the index later)
-    with store.open(prefix + "_lowstate.csv") as f:
-        f.readline()
-        t_first = float(f.readline().split(b",")[1])
+    ls_name = prefix + "_lowstate.csv"
+    with store.open(ls_name) as f:
+        try:
+            header = f.readline().decode().strip().split(",")
+        except UnicodeDecodeError:
+            raise ReplayError(f"{ls_name} is not a g1_record CSV")
+        if header == [""]:
+            raise ReplayError(f"{ls_name} is empty")
+        if "unix_t" not in header:
+            raise ReplayError(f"{ls_name} has no 'unix_t' column: not a g1_record CSV")
+        it, ncols = header.index("unix_t"), len(header)
+        t_first = None
+        for _ in range(1000):           # the first complete row (a recording can start with a damaged one)
+            line = f.readline()
+            if not line:
+                break
+            t_first = _row_time(line, it, ncols)
+            if t_first is not None:
+                break
+    if t_first is None:
+        raise ReplayError(f"{ls_name} {NO_SAMPLES}")
     t_last = None
     if not store.zip:
-        with store.open(prefix + "_lowstate.csv") as f:
-            f.seek(max(0, store.size(prefix + "_lowstate.csv") - 65536))
-            tail = f.read().splitlines()
-            t_last = float(tail[-1].split(b",")[1]) if tail else None
+        with store.open(ls_name) as f:
+            f.seek(max(0, store.size(ls_name) - 65536))
+            # whole lines only: the piece before the first newline may start mid-line, the one after the last is cut off
+            for line in reversed([ln + b"\n" for ln in f.read().split(b"\n")[:-1]]):
+                t = _row_time(line, it, ncols)
+                if t is not None and t >= t_first:
+                    t_last = t
+                    break
     hi = (t_last + 1) if t_last else math.inf
     events = sorted(p for p in lines if t_first - 30 <= p[0] <= hi)
     notes.append(f"log lines in window: {len(events)} from {len(logs)} file(s)")
@@ -1514,10 +1600,11 @@ def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl
 # ==============================================================================
 # Server
 # ==============================================================================
-def dashboard_url(host: str, port: int, token: Optional[str]) -> str:
+def dashboard_url(host: str, port: int, token: Optional[str], page_port: int = 5173) -> str:
+    """The page's address: 5173 is `npm run dev`; scripts/roco serves the built page on its own port and passes --page-port."""
     ws = f"ws://{'localhost' if host in LOOPBACK_HOSTS else host}:{port}" + (f"/?token={token}" if token else "")
     from urllib.parse import quote
-    return f"http://localhost:5173/?monitor=1&ws={quote(ws, safe='')}"
+    return f"http://localhost:{page_port}/?monitor=1&ws={quote(ws, safe='')}"
 
 
 async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer], dds: Optional[DdsSource]) -> int:
@@ -1556,7 +1643,7 @@ async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer
         print(f"[ROCO DDS] cannot listen on {args.host}:{args.port}: {e.strerror or e} (is another bridge running?)")
         return 2
 
-    print(f"[ROCO DDS] dashboard: {dashboard_url(args.host, args.port, args.token)}")
+    print(f"[ROCO DDS] dashboard: {dashboard_url(args.host, args.port, args.token, args.page_port)}")
     rate = min(200.0, max(1.0, args.rate))
     interval = 1.0 / rate
     last_wall = time.perf_counter()
@@ -1636,7 +1723,7 @@ def build_hello(args, limits: dict, source: str, extra: dict) -> dict:
         "domain": getattr(args, "domain", None),
         "rateHz": args.rate,
         "limits": limits,
-        "manual": manual_info(),
+        "manual": manual_info(getattr(args, "manual", None) or MANUAL_PATH),
         **extra,
     }
 
@@ -1955,6 +2042,85 @@ def run_self_test() -> bool:
                      "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}, "manual hash (SHA-256 of the bytes)")
         check(manual_info(os.path.join(d, "none.md")) is None, "a missing manual is None, not an error")
     check("manual" in build_hello(argparse.Namespace(rate=30, iface="lo", domain=1), L, "sim", {}), "hello carries the manual field")
+    check(dashboard_url("127.0.0.1", 8765, None) == "http://localhost:5173/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765",
+          "dashboard address: the dev server's port by default")
+    check(dashboard_url("127.0.0.1", 8765, "t k", 8780) == "http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765%2F%3Ftoken%3Dt%20k",
+          "dashboard address: the launcher's page port and the token")
+
+    print("\n--- recordings cut off, empty or without samples ---")
+    ls_cols = (["t", "unix_t", "tick", "mode_pr", "mode_machine", "quat_w", "quat_x", "quat_y", "quat_z", "gyro_x", "gyro_y", "gyro_z",
+                "acc_x", "acc_y", "acc_z", "rpy_r", "rpy_p", "rpy_y"]
+               + [f"{p}{i}" for p in ("q", "dq", "tau_est", "temp0_", "temp1_", "vol_", "motorstate_") for i in range(N_BODY)])
+    lc_cols = ["t", "unix_t"] + [f"{p}{i}" for p in ("q", "dq", "kp", "kd", "tau") for i in range(N_BODY)]
+    csv_row = lambda cols, t: ",".join(repr(t) if c == "unix_t" else "0" for c in cols)
+    csv_text = lambda cols, times, tail="": ",".join(cols) + "\n" + "".join(csv_row(cols, t) + "\n" for t in times) + tail
+    times = [1000.0 + i * 0.002 for i in range(2500)]       # 5 s: three index entries
+
+    def opened(spec):
+        store, prefix = resolve_replay(spec)
+        rp = Replayer(store, prefix, Monitor(L, "replay"), [])
+        end = time.time() + 5
+        while time.time() < end and not (rp.ls.index_done and rp.lc.index_done):
+            time.sleep(0.02)
+        return store, prefix, rp
+
+    def fails(spec, words):
+        try:
+            store, prefix = resolve_replay(spec)
+            find_replay_context(store, prefix, None, None)
+            Replayer(store, prefix, Monitor(L, "replay"), [])
+        except ReplayError as e:
+            return words in str(e)
+        return False
+
+    with tempfile.TemporaryDirectory() as d:
+        def write(name, text):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+
+        full = csv_row(ls_cols, 1005.0)
+        write("ok_lowcmd.csv", csv_text(lc_cols, times))
+        write("ok_lowstate.csv", csv_text(ls_cols, times))
+        _, _, rp = opened(os.path.join(d, "ok"))
+        check(rp.t1 == times[-1] and rp.t0 == times[0], "a whole recording: t0 and t1 are its first and last rows")
+        write("cutA_lowcmd.csv", csv_text(lc_cols, times))
+        write("cutA_lowstate.csv", csv_text(ls_cols, times, full[: len(full) // 2]))
+        store, prefix, rp = opened(os.path.join(d, "cutA"))
+        find_replay_context(store, prefix, None, None)
+        check(rp.t1 == times[-1] and rp.t1 >= rp.t0, "a last line cut mid-row is ignored: t1 is the last whole row")
+        write("cutB_lowcmd.csv", csv_text(lc_cols, times))
+        write("cutB_lowstate.csv", csv_text(ls_cols, times, full[:-1]))     # every field there, the last number cut
+        _, _, rp = opened(os.path.join(d, "cutB"))
+        check(rp.t1 == times[-1], "a last line with all its fields but a cut number is ignored too")
+        write("cutC_lowcmd.csv", csv_text(lc_cols, times))
+        write("cutC_lowstate.csv", csv_text(ls_cols, times, "0,10"))        # cut inside the time column
+        _, _, rp = opened(os.path.join(d, "cutC"))
+        check(rp.t1 == times[-1], "a last line cut inside the time column is ignored")
+        rp.seek(1002.0)
+        check(rp.ls.peek() is not None or rp.ended, "a seek in a cut recording works")
+        write("nocmd_lowcmd.csv", ",".join(lc_cols) + "\n")
+        write("nocmd_lowstate.csv", csv_text(ls_cols, times))
+        _, _, rp = opened(os.path.join(d, "nocmd"))
+        check(rp.t1 == times[-1] and rp.lc.peek() is None, "a lowcmd with a header only still plays (without commands)")
+        write("empty_lowcmd.csv", csv_text(lc_cols, times))
+        write("empty_lowstate.csv", "")
+        check(fails(os.path.join(d, "empty"), "is empty"), "an empty lowstate is one line, not a traceback")
+        write("hdr_lowcmd.csv", csv_text(lc_cols, times))
+        write("hdr_lowstate.csv", ",".join(ls_cols) + "\n")
+        check(fails(os.path.join(d, "hdr"), "no samples"), "a lowstate with only its header says it has no samples")
+        write("bad_lowcmd.csv", csv_text(lc_cols, times))
+        write("bad_lowstate.csv", "a,b,c\n1,2,3\n")
+        check(fails(os.path.join(d, "bad"), "unix_t"), "a CSV without the time column is not a g1_record CSV")
+        check(fails(os.path.join(d, "nothing_here"), "not found"), "a path that is not there")
+        import zipfile
+        zp = os.path.join(d, "cut.zip")
+        with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("day/cut_lowcmd.csv", csv_text(lc_cols, times))
+            z.writestr("day/cut_lowstate.csv", csv_text(ls_cols, times, full[: len(full) // 2]))
+        store, prefix, rp = opened(zp)
+        find_replay_context(store, prefix, None, None)
+        check(rp.t1 == times[-1], "the same cut recording inside a zip")
+        store.zip.close()
 
     print("\n--- g1_ctrl log: an old run's state is never shown as current ---")
     import subprocess
@@ -2064,9 +2230,11 @@ def main():
     ap.add_argument("--domain", type=int, default=0, help="DDS domain id (default 0, as g1_ctrl)")
     ap.add_argument("--odom-topic", default="auto",
                     help="odometry topic: auto (lo: rt/sportmodestate, else rt/odommodestate), a topic name, or none")
-    ap.add_argument("--ctrl-config", default=None, help="g1_ctrl config (default: config.yaml on lo, else config_hw.yaml)")
-    ap.add_argument("--model", default=DEFAULT_MODEL, help="robot MJCF for torque limits and joint ranges")
-    ap.add_argument("--ctrl-log", default=None, help=f"g1_ctrl log to follow for the FSM state (default {DEFAULT_CTRL_LOG})")
+    ap.add_argument("--deploy-dir", default=None, metavar="DIR",
+                    help="g1_ctrl's deploy folder, read only (default: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock)")
+    ap.add_argument("--ctrl-config", default=None, help="g1_ctrl config (default: config.yaml on lo, else config_hw.yaml, in the deploy folder)")
+    ap.add_argument("--model", default=None, help="robot MJCF for torque limits and joint ranges (default: sim/g1/g1_29dof_type6.xml in the deploy folder)")
+    ap.add_argument("--ctrl-log", default=None, help="g1_ctrl log to follow for the FSM state (default: robots/g1/log/log.txt in the deploy folder)")
     ap.add_argument("--no-ctrl-log", action="store_true", help="do not read g1_ctrl's log")
     ap.add_argument("--replay", default=None, metavar="SRC",
                     help="play a g1_record recording: <prefix> | <dir> | <file.zip> | <file.zip>:<name>")
@@ -2075,6 +2243,8 @@ def main():
     ap.add_argument("--tilt-crit-deg", type=float, default=40.0, help="body tilt critical alert (ROCO default)")
     ap.add_argument("--host", default="127.0.0.1", help="WebSocket bind host (loopback by default)")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--page-port", type=int, default=5173,
+                    help="port the page is served on, for the address printed at start (5173: npm run dev; scripts/roco sets it)")
     ap.add_argument("--rate", type=float, default=50.0, help="dashboard frame rate in Hz (1..200)")
     ap.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN")
     ap.add_argument("--token", default=os.environ.get("ROCO_BRIDGE_TOKEN"))
@@ -2086,22 +2256,33 @@ def main():
     if args.host not in LOOPBACK_HOSTS and not args.token:
         ap.error(f"--host {args.host} is not loopback: pass --token SECRET (or set ROCO_BRIDGE_TOKEN)")
 
+    dp = deploy_paths(args.deploy_dir or DEPLOY_LOCK)
+    args.manual = dp["manual"]
+    args.model = args.model or dp["model"]
+    if not os.path.isdir(dp["root"]):
+        print(f"[ROCO DDS] warning: deploy folder {dp['root']} not found: ROCO's default limits, no manual hash "
+              "(set --deploy-dir or ROCO_DEPLOY_DIR)")
+
     if args.replay:
-        store, prefix = resolve_replay(args.replay)
-        events, cfg, cfg_name, notes = find_replay_context(store, prefix, args.ctrl_log, args.ctrl_config or DEFAULT_CFG_HW)
-        top = prefix.split("/")[0] if "/" in prefix else ""
-        model_in_store = [n for n in store.names if os.path.basename(n) == os.path.basename(args.model or "")
-                          and (not top or n.startswith(top + "/"))]
-        model_path = args.model
-        if model_in_store and not store.zip:
-            model_path = os.path.join(store.path, model_in_store[0])
-            notes.append(f"robot model of that day: {model_path}")
-        limits = load_limits(model_path, None, args.tilt_warn_deg, args.tilt_crit_deg)
-        if cfg is not None:
-            apply_ctrl_config(limits, cfg)
-            limits["ctrlConfig"] = cfg_name
-        monitor = Monitor(limits, "replay")
-        replayer = Replayer(store, prefix, monitor, events)
+        try:
+            store, prefix = resolve_replay(args.replay)
+            events, cfg, cfg_name, notes = find_replay_context(store, prefix, args.ctrl_log, args.ctrl_config or dp["cfg_hw"])
+            top = prefix.split("/")[0] if "/" in prefix else ""
+            model_in_store = [n for n in store.names if os.path.basename(n) == os.path.basename(args.model or "")
+                              and (not top or n.startswith(top + "/"))]
+            model_path = args.model
+            if model_in_store and not store.zip:
+                model_path = os.path.join(store.path, model_in_store[0])
+                notes.append(f"robot model of that day: {model_path}")
+            limits = load_limits(model_path, None, args.tilt_warn_deg, args.tilt_crit_deg)
+            if cfg is not None:
+                apply_ctrl_config(limits, cfg)
+                limits["ctrlConfig"] = cfg_name
+            monitor = Monitor(limits, "replay")
+            replayer = Replayer(store, prefix, monitor, events)
+        except ReplayError as e:
+            print(f"[ROCO DDS] cannot replay: {e}", file=sys.stderr)
+            sys.exit(2)
         for n in notes:
             print(f"[ROCO DDS] {n}")
         print(f"[ROCO DDS] replaying {store.path} :: {prefix}")
@@ -2113,7 +2294,7 @@ def main():
         return
 
     source = args.source or ("sim" if args.iface == "lo" else "robot")
-    cfg = args.ctrl_config or (DEFAULT_CFG_SIM if args.iface == "lo" else DEFAULT_CFG_HW)
+    cfg = args.ctrl_config or (dp["cfg_sim"] if args.iface == "lo" else dp["cfg_hw"])
     limits = load_limits(args.model, cfg, args.tilt_warn_deg, args.tilt_crit_deg)
     for w in limits["warnings"]:
         print(f"[ROCO DDS] warning: {w}")
@@ -2126,7 +2307,7 @@ def main():
     monitor = Monitor(limits, source)
     dds = DdsSource(monitor, args.iface, args.domain, odom)
     dds.start()
-    log_path = None if args.no_ctrl_log else (args.ctrl_log or DEFAULT_CTRL_LOG)
+    log_path = None if args.no_ctrl_log else (args.ctrl_log or dp["ctrl_log"])
     if log_path:
         LogTailer(log_path, monitor).start()
     print(f"[ROCO DDS] read-only on {args.iface} (domain {args.domain}), source '{source}', odometry {odom or 'off'}, "

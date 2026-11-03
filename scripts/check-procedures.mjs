@@ -65,7 +65,8 @@ for (const proc of PROCEDURES) {
 }
 
 // the hash the procedure was written for must be the manual's, while the manual is on this machine
-const manualPath = process.env.ROCO_MANUAL || `${homedir()}/unitree_rl_mjlab/deploy_lock/TEST_MANUAL.md`
+const deployDir = process.env.ROCO_DEPLOY_DIR || `${homedir()}/unitree_rl_mjlab/deploy_lock`
+const manualPath = process.env.ROCO_MANUAL || `${deployDir}/TEST_MANUAL.md`
 if (existsSync(manualPath)) {
   const actual = createHash('sha256').update(readFileSync(manualPath)).digest('hex')
   check(actual === MANUAL_SHA256, `MANUAL_SHA256 matches ${manualPath} (is ${actual}). Read the manual's diff, update the items, then the hash`)
@@ -173,6 +174,19 @@ const squats = (n) => Array.from({ length: n }, () => seg('squat'))
 check(ev1('t8-count', mk({ segments: squats(5) })).status === 'ok', '5 squats ok')
 check(ev1('t8-count', mk({ segments: squats(6) })).status === 'check', '6 squats asks for a look, not a stop')
 check(ev1('t8-count', mk()).status === 'pending', 'no squat yet')
+// after a replay seek the bridge's visits start at the seek: the verdicts say so, and say nothing different otherwise
+const replayed = (statsFrom, extra = {}) => ({ ...mk(extra), replay: { file: 'f', store: 's', t0: 1000, t1: 1300, t: 1200, statsFrom, speed: 1, playing: false, ended: false, indexing: false, busy: null, speeds: [1] } })
+check(ev1('t8-count', mk()).detail === 'No squat in this run yet.', 'live, no squat: the usual wording')
+check(ev1('t8-count', replayed(1000)).detail === 'No squat in this run yet.', 'a recording played from its start: the usual wording')
+check(ev1('t8-count', replayed(undefined)).detail === 'No squat in this run yet.', 'an older bridge (no statsFrom): the usual wording')
+check(ev1('t8-count', replayed(1000.4)).detail === 'No squat in this run yet.', 'a seek to within 0.5 s of the start counts as the start')
+check(ev1('t8-count', replayed(1063)).detail === 'No squat since 63.0 s (the recording was started there).', 'a seeked recording, no squat: says since when')
+check(ev1('t8-count', replayed(1063, { segments: squats(2) })).detail === '2 of about 5 squats since 63.0 s (the recording was started there).', 'a seeked recording: the squat count says since when')
+check(ev1('t6-knee', replayed(1063)).detail === 'No squat visit since 63.0 s (the recording was started there).', 'a seeked recording: the knee peak says since when')
+check(ev1('t6-knee', replayed(1063, { segments: [seg('squat', { tauKnee: 30 })] })).detail.endsWith('(max over both sides) since 63.0 s (the recording was started there).'), 'a seeked recording: a peak says since when')
+check(ev1('t6-lean', replayed(1063)).detail === 'No squat since 63.0 s (the recording was started there).', 'a seeked recording: the lean says since when')
+check(ev1('t6-lean', replayed(1063, { segments: [seg('squat', { tiltDeg: [1, 14] })] })).detail.includes('“much more” since 63.0 s'), 'a seeked recording: the lean check wording keeps its sentence')
+check(ev1('t6-lean', replayed(1000, { segments: [seg('squat', { tiltDeg: [1, 14] })] })).detail.endsWith('“much more”.'), 'a recording from its start: the lean check wording is unchanged')
 
 // -- manual items, skip, confirm --------------------------------------------------------------------------------------------
 check(ev1('pre-rope', mk()).status === 'pending', 'manual item is not ticked by default')

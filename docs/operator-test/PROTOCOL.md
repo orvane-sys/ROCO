@@ -86,7 +86,7 @@ status both right.
 
 ### Task 2: First alert after a fall
 
-Setup: replay `/home/crl/ROCO_test_recordings/sim_fall_2026-11-03` (SIM: `g1_ctrl` with the MuJoCo simulator, recorded with
+Setup: replay `~/ROCO_test_recordings/sim_fall_2026-11-03` (SIM: `g1_ctrl` with the MuJoCo simulator, recorded with
 `g1_record`; made with `docs/operator-test/make_sim_fall.py`, about 150 MB, kept outside the repository). It is the manual's §5 step 3: the robot stands in Velocity, the operator presses `p`
 at 52.0 s, and the simulated robot, with no rope, collapses. Play from 0 at 4×, pause at 63 s.
 
