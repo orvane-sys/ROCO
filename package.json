@@ -1,0 +1,35 @@
+{
+  "name": "roco",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && node scripts/prune-models.mjs",
+    "lint": "oxlint && node scripts/check-colors.mjs && node scripts/check-contrast.mjs && node scripts/check-alerts.mjs && node scripts/check-procedures.mjs && node scripts/check-timeline.mjs && node scripts/summarize-operator-test.mjs --self-test",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.63.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0",
+    "three": "^0.186.1",
+    "urdf-loader": "^0.13.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "oxlint": "^1.89.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.5"
+  },
+  "description": "Read-only browser-based test monitor for robots: live 3D view, limit alerts and session replay.",
+  "license": "Apache-2.0"
+}

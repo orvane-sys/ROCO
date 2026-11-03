@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROCO glance drill</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --ink:#111; --muted:#555; --line:#bbb; --accent:#0b57d0; --on-accent:#fff; --bad:#a40000; --good:#0a6b2a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --ink:#eee; --muted:#aab; --line:#444; --accent:#8ab4f8; --on-accent:#0a0a0a; --bad:#ff8a80; --good:#7bd88f; } }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui, sans-serif; max-width:64rem; }
+  h1 { font-size:1.3rem; margin:0 0 .25rem; } h2 { font-size:1.05rem; margin:1rem 0 .5rem; }
+  p.hint { color:var(--muted); margin:.25rem 0 .75rem; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin:0 0 .75rem; padding:.5rem .75rem; }
+  legend { padding:0 .25rem; font-weight:600; }
+  label { display:block; margin:.35rem 0; min-height:24px; }
+  input[type=text] { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:.4rem .6rem; min-height:44px; box-sizing:border-box; }
+  button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:.4rem .9rem; min-height:44px; cursor:pointer; }
+  button.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  [hidden] { display:none !important; }
+  /* The picture fills the window while it is shown, so the text is as large as on the real screen. */
+  #shot { position:fixed; inset:0; z-index:10; width:100vw; height:100vh; object-fit:contain; background:#000; }
+  .ok { color:var(--good); font-weight:600; } .no { color:var(--bad); font-weight:600; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; } th, td { border:1px solid var(--line); padding:.3rem .5rem; text-align:left; vertical-align:top; }
+  .table-wrap { overflow-x:auto; } .row { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+</style>
+</head>
+<body>
+<h1>ROCO glance drill</h1>
+<p class="hint">Solo version of task 1. You see a saved picture of the Run screen, then answer from memory. Scene order is shuffled so you do not know which comes next. Your first pass is the one that counts. Repeating teaches you the pictures. These are still images: the drill tests reading the screen, not using it. Offline, nothing is sent anywhere.</p>
+
+<section id="intro">
+  <label>Your ID for this run <input type="text" id="pid" value="ME" size="12"></label>
+  <p class="hint">Use a new ID such as ME-day7 for a repeat on another day.</p>
+  <fieldset>
+    <legend>How each picture is shown</legend>
+    <label><input type="radio" name="mode" value="timed" checked> <strong>Timed:</strong> the picture stays until you press Space, Enter or click, as soon as you know the state and the status. The page records how long you took. Use this to find out how long the screen really takes to read.</label>
+    <label><input type="radio" name="mode" value="flash"> <strong>Flash:</strong> the picture disappears after <select id="flashsecs" aria-label="Flash length in seconds"><option>1</option><option selected>2</option><option>4</option></select> seconds, like a quick glance.</label>
+  </fieldset>
+  <p>Before you start, sit as you would at a test: screen at normal distance. When you press Show, look at the whole screen as you would while watching a robot, and then answer. In timed mode press Space, Enter or click only when you could answer both questions.</p>
+  <button class="primary" id="begin">Begin (7 scenes)</button>
+</section>
+
+<section id="trial" hidden>
+  <h2 id="progress"></h2>
+  <div id="stage"><button class="primary" id="show">Show for 2 seconds</button></div>
+  <img id="shot" alt="" hidden>
+  <form id="answers" hidden>
+    <fieldset>
+      <legend>What state is the robot in?</legend>
+      <div id="states"></div>
+    </fieldset>
+    <fieldset>
+      <legend>What does the screen show that needs attention? Tick everything that applies.</legend>
+      <label><input type="checkbox" name="what" value="none"> Nothing: no abort condition seen</label>
+      <label><input type="checkbox" name="what" value="limits"> Stage limits crossed (the red count)</label>
+      <label><input type="checkbox" name="what" value="alert"> An alert (warning or critical)</label>
+    </fieldset>
+    <label>Anything else you noticed or could not tell (not scored) <input type="text" id="note" size="50"></label>
+    <button class="primary" type="submit">Submit answer</button>
+    <span id="err" class="no" role="alert"></span>
+  </form>
+</section>
+
+<section id="done" hidden aria-live="polite">
+  <h2>Result</h2>
+  <p id="score"></p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Scene</th><th>Your state</th><th>Right state</th><th>Your status</th><th>Right status</th><th>Result</th><th>Time</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <p class="hint">Right status is what the screen showed when the picture was taken. "Right" here means met on this one run by someone who knows the design. It does not mean the screen is safe.</p>
+  <div class="row">
+    <button class="primary" id="download">Download glance rows (CSV)</button>
+    <button id="again">Start another run</button>
+  </div>
+  <p class="hint">The CSV has the same columns as results.csv without the header you already have. Open it and paste its rows under the header of docs/operator-test/results.csv. Delete rows from repeat runs, or keep them under their own ID and do not count them as independent.</p>
+</section>
+
+<script>
+(() => {
+  'use strict'
+  /* The truth for each picture is what the screen itself showed when the picture was taken (see the "taken" notes). */
+  const SCENES = [
+    { id: 'A', file: 'drill/A.png', state: 'FixStand', what: ['none'], taken: 'real robot log, squat_cal16, about 19.5 s' },
+    { id: 'B', file: 'drill/B.png', state: 'Velocity', what: ['none'], taken: 'real robot log, squat_cal16, about 42 s' },
+    { id: 'C', file: 'drill/C.png', state: 'squat', what: ['limits'], taken: 'real robot log, squat_cal16, about 82 s' },
+    { id: 'D', file: 'drill/D.png', state: 'Velocity', what: ['limits'], taken: 'real robot log, squat_cal16, about 114 s' },
+    { id: 'E', file: 'drill/E.png', state: 'Passive', what: ['limits'], taken: 'real robot log, squat_cal16, about 230 s, no alert active at that moment' },
+    { id: 'F', file: 'drill/F.png', state: 'Velocity', what: ['none'], taken: 'SIM: commanded Passive collapse, about 42 s, before the collapse' },
+    { id: 'G', file: 'drill/G.png', state: 'Passive', what: ['alert'], taken: 'SIM: commanded Passive collapse, about 59.5 s, 5 critical' },
+  ]
+  const STATES = ['Passive', 'FixStand', 'Velocity', 'squat', 'Not sure']
+  const WHAT = { none: 'nothing', limits: 'stage limits crossed', alert: 'an alert' }
+  const $ = (id) => document.getElementById(id)
+  let order = [], idx = 0, results = [], pid = 'ME', shown = false, mode = 'timed', flashMs = 2000, t0 = 0, endTimer = null, live = false, lastMs = 0, timedOut = false
+  const MAX_MS = 20000
+
+  const shuffle = (a) => { const r = a.slice(); for (let i = r.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [r[i], r[j]] = [r[j], r[i]] } return r }
+  const whatText = (arr) => arr.length ? arr.map((k) => WHAT[k]).join(' + ') : 'nothing ticked'
+  const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x))
+  const field = (s) => String(s).replace(/[\r\n]+/g, ' ').replace(/"/g, "'").replace(/,/g, ';').trim()
+
+  $('states').innerHTML = STATES.map((s, i) => `<label><input type="radio" name="state" value="${s}"${i === 0 ? ' required' : ''}> ${s}</label>`).join('')
+
+  function preload() { SCENES.forEach((s) => { const i = new Image(); i.src = s.file; i.decode?.().catch(() => {}) }) }
+
+  function next() {
+    if (idx >= order.length) return finish()
+    const s = order[idx]
+    $('progress').textContent = `Scene ${idx + 1} of ${order.length}`
+    $('answers').hidden = true; $('shot').hidden = true; $('stage').hidden = false; $('err').textContent = ''
+    $('answers').reset(); shown = false
+    $('show').focus()
+  }
+
+  $('begin').onclick = () => { pid = $('pid').value.trim() || 'ME'; mode = document.querySelector('input[name=mode]:checked').value; flashMs = Number($('flashsecs').value) * 1000; order = shuffle(SCENES); idx = 0; results = []; preload(); $('intro').hidden = true; $('done').hidden = true; $('trial').hidden = false; next() }
+
+  function endShow(byLimit) {
+    if (!live) return
+    live = false; clearTimeout(endTimer)
+    lastMs = performance.now() - t0; timedOut = !!byLimit && mode === 'timed'
+    const img = $('shot'); img.hidden = true; img.removeAttribute('src')
+    $('answers').hidden = false
+    setTimeout(() => document.querySelector('input[name=state]').focus(), 400)
+  }
+
+  $('show').onclick = () => {
+    if (shown) return
+    shown = true
+    const s = order[idx], img = $('shot')
+    $('stage').hidden = true
+    img.onload = () => {
+      img.hidden = false
+      requestAnimationFrame(() => {
+        t0 = performance.now(); live = true
+        endTimer = setTimeout(() => endShow(true), mode === 'flash' ? flashMs : MAX_MS)
+      })
+    }
+    img.src = s.file
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (mode === 'timed' && live && !e.repeat && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); endShow(false) }
+  })
+  $('shot').addEventListener('click', () => { if (mode === 'timed') endShow(false) })
+
+  $('answers').onsubmit = (e) => {
+    e.preventDefault()
+    const s = order[idx]
+    const state = (new FormData($('answers')).get('state')) || ''
+    const what = [...document.querySelectorAll('input[name=what]:checked')].map((x) => x.value)
+    if (!state) return ($('err').textContent = 'Pick a state.')
+    if (!what.length) return ($('err').textContent = 'Tick at least one status line. Tick "Nothing" if nothing needs attention.')
+    if (what.includes('none') && what.length > 1) return ($('err').textContent = '"Nothing" cannot be combined with the others.')
+    const stateOk = state === s.state, whatOk = same(what, s.what)
+    results.push({ ms: lastMs, timedOut, scene: s.id, state, what, stateOk, whatOk, ok: stateOk && whatOk, truth: s, note: $('note').value })
+    $('note').value = ''; idx++; next()
+  }
+
+  function finish() {
+    $('trial').hidden = true; $('done').hidden = false
+    const right = results.filter((r) => r.ok).length
+    const fast = results.filter((r) => r.ok && r.ms <= 2000).length
+    const ts = results.map((r) => r.ms).sort((x, y) => x - y), med = ts.length % 2 ? ts[ts.length >> 1] : (ts[ts.length / 2 - 1] + ts[ts.length / 2]) / 2
+    $('score').textContent = mode === 'timed'
+      ? `${right} of ${results.length} scenes right (state and status both right). ${fast} of them right and read within 2 s. Median time to read: ${(med / 1000).toFixed(1)} s.`
+      : `${right} of ${results.length} scenes right (state and status both right), picture shown for ${flashMs / 1000} s each.`
+    const tb = $('rows'); tb.textContent = ''
+    results.slice().sort((a, b) => a.scene.localeCompare(b.scene)).forEach((r) => {
+      const tr = tb.insertRow()
+      ;[r.scene, r.state, r.truth.state, whatText(r.what), whatText(r.truth.what)].forEach((t) => { tr.insertCell().textContent = t })
+      const c = tr.insertCell(); c.textContent = r.ok ? 'right' : 'wrong'; c.className = r.ok ? 'ok' : 'no'
+      tr.insertCell().textContent = mode === 'timed' ? (r.timedOut ? 'no key in 20 s' : `${(r.ms / 1000).toFixed(1)} s`) : `${flashMs / 1000} s shown`
+    })
+  }
+
+  $('download').onclick = () => {
+    const lines = results.slice().sort((a, b) => a.scene.localeCompare(b.scene)).map((r) => {
+      const how = mode === 'timed' ? (r.timedOut ? 'timed, no key within 20 s' : 'timed, pressed key when ready') : `flash ${flashMs / 1000} s`
+      const notes = `solo drill, still image, ${how}, shown ${order.findIndex((o) => o.id === r.scene) + 1} of ${order.length}; said ${r.state} / ${whatText(r.what)}; picture: ${r.truth.taken}` + (r.note ? `; ${r.note}` : '')
+      return [field(pid), 'mouse', 'glance', r.scene, r.ok ? 'yes' : 'no', mode === 'timed' ? (r.ms / 1000).toFixed(1) : String(flashMs / 1000), 'no', field(notes).replace(/;/g, ',')].join(',')
+    })
+    const url = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }))
+    const a = document.createElement('a'); a.href = url; a.download = `glance-${field(pid)}.csv`; document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  $('again').onclick = () => { $('done').hidden = true; $('intro').hidden = false; $('begin').focus() }
+})()
+</script>
+</body>
+</html>

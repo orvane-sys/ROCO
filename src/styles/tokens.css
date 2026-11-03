@@ -1,0 +1,295 @@
+/*
+ * Colour tokens. Components use the semantic utilities below (bg-surface, text-ink, text-crit, ...),
+ * never a raw palette colour, so one set of variables per theme restyles the whole page.
+ * `npm run lint` fails when a raw palette class or a hex colour appears outside this file.
+ *
+ * Themes are chosen by src/services/uiPrefs.ts, which sets data-theme="dark|light|contrast" on <html>.
+ * Dark is what you get with no attribute. Every text/background pair used on the page is checked
+ * against WCAG 2.2 by scripts/check-contrast.mjs (AA for dark and light, AAA for contrast).
+ *
+ * Roles
+ *   canvas   page background               surface  panels          raised / high  buttons, hover
+ *   sunken   inset wells                   ink      text            ink-soft / ink-muted  secondary text
+ *   line*    borders (line < strong < bold < hot); line-bold and up are the edge of a control (3:1 against its surface)
+ *   accent   selection, links, focus       ok warn crit info demo  status. Each has a text/icon colour,
+ *   X-ink    text on an X-soft tint        X-soft   tinted fill     X-line  border
+ *   *-solid  filled buttons and banners    on-solid / on-accent  text on those fills
+ */
+
+:root {
+  --c-canvas: #070b12;
+  --c-surface: #0f172a;
+  --c-raised: #1e293b;
+  --c-high: #334155;
+  --c-sunken: #020617;
+
+  --c-ink: #f1f5f9;
+  --c-ink-soft: #cbd5e1;
+  --c-ink-muted: #94a3b8;
+
+  --c-line: #1e293b;
+  --c-line-strong: #334155;
+  --c-line-bold: #64748b;
+  --c-line-hot: #94a3b8;
+
+  --c-on-solid: #ffffff;
+  --c-on-accent: #020617;
+  --c-focus: #22d3ee;
+
+  --c-accent: #22d3ee;
+  --c-accent-ink: #67e8f9;
+  --c-accent-soft: #083344;
+  --c-accent-line: #0e7490;
+  --c-accent-solid: #06b6d4;
+
+  --c-ok: #34d399;
+  --c-ok-ink: #a7f3d0;
+  --c-ok-soft: #022c22;
+  --c-ok-line: #059669;
+
+  --c-warn: #fbbf24;
+  --c-warn-ink: #fde68a;
+  --c-warn-soft: #451a03;
+  --c-warn-line: #b45309;
+
+  --c-crit: #fb7185;
+  --c-crit-ink: #fecdd3;
+  --c-crit-soft: #4c0519;
+  --c-crit-line: #e11d48;
+  --c-crit-solid: #be123c;
+
+  --c-info: #38bdf8;
+  --c-info-ink: #bae6fd;
+  --c-info-soft: #082f49;
+  --c-info-line: #0284c7;
+  --c-info-solid: #0ea5e9;
+
+  --c-demo: #a78bfa;
+  --c-demo-ink: #ddd6fe;
+  --c-demo-soft: #2e1065;
+  --c-demo-line: #7c3aed;
+
+  /* Plots (canvas, so these are read from JS) and the 3D scene */
+  --plot-s1: #3987e5;
+  --plot-s2: #d95926;
+  --plot-wash: rgb(217 89 38 / 0.24);
+  --plot-grid: #1e293b;
+  --plot-axis: #334155;
+  --plot-ref: #64748b;
+  --plot-muted: #94a3b8;
+  --plot-text: #cbd5e1;
+  --plot-surface: #0f172a;
+
+  --scene-bg: #070b12;
+  --scene-floor: #060913;
+  --scene-grid-main: #0ea5e9;
+  --scene-grid-sub: #1e293b;
+  --scene-mark: #38bdf8;
+  --scene-emissive: #06b6d4;
+
+  --focus-width: 2px;
+  color-scheme: dark;
+}
+
+/* Bright test floor: white panels on a pale grey page. */
+:root[data-theme='light'] {
+  --c-canvas: #eef2f7;
+  --c-surface: #ffffff;
+  --c-raised: #e2e8f0;
+  --c-high: #cbd5e1;
+  --c-sunken: #f1f5f9;
+
+  --c-ink: #0f172a;
+  --c-ink-soft: #334155;
+  --c-ink-muted: #475569;
+
+  --c-line: #cbd5e1;
+  --c-line-strong: #94a3b8;
+  --c-line-bold: #64748b;
+  --c-line-hot: #475569;
+
+  --c-on-solid: #ffffff;
+  --c-on-accent: #ffffff;
+  --c-focus: #0e7490;
+
+  --c-accent: #0e7490;
+  --c-accent-ink: #155e75;
+  --c-accent-soft: #cffafe;
+  --c-accent-line: #0891b2;
+  --c-accent-solid: #0e7490;
+
+  --c-ok: #047857;
+  --c-ok-ink: #065f46;
+  --c-ok-soft: #d1fae5;
+  --c-ok-line: #10b981;
+
+  --c-warn: #a84a08;
+  --c-warn-ink: #78350f;
+  --c-warn-soft: #fef3c7;
+  --c-warn-line: #f59e0b;
+
+  --c-crit: #b91c1c;
+  --c-crit-ink: #7f1d1d;
+  --c-crit-soft: #fee2e2;
+  --c-crit-line: #ef4444;
+  --c-crit-solid: #b91c1c;
+
+  --c-info: #0369a1;
+  --c-info-ink: #075985;
+  --c-info-soft: #e0f2fe;
+  --c-info-line: #0ea5e9;
+  --c-info-solid: #0369a1;
+
+  --c-demo: #6d28d9;
+  --c-demo-ink: #4c1d95;
+  --c-demo-soft: #ede9fe;
+  --c-demo-line: #8b5cf6;
+
+  --plot-s1: #1d62c9;
+  --plot-s2: #b8420f;
+  --plot-wash: rgb(184 66 15 / 0.2);
+  --plot-grid: #e2e8f0;
+  --plot-axis: #94a3b8;
+  --plot-ref: #64748b;
+  --plot-muted: #475569;
+  --plot-text: #1e293b;
+  --plot-surface: #ffffff;
+
+  --scene-bg: #dbe4ee;
+  --scene-floor: #c8d3df;
+  --scene-grid-main: #0369a1;
+  --scene-grid-sub: #94a3b8;
+  --scene-mark: #0369a1;
+  --scene-emissive: #0891b2;
+
+  color-scheme: light;
+}
+
+/* Maximum legibility: black page, white text, bright status colours, full-strength borders. */
+:root[data-theme='contrast'] {
+  --c-canvas: #000000;
+  --c-surface: #000000;
+  --c-raised: #1c1c1c;
+  --c-high: #333333;
+  --c-sunken: #0a0a0a;
+
+  --c-ink: #ffffff;
+  --c-ink-soft: #ffffff;
+  --c-ink-muted: #e0e0e0;
+
+  --c-line: #a6a6a6;
+  --c-line-strong: #c4c4c4;
+  --c-line-bold: #e0e0e0;
+  --c-line-hot: #ffffff;
+
+  --c-on-solid: #000000;
+  --c-on-accent: #000000;
+  --c-focus: #ffff00;
+
+  --c-accent: #5ee9ff;
+  --c-accent-ink: #a5f3fc;
+  --c-accent-soft: #001f26;
+  --c-accent-line: #5ee9ff;
+  --c-accent-solid: #5ee9ff;
+
+  --c-ok: #4ade80;
+  --c-ok-ink: #bbf7d0;
+  --c-ok-soft: #00210e;
+  --c-ok-line: #4ade80;
+
+  --c-warn: #ffe14d;
+  --c-warn-ink: #fff3a8;
+  --c-warn-soft: #2a2000;
+  --c-warn-line: #ffe14d;
+
+  --c-crit: #ff8585;
+  --c-crit-ink: #ffd0d0;
+  --c-crit-soft: #330000;
+  --c-crit-line: #ff8585;
+  --c-crit-solid: #ff7070;
+
+  --c-info: #7dd3fc;
+  --c-info-ink: #cdeeff;
+  --c-info-soft: #001c2e;
+  --c-info-line: #7dd3fc;
+  --c-info-solid: #7dd3fc;
+
+  --c-demo: #d8b4fe;
+  --c-demo-ink: #f0e0ff;
+  --c-demo-soft: #1f0a3d;
+  --c-demo-line: #d8b4fe;
+
+  --plot-s1: #5aa7ff;
+  --plot-s2: #ffa24d;
+  --plot-wash: rgb(255 162 77 / 0.3);
+  --plot-grid: #4d4d4d;
+  --plot-axis: #a6a6a6;
+  --plot-ref: #d9d9d9;
+  --plot-muted: #e0e0e0;
+  --plot-text: #ffffff;
+  --plot-surface: #000000;
+
+  --scene-bg: #000000;
+  --scene-floor: #0d0d0d;
+  --scene-grid-main: #7dd3fc;
+  --scene-grid-sub: #5c5c5c;
+  --scene-mark: #7dd3fc;
+  --scene-emissive: #5ee9ff;
+
+  --focus-width: 3px;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-raised: var(--c-raised);
+  --color-high: var(--c-high);
+  --color-sunken: var(--c-sunken);
+
+  --color-ink: var(--c-ink);
+  --color-ink-soft: var(--c-ink-soft);
+  --color-ink-muted: var(--c-ink-muted);
+
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-line-bold: var(--c-line-bold);
+  --color-line-hot: var(--c-line-hot);
+
+  --color-on-solid: var(--c-on-solid);
+  --color-on-accent: var(--c-on-accent);
+  --color-focus: var(--c-focus);
+
+  --color-accent: var(--c-accent);
+  --color-accent-ink: var(--c-accent-ink);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-accent-line: var(--c-accent-line);
+  --color-accent-solid: var(--c-accent-solid);
+
+  --color-ok: var(--c-ok);
+  --color-ok-ink: var(--c-ok-ink);
+  --color-ok-soft: var(--c-ok-soft);
+  --color-ok-line: var(--c-ok-line);
+
+  --color-warn: var(--c-warn);
+  --color-warn-ink: var(--c-warn-ink);
+  --color-warn-soft: var(--c-warn-soft);
+  --color-warn-line: var(--c-warn-line);
+
+  --color-crit: var(--c-crit);
+  --color-crit-ink: var(--c-crit-ink);
+  --color-crit-soft: var(--c-crit-soft);
+  --color-crit-line: var(--c-crit-line);
+  --color-crit-solid: var(--c-crit-solid);
+
+  --color-info: var(--c-info);
+  --color-info-ink: var(--c-info-ink);
+  --color-info-soft: var(--c-info-soft);
+  --color-info-line: var(--c-info-line);
+  --color-info-solid: var(--c-info-solid);
+
+  --color-demo: var(--c-demo);
+  --color-demo-ink: var(--c-demo-ink);
+  --color-demo-soft: var(--c-demo-soft);
+  --color-demo-line: var(--c-demo-line);
+}

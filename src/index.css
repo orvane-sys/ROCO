@@ -1,0 +1,36 @@
+@import "tailwindcss";
+@import "./styles/tokens.css";
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--c-canvas);
+  color: var(--c-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* Visible keyboard focus on every interactive element. */
+:focus-visible {
+  outline: var(--focus-width) solid var(--c-focus);
+  outline-offset: 2px;
+}
+
+/* Windows High Contrast and similar: the system picks the colours, so let it pick the focus ring too. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline-color: Highlight;
+  }
+}
+
+/* Honour the OS "reduce motion" setting: no pulsing, pinging or bouncing. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-ping,
+  .animate-pulse,
+  .animate-bounce,
+  .animate-spin {
+    animation: none !important;
+  }
+}

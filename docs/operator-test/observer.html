@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROCO observer sheet</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --ink:#111; --muted:#555; --line:#bbb; --accent:#0b57d0; --on-accent:#fff; --bad:#a40000; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --ink:#eee; --muted:#aab; --line:#444; --accent:#8ab4f8; --on-accent:#0a0a0a; --bad:#ff8a80; } }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui, sans-serif; max-width:60rem; }
+  h1 { font-size:1.3rem; margin:0 0 .25rem; } h2 { font-size:1.05rem; margin:1.25rem 0 .5rem; }
+  p.hint { color:var(--muted); margin:.25rem 0 .75rem; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin:0 0 .75rem; padding:.5rem .75rem; }
+  legend { padding:0 .25rem; font-weight:600; }
+  label { display:inline-block; margin:.25rem .75rem .25rem 0; }
+  input, select, textarea, button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:.4rem .6rem; min-height:44px; box-sizing:border-box; }
+  textarea { width:100%; min-height:4.5rem; }
+  button { cursor:pointer; } button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  button.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+  button[aria-pressed="true"] { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+  .row { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+  #clock { font:600 2.5rem/1 ui-monospace, monospace; min-width:6ch; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; } th, td { border:1px solid var(--line); padding:.3rem .5rem; text-align:left; vertical-align:top; }
+  .err { color:var(--bad); font-weight:600; } .table-wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<h1>ROCO observer sheet</h1>
+<p class="hint">Offline. Nothing leaves this page except the CSV you download. Rows are also kept in this browser, so a reload does not lose them. Use participant IDs such as P1, never names.</p>
+
+<form id="f" autocomplete="off">
+  <fieldset>
+    <legend>Who</legend>
+    <label>Participant <input id="participant" value="P1" size="10" required></label>
+    <label>Input method
+      <select id="condition"><option>mouse</option><option>keyboard</option><option>screenreader</option></select>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Task</legend>
+    <div class="row" role="group" aria-label="Task" id="tasks">
+      <button type="button" data-task="glance" aria-pressed="true">1 Glance</button>
+      <button type="button" data-task="first_alert" aria-pressed="false">2 First alert</button>
+      <button type="button" data-task="launch" aria-pressed="false">3 Launch</button>
+      <button type="button" data-task="peak" aria-pressed="false">4 Ankle peak</button>
+    </div>
+    <p class="hint" id="taskhint"></p>
+    <label id="scenelabel">Scene <select id="scene"><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option><option>F</option><option>G</option></select></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Timer</legend>
+    <div class="row">
+      <output id="clock" aria-label="Elapsed seconds">0.0</output>
+      <button type="button" id="start" class="primary">Start</button>
+      <button type="button" id="stop">Stop</button>
+      <button type="button" id="reset">Reset</button>
+      <label>Seconds <input id="seconds" type="number" min="0" step="0.1" inputmode="decimal" style="width:7rem"></label>
+    </div>
+    <p class="hint">Stop fills in Seconds. You can also type it. Tasks 2 to 4 need a time. For the glance task a time is optional.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Result</legend>
+    <label>Passed the task? <select id="pass"><option value="">choose</option><option>yes</option><option>no</option></select></label>
+    <label>Needed help? <select id="help"><option>no</option><option>yes</option></select></label>
+    <label for="notes" style="display:block">What they did and said</label>
+    <textarea id="notes"></textarea>
+  </fieldset>
+
+  <div class="row">
+    <button type="submit" class="primary">Add row</button>
+    <span id="msg" role="status"></span>
+  </div>
+</form>
+
+<h2>Rows (<span id="count">0</span>)</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>participant</th><th>condition</th><th>task</th><th>scene</th><th>pass</th><th>seconds</th><th>help</th><th>notes</th><th><span class="sr-only" style="position:absolute;left:-9999px">Remove</span></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<div class="row" style="margin-top:.75rem">
+  <button type="button" id="download" class="primary">Download results.csv</button>
+  <button type="button" id="copy">Copy CSV</button>
+  <button type="button" id="undo">Remove last row</button>
+  <button type="button" id="clear">Clear all rows</button>
+</div>
+<p class="hint">Save the download as <code>docs/operator-test/results.csv</code>, then run <code>node scripts/summarize-operator-test.mjs docs/operator-test/results.csv</code>.</p>
+
+<script>
+(() => {
+  'use strict'
+  const KEY = 'roco.observer.v1'
+  const HEADER = ['participant', 'condition', 'task', 'scene', 'pass', 'seconds', 'help', 'notes']
+  const HINTS = {
+    glance: 'Show the scene for 2 s, cover it. Pass = state and status both right. Record one row per scene.',
+    first_alert: 'Replay of the sim fall. Pass = names the first alert (or the change to Passive) in under 10 s.',
+    launch: 'New user, no help. Pass = reaches live sim data in 180 s or less with help = no.',
+    peak: 'Squat recording. Pass = says left ankle, about 29.8 Nm (within 3 Nm), in 30 s or less.',
+  }
+  const $ = (id) => document.getElementById(id)
+  let task = 'glance', rows = [], t0 = null, tick = null
+
+  const load = () => { try { const v = JSON.parse(localStorage.getItem(KEY) || '[]'); if (Array.isArray(v)) rows = v } catch { rows = [] } }
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(rows)) } catch { /* storage may be blocked; the download still works */ } }
+  const clean = (s) => String(s).replace(/[\r\n]+/g, ' ').replace(/"/g, "'").trim()
+  const field = (s) => clean(s).replace(/,/g, ';')
+  const toCsv = () => [HEADER.join(','), ...rows.map((r) => [field(r.participant), field(r.condition), field(r.task), field(r.scene), field(r.pass), field(r.seconds), field(r.help), clean(r.notes)].join(','))].join('\n') + '\n'
+  const say = (t, bad) => { const m = $('msg'); m.textContent = t; m.className = bad ? 'err' : '' }
+
+  function render() {
+    $('count').textContent = rows.length
+    const body = $('rows'); body.textContent = ''
+    rows.forEach((r, i) => {
+      const tr = body.insertRow()
+      HEADER.forEach((h) => { tr.insertCell().textContent = r[h] ?? '' })
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Remove'
+      b.setAttribute('aria-label', `Remove row ${i + 1}: ${r.participant} ${r.task} ${r.scene || ''}`)
+      b.onclick = () => { rows.splice(i, 1); save(); render(); say('Row removed.') }
+      tr.insertCell().appendChild(b)
+    })
+  }
+
+  function setTask(t) {
+    task = t
+    document.querySelectorAll('#tasks button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.task === t)))
+    $('taskhint').textContent = HINTS[t]
+    $('scenelabel').hidden = t !== 'glance'
+  }
+
+  function stopTimer() { if (tick) { clearInterval(tick); tick = null } }
+  function showClock(ms) { $('clock').textContent = (ms / 1000).toFixed(1) }
+  $('start').onclick = () => { stopTimer(); t0 = performance.now(); tick = setInterval(() => showClock(performance.now() - t0), 100) }
+  $('stop').onclick = () => { if (t0 === null) return; const ms = performance.now() - t0; stopTimer(); showClock(ms); $('seconds').value = (ms / 1000).toFixed(1); t0 = null }
+  $('reset').onclick = () => { stopTimer(); t0 = null; showClock(0); $('seconds').value = '' }
+  document.querySelectorAll('#tasks button').forEach((b) => { b.onclick = () => setTask(b.dataset.task) })
+
+  $('f').onsubmit = (e) => {
+    e.preventDefault()
+    if (t0 !== null) $('stop').click()
+    const row = { participant: $('participant').value.trim(), condition: $('condition').value, task, scene: task === 'glance' ? $('scene').value : '', pass: $('pass').value, seconds: $('seconds').value, help: $('help').value, notes: $('notes').value }
+    if (!row.participant) return say('Enter a participant ID.', true)
+    if (!row.pass) return say('Choose whether the task passed.', true)
+    if (task !== 'glance' && row.seconds === '') return say('This task needs a time. Use the timer or type seconds.', true)
+    rows.push(row); save(); render()
+    say(`Added row ${rows.length}.`)
+    $('pass').value = ''; $('help').value = 'no'; $('notes').value = ''; $('reset').click()
+    if (task === 'glance') { const s = $('scene'); s.selectedIndex = Math.min(s.selectedIndex + 1, s.options.length - 1) }
+  }
+
+  $('download').onclick = () => {
+    if (!rows.length) return say('No rows yet.', true)
+    const url = URL.createObjectURL(new Blob([toCsv()], { type: 'text/csv' }))
+    const a = document.createElement('a'); a.href = url; a.download = 'results.csv'; document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    say('Downloaded results.csv.')
+  }
+  $('copy').onclick = async () => {
+    if (!rows.length) return say('No rows yet.', true)
+    try { await navigator.clipboard.writeText(toCsv()); say('CSV copied.') } catch { say('Copy is blocked here. Use Download instead.', true) }
+  }
+  $('undo').onclick = () => { if (rows.pop()) { save(); render(); say('Last row removed.') } }
+  $('clear').onclick = () => { if (rows.length && confirm(`Remove all ${rows.length} rows? Download first if you need them.`)) { rows = []; save(); render(); say('All rows removed.') } }
+
+  load(); setTask('glance'); render()
+})()
+</script>
+</body>
+</html>

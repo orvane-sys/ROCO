@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""ROCO launcher: starts the read-only DDS bridge and serves the built page on this PC, then prints the address.
+
+    scripts/roco sim                 simulator on this PC (unitree_mujoco and g1_ctrl on the loopback interface)
+    scripts/roco robot enp2s0        the real robot, on the wired interface that reaches it
+    scripts/roco replay <path>       a g1_record folder or zip (optionally <zip>:<prefix>)
+
+It needs only Python (the bridge's own packages are needed as before) and the built page in dist/ (`npm run build` once, on any
+PC with Node, then copy dist/ here). The page is served on loopback only. The launcher sends nothing to the robot: the bridge it
+starts only subscribes. Ctrl+C stops both.
+"""
+import argparse
+import functools
+import http.server
+import os
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from urllib.parse import quote
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+BRIDGE = os.path.join(HERE, "roco_dds_bridge.py")
+DIST = os.path.join(ROOT, "dist")
+LOOPBACK = "127.0.0.1"
+
+
+def page_url(web_port: int, bridge_port: int) -> str:
+    """The address to open: the page, told which bridge to read (it opens in monitor mode, so it never offers drive controls)."""
+    ws = f"ws://localhost:{bridge_port}"
+    return f"http://localhost:{web_port}/?monitor=1&ws={quote(ws, safe='')}"
+
+
+def bridge_command(args) -> list:
+    cmd = [sys.executable, BRIDGE, "--port", str(args.port)]
+    if args.mode == "replay":
+        cmd += ["--replay", args.target]
+    elif args.mode == "robot":
+        cmd += ["--iface", args.target, "--source", "robot"]
+    else:
+        cmd += ["--iface", args.iface]
+    return cmd
+
+
+def port_free(port: int, host: str = LOOPBACK) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves dist/ and nothing else. No request logging, and no caching, so a rebuilt page shows up at once."""
+
+    def log_message(self, *_args):
+        pass
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+
+def make_server(directory: str, port: int) -> http.server.ThreadingHTTPServer:
+    handler = functools.partial(QuietHandler, directory=directory)
+    return http.server.ThreadingHTTPServer((LOOPBACK, port), handler)
+
+
+def parse(argv):
+    ap = argparse.ArgumentParser(prog="roco", description="Start the read-only ROCO bridge and serve the page.")
+    sub = ap.add_subparsers(dest="mode")
+    sim = sub.add_parser("sim", help="simulator on this PC")
+    sim.add_argument("--iface", default="lo", help="DDS interface (default lo)")
+    robot = sub.add_parser("robot", help="the real robot")
+    robot.add_argument("target", metavar="IFACE", help="wired interface that reaches the robot, e.g. enp2s0")
+    replay = sub.add_parser("replay", help="a g1_record recording")
+    replay.add_argument("target", metavar="PATH", help="folder or zip (optionally <zip>:<prefix>)")
+    for p in (sim, robot, replay):
+        p.add_argument("--port", type=int, default=8765, help="bridge WebSocket port (default 8765)")
+        p.add_argument("--web-port", type=int, default=8780, help="port the page is served on (default 8780)")
+        p.add_argument("--open", action="store_true", help="open the page in the default browser")
+    ap.add_argument("--self-test", action="store_true")
+    return ap, ap.parse_args(argv)
+
+
+def run(args) -> int:
+    sys.stdout.reconfigure(line_buffering=True)   # the URL shows at once even when output is piped or redirected
+    # Ctrl-C, a closed terminal (SIGHUP) and `kill` all stop the bridge too, so it is never left running on its own
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.default_int_handler)
+    if not os.path.isfile(os.path.join(DIST, "index.html")):
+        print(f"[roco] the page is not built: {DIST}/index.html is missing.\n"
+              "       Run `npm run build` once on a PC with Node, and copy the dist/ folder here.")
+        return 2
+    for name, port in (("bridge", args.port), ("page", args.web_port)):
+        if not port_free(port):
+            print(f"[roco] port {port} ({name}) is already in use. Is another roco or bridge running? Use --port / --web-port to change it.")
+            return 2
+    server = make_server(DIST, args.web_port)
+    threading.Thread(target=server.serve_forever, name="web", daemon=True).start()
+    cmd = bridge_command(args)
+    print("[roco] starting the bridge: " + " ".join(cmd[1:]))
+    bridge = subprocess.Popen(cmd)
+    url = page_url(args.web_port, args.port)
+    print(f"[roco] open {url}")
+    if args.open:
+        import webbrowser
+        webbrowser.open(url)
+    try:
+        while bridge.poll() is None:
+            time.sleep(0.2)
+        print(f"[roco] the bridge stopped (exit code {bridge.returncode})")
+        return bridge.returncode or 0
+    except KeyboardInterrupt:
+        print("\n[roco] stopping")
+        bridge.send_signal(signal.SIGINT)
+        try:
+            bridge.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            bridge.terminate()
+        return 0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def self_test() -> bool:
+    import tempfile
+    import urllib.request
+    ok = True
+
+    def check(cond, what):
+        nonlocal ok
+        print(f"  [{'✓' if cond else '✗'}] {what}")
+        ok = ok and bool(cond)
+
+    print("roco launcher self-test")
+    _, a = parse(["sim"])
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--iface", "lo"], "sim: bridge on the loopback interface")
+    _, a = parse(["robot", "enp2s0", "--port", "9000"])
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "9000", "--iface", "enp2s0", "--source", "robot"], "robot: interface and source 'robot'")
+    _, a = parse(["replay", "/x/log.zip:stand"])
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--replay", "/x/log.zip:stand"], "replay: the path as given")
+    check(page_url(8780, 8765) == "http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765", "page address names the bridge and monitor mode")
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "index.html"), "w") as f:
+            f.write("<title>ok</title>")
+        with open(os.path.join(os.path.dirname(d), "secret_roco_test.txt"), "w") as f:
+            f.write("outside")
+        srv = make_server(d, 0)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            body = urllib.request.urlopen(f"http://{LOOPBACK}:{port}/index.html", timeout=3).read()
+            check(body == b"<title>ok</title>", "serves the built page")
+            check(srv.server_address[0] == LOOPBACK, "listens on loopback only")
+            try:
+                urllib.request.urlopen(f"http://{LOOPBACK}:{port}/../secret_roco_test.txt", timeout=3)
+                outside = True
+            except Exception:
+                outside = False
+            check(not outside, "does not serve files outside dist/")
+            check(urllib.request.urlopen(f"http://{LOOPBACK}:{port}/index.html", timeout=3).headers.get("Cache-Control") == "no-store", "a rebuilt page is not cached")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            try:
+                os.remove(os.path.join(os.path.dirname(d), "secret_roco_test.txt"))
+            except OSError:
+                pass
+        check(port_free(port), "a stopped server frees its port")
+    print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
+    return ok
+
+
+def main() -> int:
+    ap, args = parse(sys.argv[1:])
+    if args.self_test:
+        return 0 if self_test() else 1
+    if not args.mode:
+        ap.print_help()
+        return 2
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

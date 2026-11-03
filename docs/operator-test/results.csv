@@ -1,0 +1,8 @@
+participant,condition,task,scene,pass,seconds,help,notes
+P1,mouse,glance,A,yes,1.4,no,solo drill, still image, timed, pressed key when ready, shown 6 of 7, said FixStand / nothing, picture: real robot log, squat_cal16, about 19.5 s
+P1,mouse,glance,B,yes,0.9,no,solo drill, still image, timed, pressed key when ready, shown 7 of 7, said Velocity / nothing, picture: real robot log, squat_cal16, about 42 s
+P1,mouse,glance,C,yes,1.5,no,solo drill, still image, timed, pressed key when ready, shown 4 of 7, said squat / stage limits crossed, picture: real robot log, squat_cal16, about 82 s
+P1,mouse,glance,D,yes,1.0,no,solo drill, still image, timed, pressed key when ready, shown 5 of 7, said Velocity / stage limits crossed, picture: real robot log, squat_cal16, about 114 s
+P1,mouse,glance,E,yes,2.7,no,solo drill, still image, timed, pressed key when ready, shown 1 of 7, said Passive / stage limits crossed, picture: real robot log, squat_cal16, about 230 s, no alert active at that moment
+P1,mouse,glance,F,yes,1.6,no,solo drill, still image, timed, pressed key when ready, shown 2 of 7, said Velocity / nothing, picture: SIM: commanded Passive collapse, about 42 s, before the collapse
+P1,mouse,glance,G,yes,1.5,no,solo drill, still image, timed, pressed key when ready, shown 3 of 7, said Passive / an alert, picture: SIM: commanded Passive collapse, about 59.5 s, 5 critical

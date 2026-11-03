@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Roco | Real-Time Telemetry & Digital Twin</title>
+    <script>
+      // Same keys and rules as src/services/uiPrefs.ts: sets the theme and text size before the first paint.
+      ;(function () {
+        try {
+          var p = JSON.parse(localStorage.getItem('roco.ui.v1') || '{}')
+          var t = p.theme
+          if (t !== 'dark' && t !== 'light' && t !== 'contrast') {
+            t = matchMedia('(forced-colors: active)').matches || matchMedia('(prefers-contrast: more)').matches ? 'contrast' : 'dark'
+          }
+          document.documentElement.dataset.theme = t
+          if (p.textScale === 115 || p.textScale === 130) document.documentElement.style.fontSize = p.textScale + '%'
+        } catch (e) {}
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
