@@ -158,6 +158,18 @@ check(model.stateAt(5, [], 'Velocity') === 'Velocity', 'no changes: the current 
   // the state is the one at the time of the alert, not the current one
   const hist = model.buildAlertView(mk({ alerts: [kneeWarn], events: [change(50, 'Passive', 'FixStand'), change(200, 'FixStand', 'Velocity')], state: 'Velocity' }))
   check(hist.counts.info === 1, 'the state at the time of the alert is used')
+  // g1_ctrl closed its log (it stopped): its last state does not lower a later alert
+  const closed = [change(50, 'Passive', 'FixStand'), ev(80, 'g1_ctrl closed its log', { level: 'warning', logClosed: true })]
+  check(model.stateAt(90, model.stateChanges(closed), null) === null, 'after g1_ctrl closed its log the state is unknown')
+  const stale = model.buildAlertView(mk({ alerts: [kneeWarn], events: closed, state: null }))
+  check(stale.counts.warn === 1 && stale.counts.info === 0, "a stopped g1_ctrl's last state (FixStand) does not lower a later alert")
+  const crit = model.buildAlertView(mk({ alerts: [alert('range:3', 'joint_range', 3, 100, 'critical')], events: closed, state: null }))
+  check(crit.groups[0].first.response.includes("does not know g1_ctrl's state"), 'a response that depends on the state says when it is unknown')
+  const known = model.buildAlertView(mk({ alerts: [alert('range:3', 'joint_range', 3, 100, 'critical')], state: 'Velocity' }))
+  check(!known.groups[0].first.response.includes('does not know'), 'and says nothing extra when the state is known')
+  const p = model.buildAlertView(mk({ alerts: [alert('pd:4', 'pd_demand', 4, 80.2, 'warn')],
+    events: [change(80, 'FixStand', 'Passive'), ev(80.1, 'g1_ctrl closed its log', { level: 'warning', logClosed: true })], state: null }))
+  check(p.groups[0].first.follows?.reason === null, 'the bridge\'s "closed its log" line is never given as the reason for a Passive change')
   // a first-out is the first real alert, not an informational one before it
   const inf = alert('range:3', 'joint_range', 3, 100, 'warn')
   const real = alert('pd:4', 'pd_demand', 4, 100.5, 'warn')

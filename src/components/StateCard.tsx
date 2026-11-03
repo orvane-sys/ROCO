@@ -28,7 +28,7 @@ export function StateCard({ state }: { state: MonitorState }) {
           {fsm.state === null
             ? replay
               ? 'No g1_ctrl log lines for this recording'
-              : 'No g1_ctrl log line yet. g1_ctrl writes log/log.txt only when started with --log.'
+              : 'No log from a running g1_ctrl. g1_ctrl writes log/log.txt only when started with --log.'
             : `since ${formatDataTime(fsm.since, state)}${inState !== null ? ` · ${formatDuration(inState)}` : ''}`}
         </div>
         {aux?.fsmStale && (

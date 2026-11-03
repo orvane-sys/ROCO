@@ -18,7 +18,8 @@ export function connectionChecks(monitor: MonitorState, bridgeUrl: string): Conn
   const hz = monitor.aux?.link.lowstateHz ?? 0
   const gotState = replay ? monitor.aux !== null : hz > 0 && (monitor.aux?.link.lowstateAgeMs ?? Infinity) < 1500
   const ctrlLog = hello && 'ctrlLog' in hello ? (hello as unknown as { ctrlLog?: string | null }).ctrlLog : undefined
-  const ctrl = monitor.fsm.state !== null || monitor.fsm.events.length > 0
+  // live: only a known state counts; lines from a g1_ctrl that has since stopped do not
+  const ctrl = monitor.fsm.state !== null || (replay && monitor.fsm.events.length > 0)
   return [
     {
       id: 'bridge',
@@ -45,7 +46,7 @@ export function connectionChecks(monitor: MonitorState, bridgeUrl: string): Conn
       text: ctrl
         ? `State ${monitor.fsm.state ?? 'not known yet'}`
         : hello
-        ? `No g1_ctrl log line yet. Is g1_ctrl running with --log${ctrlLog ? ` (the bridge reads ${ctrlLog})` : ''}?`
+        ? `No log from a running g1_ctrl. Is g1_ctrl running with --log${ctrlLog ? ` (the bridge reads ${ctrlLog})` : ''}?`
         : 'Waits for the bridge.',
     },
   ]

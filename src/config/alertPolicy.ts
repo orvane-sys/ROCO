@@ -17,6 +17,8 @@ export interface AlertResponse {
   critical: string
   /** Where the manual says it, e.g. "§3, §7". Empty when the check is ROCO's own. */
   ref: string
+  /** Added when the response depends on g1_ctrl's state and ROCO does not know it at the alert's time. */
+  stateUnknown?: string
 }
 
 const ABORT = 'LT+B or p'
@@ -37,6 +39,7 @@ export const RESPONSES: Record<string, AlertResponse> = {
     warn: 'A joint is near the end of its range. This is normal for some joints while hanging. Abort if the robot is moving unexpectedly.',
     critical: `A joint is beyond its range. If g1_ctrl is still in a policy state, abort: ${ABORT}. After a fall, check the robot on the rope.`,
     ref: '§3',
+    stateUnknown: "ROCO does not know g1_ctrl's state at this time: read it in g1_ctrl's terminal.",
   },
   pd_target: {
     warn: 'g1_ctrl clamps this target to the range itself, but clamping does not cap torque. Watch this joint and abort if it chatters.',

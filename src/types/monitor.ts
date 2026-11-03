@@ -91,6 +91,8 @@ export interface FsmEvent {
   session?: boolean
   /** Read back from the log on connect or seek, not seen live. */
   history?: boolean
+  /** The bridge's own line: g1_ctrl closed its log (it stopped), so its state is unknown from here. */
+  logClosed?: boolean
 }
 
 /** real_log.py's per-state numbers for one visit to a g1_ctrl state. */

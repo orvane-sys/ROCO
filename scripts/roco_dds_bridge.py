@@ -783,6 +783,17 @@ class Monitor:
             self.fsm_events.append(ev)
             self.fsm_new.append(ev)
 
+    def on_log_closed(self, t: float):
+        """g1_ctrl closed its log (it stopped): its last state is no longer known, and a run without --log must not show it."""
+        with self.lock:
+            if self.fsm_state is None:
+                return
+            ev = {"t": t, "level": "warning", "logClosed": True,
+                  "text": "g1_ctrl closed its log (it stopped). State unknown until g1_ctrl runs with --log again"}
+            self.fsm_state, self.fsm_since = None, None
+            self.fsm_events.append(ev)
+            self.fsm_new.append(ev)
+
     def _change_state(self, state: str, t: float):
         if self.segment["n"] >= 5:
             self.segments.append(self.segment)      # raw: durations use the latest median dt when sent
@@ -1053,10 +1064,39 @@ class DdsSource(threading.Thread):
                 self.monitor.on_odom(t, key, *pv)
 
 
+def log_open_for_writing(path: str, pid_hint: Optional[str] = None) -> Tuple[Optional[bool], Optional[str]]:
+    """Does another process hold `path` open for writing? g1_ctrl keeps log.txt open while it runs with --log, so
+    False means the log is an old run's. Returns (answer, writer pid); the answer is None where /proc cannot tell."""
+    if not os.path.isdir("/proc/self/fd"):
+        return None, None
+    target, me = os.path.realpath(path), str(os.getpid())
+    pids = [p for p in os.listdir("/proc") if p.isdigit() and p != me]
+    if pid_hint in pids:
+        pids.insert(0, pid_hint)        # the writer found last time first: one process to look at, not all
+    for pid in pids:
+        try:
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(f"/proc/{pid}/fd/{fd}") != target:
+                    continue
+                with open(f"/proc/{pid}/fdinfo/{fd}") as fi:
+                    flags = next((int(ln.split()[1], 8) for ln in fi if ln.startswith("flags:")), 0)
+                if flags & (os.O_WRONLY | os.O_RDWR):       # a reader such as `tail -f` does not count
+                    return True, pid
+            except (OSError, ValueError):
+                pass
+    return False, None
+
+
 class LogTailer(threading.Thread):
-    """Follows g1_ctrl's log.txt (read-only). On start it replays the current session's lines."""
+    """Follows g1_ctrl's log.txt (read-only). On start it replays the current session's lines, but only while g1_ctrl
+    holds the log open: a log nobody writes is an old run's, and its last state is not the robot's state now."""
 
     BACKFILL_BYTES = 512 * 1024
+    WRITER_CHECK_S = 1.0
 
     def __init__(self, path: str, monitor: Monitor, poll_s: float = 0.1):
         super().__init__(name="ctrl_log", daemon=True)
@@ -1071,8 +1111,15 @@ class LogTailer(threading.Thread):
 
     def run(self):
         f, ino, rest, first = None, None, "", True
+        writing, pid, checked = None, None, 0.0
         while not self.stop_event.is_set():
             try:
+                now = time.time()
+                if now - checked >= self.WRITER_CHECK_S:
+                    was = writing
+                    (writing, pid), checked = log_open_for_writing(self.path, pid), now
+                    if was and writing is False:
+                        self.monitor.on_log_closed(now)
                 st = os.stat(self.path)
                 if f is None or st.st_ino != ino or st.st_size < f.tell():
                     if f:
@@ -1080,12 +1127,17 @@ class LogTailer(threading.Thread):
                     f = open(self.path, "r", errors="ignore")
                     ino, rest = st.st_ino, ""
                     if first:
-                        # last session only: lines after the latest "Config:" line
-                        f.seek(max(0, st.st_size - self.BACKFILL_BYTES))
-                        lines = f.read().splitlines()
-                        start = max((i for i, ln in enumerate(lines) if "] Config: " in ln), default=None)
-                        if start is not None:
-                            self._feed(lines[start:], history=True)
+                        if writing is False:
+                            f.seek(0, os.SEEK_END)      # an old run's log: follow only what a new run writes
+                            print(f"[ROCO DDS] {self.path} is not open in g1_ctrl (an old run's log): state unknown "
+                                  "until g1_ctrl runs with --log")
+                        else:
+                            # last session only: lines after the latest "Config:" line
+                            f.seek(max(0, st.st_size - self.BACKFILL_BYTES))
+                            lines = f.read().splitlines()
+                            start = max((i for i, ln in enumerate(lines) if "] Config: " in ln), default=None)
+                            if start is not None:
+                                self._feed(lines[start:], history=True)
                         first = False
                 chunk = f.read()
                 if chunk:
@@ -1093,7 +1145,7 @@ class LogTailer(threading.Thread):
                     *lines, rest = rest.split("\n")
                     self._feed(lines)
             except FileNotFoundError:
-                f = None
+                f, first = None, False      # no old log: a log that appears later is a new run's, read from its start
             except Exception as e:
                 print(f"[ROCO DDS] log tail error: {e!r}")
             self.stop_event.wait(self.poll_s)
@@ -1786,6 +1838,67 @@ def run_self_test() -> bool:
                      "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}, "manual hash (SHA-256 of the bytes)")
         check(manual_info(os.path.join(d, "none.md")) is None, "a missing manual is None, not an error")
     check("manual" in build_hello(argparse.Namespace(rate=30, iface="lo", domain=1), L, "sim", {}), "hello carries the manual field")
+
+    print("\n--- g1_ctrl log: an old run's state is never shown as current ---")
+    import subprocess
+
+    def wait_for(cond, s=3.0):
+        end = time.time() + s
+        while time.time() < end and not cond():
+            time.sleep(0.05)
+        return cond()
+
+    def writer(path, lines):
+        """Stands in for g1_ctrl run with --log: appends the lines and keeps the log open until killed."""
+        code = "import sys,time; f=open(sys.argv[1],'a'); f.write(sys.argv[2]); f.flush(); print('ok',flush=True); time.sleep(60)"
+        p = subprocess.Popen([sys.executable, "-c", code, path, "".join(ln + "\n" for ln in lines)], stdout=subprocess.PIPE)
+        p.stdout.readline()
+        return p
+
+    old = ["[2026-10-16 10:32:15.421] [info] Config: /x/config_hw.yaml",
+           "[2026-10-16 10:32:20.000] [info] FSM: Change state from Passive to Velocity"]
+    with tempfile.TemporaryDirectory() as d:
+        lp = os.path.join(d, "log.txt")
+        with open(lp, "w") as f:
+            f.write("\n".join(old) + "\n")
+        if log_open_for_writing(lp)[0] is None:
+            print("  [-] no /proc here, skipped")
+        else:
+            check(log_open_for_writing(lp)[0] is False, "a log no process writes is an old run's")
+            with open(lp):
+                check(log_open_for_writing(lp)[0] is False, "a reader (tail -f) does not count as g1_ctrl")
+            mon = Monitor(L, "sim")
+            lt = LogTailer(lp, mon, poll_s=0.02)
+            lt.start()
+            time.sleep(0.3)
+            check(mon.fsm_state is None and not mon.fsm_events, "bridge started on an old run's log: state unknown, not Velocity")
+            w = writer(lp, ["[2026-11-03 14:00:00.000] [info] Config: /x/config_hw.yaml",
+                            "[2026-11-03 14:00:05.000] [info] FSM: Change state from Passive to FixStand"])
+            check(wait_for(lambda: mon.fsm_state == "FixStand"), "a run started with --log after the bridge shows its state")
+            check(log_open_for_writing(lp)[0] is True, "g1_ctrl holding the log open counts as writing")
+            time.sleep(1.2)       # the tailer sees the writer before it stops
+            w.kill()
+            w.wait()
+            check(wait_for(lambda: mon.fsm_state is None) and "closed its log" in mon.fsm_events[-1]["text"],
+                  "g1_ctrl stopping clears the state, with a line saying why")
+            lt.stop_event.set()
+            w = writer(lp, [])
+            mon = Monitor(L, "sim")
+            lt = LogTailer(lp, mon, poll_s=0.02)
+            lt.start()
+            check(wait_for(lambda: mon.fsm_state == "FixStand"), "bridge started while g1_ctrl runs with --log: its current state")
+            lt.stop_event.set()
+            w.kill()
+            w.wait()
+        lp = os.path.join(d, "later.txt")
+        mon = Monitor(L, "sim")
+        lt = LogTailer(lp, mon, poll_s=0.02)
+        lt.start()
+        time.sleep(0.2)
+        with open(lp, "w") as f:
+            f.write(old[0] + "\n")
+        check(wait_for(lambda: mon.fsm_state == "Passive"), "a log that appears after the bridge started is read from its start")
+        lt.stop_event.set()
     mon = Monitor(L, "replay")
     mon.segment["n"] = 10
     mon.on_log_line(1.0, "info", "Config: /x/config_hw.yaml")

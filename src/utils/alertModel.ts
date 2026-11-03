@@ -24,7 +24,8 @@ import {
 export interface StateChange {
   t: number
   from: string | null
-  to: string
+  /** null: g1_ctrl closed its log, so the state is unknown from here. */
+  to: string | null
   session: boolean
 }
 
@@ -33,6 +34,7 @@ export function stateChanges(events: FsmEvent[]): StateChange[] {
   for (const e of events) {
     if (e.to) out.push({ t: e.t, from: e.from ?? null, to: e.to, session: false })
     else if (e.session) out.push({ t: e.t, from: null, to: 'Passive', session: true })
+    else if (e.logClosed) out.push({ t: e.t, from: null, to: null, session: false })
   }
   return out.sort((a, b) => a.t - b.t)
 }
@@ -68,6 +70,7 @@ function passiveChanges(changes: StateChange[], events: FsmEvent[]): PassiveChan
       (e) =>
         !e.to &&
         !e.health &&
+        !e.logClosed &&
         (e.level === 'warning' || e.level === 'error' || e.level === 'critical') &&
         e.t >= c.t - REASON_BEFORE_S &&
         e.t <= c.t + REASON_AFTER_S
@@ -197,7 +200,7 @@ function buildItem(
     rawLevel: raw,
     rule,
     state,
-    response: level === 'critical' ? r.critical : r.warn,
+    response: (level === 'critical' ? r.critical : r.warn) + (state === null && r.stateUnknown ? ` ${r.stateUnknown}` : ''),
     ref: r.ref,
     follows,
     acknowledged: controls.acked.has(key),
