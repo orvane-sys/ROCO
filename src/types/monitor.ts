@@ -185,6 +185,8 @@ export interface ReplayStatus {
   t0: number
   t1: number | null
   t: number
+  /** Where the bridge's statistics (state visits, alerts) start: the recording's start, or the last seek. Absent on an older bridge. */
+  statsFrom?: number
   speed: number
   playing: boolean
   ended: boolean

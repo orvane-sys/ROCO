@@ -285,6 +285,8 @@ export class TelemetryStreamService {
   public sendReplayControl(action: ReplayAction, value?: number): void {
     if (!this.monitor.replay || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
     if (action === 'seek' && typeof value === 'number') this.lastSeekT = value
+    // play at the end of a recording makes the bridge start over from the first moment, which restarts its statistics like a seek
+    else if (action === 'play' && this.monitor.replay.ended) this.lastSeekT = this.monitor.replay.t0
     this.socket.send(JSON.stringify({ type: 'replay_control', action, value }))
   }
 

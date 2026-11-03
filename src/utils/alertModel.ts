@@ -13,6 +13,7 @@ import {
   type EffectiveLevel,
   type SeverityRule,
 } from '../config/alertPolicy'
+import { statsSinceNote } from './monitorFormat'
 
 /**
  * How the page presents the bridge's alerts: which one came first, which follow a change into Passive, what to do about each,
@@ -389,12 +390,12 @@ export function evaluateAbortChecks(state: MonitorState, controls: AlertControls
     status: lean === null ? 'idle' : lean > SQUAT_LEAN_STOP_DEG ? 'trip' : lean > SQUAT_LEAN_REF_DEG ? 'watch' : 'ok',
     detail:
       lean === null
-        ? 'No squat in this run yet.'
+        ? `No squat${statsSinceNote(state) || ' in this run yet'}.`
         : lean > SQUAT_LEAN_STOP_DEG
         ? `Body pitch reached ${fmt(lean)}° (reference 12 to 13°, either direction). The manual says stop if it is much more.`
         : lean > SQUAT_LEAN_REF_DEG
         ? `Body pitch reached ${fmt(lean)}°, a little above the reference of 12 to 13°. The manual stops at "much more"; ROCO trips above ${SQUAT_LEAN_STOP_DEG}°.`
-        : `Body pitch peak ${fmt(lean)}° (reference 12 to 13°)${inSquat ? ', squat in progress' : ''}.`,
+        : `Body pitch peak ${fmt(lean)}° (reference 12 to 13°)${inSquat ? ', squat in progress' : ''}${statsSinceNote(state)}.`,
     t: leanKey ? leanT : null,
     key: leanKey,
     acknowledged: ack(leanKey),

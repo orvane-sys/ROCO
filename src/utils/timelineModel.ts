@@ -24,6 +24,8 @@ export interface TimelineAlert {
 
 const RANK: Record<EffectiveLevel, number> = { info: 0, warn: 1, critical: 2 }
 const CARRY_S = 1
+/** The bridge's AlertBook holds an alert 0.5 s before it opens it (scripts/roco_dds_bridge.py). */
+const HOLD_S = 0.5
 
 function itemsOf(view: AlertView) {
   const all = new Map<string, AlertView['closed'][number]>()
@@ -34,29 +36,55 @@ function itemsOf(view: AlertView) {
 
 /**
  * Add what the alert view now shows to the remembered occurrences. A replay seek makes the bridge restart its statistics, so an
- * alert that was already open at the seek time opens again at that time; `seekT` lets that one be recognised and not counted twice.
+ * alert already seen comes back when the replay passes it again, and its `since` can differ by a few milliseconds from the first
+ * time (the key is `id@since`). With `seekT` set, such an item is matched to the remembered occurrence of the same alert whose
+ * interval holds it, so it is not listed twice. A bridge never has two occurrences of one alert open together, so an overlap
+ * means the same one; an occurrence that has its own key in this view is a different one (it closed and opened again).
  */
 export function mergeTimelineAlerts(prev: TimelineAlert[], view: AlertView, seekT: number | null): TimelineAlert[] {
   const byKey = new Map(prev.map((a) => [a.key, a]))
+  const items = [...itemsOf(view).values()]
+  const inView = new Set(items.map((i) => i.key))
+  const claimed = new Set<string>()
   let changed = false
-  for (const it of itemsOf(view).values()) {
-    const a = it.alert
-    const until = it.active ? null : it.durationS !== undefined ? a.since + it.durationS : a.last
-    let target = byKey.get(it.key)
-    if (!target && seekT !== null && a.since <= seekT + CARRY_S) {
-      // the same alert, already open before the seek
-      target = prev.find((p) => p.id === a.id && p.t < seekT && (p.until === null || p.until >= seekT - 0.5))
-    }
-    if (!target) {
-      byKey.set(it.key, { key: it.key, id: a.id, kind: a.kind, joint: a.joint, level: it.level, t: a.since, until })
-      changed = true
-      continue
-    }
+  const update = (target: TimelineAlert, it: AlertView['closed'][number], until: number | null) => {
+    claimed.add(target.key)
     const level = RANK[it.level] > RANK[target.level] ? it.level : target.level
+    // an occurrence that has closed does not become open again because the replay went back and is passing it once more
+    if (until === null && target.until !== null) until = target.until
     if (level !== target.level || until !== target.until) {
       byKey.set(target.key, { ...target, level, until })
       changed = true
     }
+  }
+  const untilOf = (it: AlertView['closed'][number]) => (it.active ? null : it.durationS !== undefined ? it.alert.since + it.durationS : it.alert.last)
+  const unmatched: AlertView['closed'][number][] = []
+  for (const it of items) {
+    const target = byKey.get(it.key)
+    if (target) update(target, it, untilOf(it))
+    else unmatched.push(it)
+  }
+  for (const it of unmatched) {
+    const a = it.alert
+    const until = untilOf(it)
+    let target: TimelineAlert | undefined
+    if (seekT !== null) {
+      target = prev.find(
+        (p) =>
+          p.id === a.id &&
+          !inView.has(p.key) &&
+          !claimed.has(p.key) &&
+          ((p.t < seekT && a.since <= seekT + CARRY_S && (p.until === null || p.until >= seekT - HOLD_S)) ||
+            (a.since >= p.t - HOLD_S && a.since <= (p.until ?? Infinity) + HOLD_S)),
+      )
+    }
+    if (target) {
+      update(target, it, until)
+      continue
+    }
+    byKey.set(it.key, { key: it.key, id: a.id, kind: a.kind, joint: a.joint, level: it.level, t: a.since, until })
+    claimed.add(it.key)
+    changed = true
   }
   return changed ? [...byKey.values()].sort((x, y) => x.t - y.t || (x.key < y.key ? -1 : 1)) : prev
 }
@@ -96,7 +124,8 @@ export function buildTimeline(state: MonitorState, alerts: TimelineAlert[], mark
   let t1: number
   if (replay) {
     t0 = replay.t0
-    t1 = replay.t1 ?? Math.max(replay.t, t0 + MIN_SPAN_S)
+    // a recording of one sample (or a cut-off one) still has a span, so the time axis never divides by zero
+    t1 = replay.t1 !== null ? Math.max(replay.t1, t0 + MIN_SPAN_S) : Math.max(replay.t, t0 + MIN_SPAN_S)
   } else {
     const start = currentRun(state.fsm.events).start
     t0 = start ?? changes[0]?.t ?? ring.first ?? state.aux?.t ?? 0
@@ -145,6 +174,15 @@ export interface TimelineRow {
   level?: EffectiveLevel
 }
 
+/**
+ * What to say about an alert that has not closed. On live data it is still open; in a recording it was open when the data (or the
+ * playing) ended, which says nothing about what happened after. The 0.5 s is the same as the report's "played to" test.
+ */
+export function openWord(model: Pick<TimelineModel, 'replay' | 'playedTo' | 't1'>): string {
+  if (!model.replay) return 'still open'
+  return model.playedTo !== null && model.playedTo >= model.t1 - 0.5 ? 'open at end of recording' : 'open where play stopped'
+}
+
 const LEVEL_WORD: Record<EffectiveLevel, string> = { critical: 'Critical', warn: 'Warning', info: 'Info' }
 export const levelWord = (l: EffectiveLevel): string => LEVEL_WORD[l]
 
@@ -156,7 +194,7 @@ export function timelineRows(model: TimelineModel, alertTitle: (a: TimelineAlert
     rows.push({ t: sp.t0, kind: 'state', id: `state-${n}`, text: n === 0 ? `State: ${sp.state}` : `State changes to ${sp.state}` })
   })
   for (const a of model.alerts) {
-    const dur = a.until !== null ? ` for ${formatDuration(a.until - a.t)}` : ' (still open)'
+    const dur = a.until !== null ? ` for ${formatDuration(a.until - a.t)}` : ` (${openWord(model)})`
     rows.push({ t: a.t, kind: 'alert', id: a.key, level: a.level, text: `${LEVEL_WORD[a.level]}: ${alertTitle(a)}${dur}` })
   }
   model.marks.forEach((m, n) => rows.push({ t: m.t, kind: 'mark', id: m.id, text: `Mark ${n + 1}${m.note ? `: ${m.note}` : ''}` }))

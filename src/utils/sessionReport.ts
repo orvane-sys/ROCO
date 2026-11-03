@@ -3,7 +3,7 @@ import { FALLBACK_RESPONSE, RESPONSES } from '../config/alertPolicy'
 import type { AbortCheck } from './alertModel'
 import { KIND_LABEL, SOURCE_LABEL, formatDataTime, formatDuration, sourceBadge } from './monitorFormat'
 import { manualStatus, statusWord, type ProcedureResult } from './procedureModel'
-import { levelWord, timelineRows, type TimelineAlert, type TimelineModel } from './timelineModel'
+import { levelWord, openWord, timelineRows, type TimelineAlert, type TimelineModel } from './timelineModel'
 
 /**
  * The session as Markdown, laid out like the hardware test reports (summary, setup, timeline, per-state numbers, checks, alerts,
@@ -111,9 +111,17 @@ export function buildReport(input: ReportInput): string {
   out.push('## 3. Timeline', '')
   out.push(...(rows.length ? table([state.replay ? 'Time (s into the recording)' : 'Time', 'What'], rows.map((r) => [formatDataTime(r.t, state).replace(' s', ''), r.text])) : ['Nothing on the timeline yet.']), '')
 
+  // after a replay seek the bridge's statistics start at the seek, so the per-state and guided-check numbers are partial
+  const r0 = state.replay
+  const partial =
+    r0 && r0.statsFrom !== undefined && r0.statsFrom > r0.t0 + 0.5
+      ? `Numbers from ${fmt(r0.statsFrom)} to ${fmt(r0.t)} only: the recording was started at ${fmt(r0.statsFrom)}. Play it from the start for the whole run.`
+      : null
+
   // 4. Per state
   const segs = segmentRows(state)
   out.push('## 4. Per state (as real_log.py)', '')
+  if (partial) out.push(partial, '')
   if (segs.length === 0) out.push('No samples yet.', '')
   else {
     out.push(
@@ -130,6 +138,7 @@ export function buildReport(input: ReportInput): string {
   // 5. Guided checks
   if (procedure) {
     out.push('## 5. Guided checks', '')
+    if (partial) out.push(partial, '')
     out.push('Status words: Ticked, Seen, None seen, Within limit and Checked by you are what the person or the data showed. Stop limit crossed and Abort line seen are the manual\'s own fail lines.', '')
     for (const st of procedure.stages) {
       const items = st.items
@@ -152,7 +161,7 @@ export function buildReport(input: ReportInput): string {
         ['Opened', 'Level', 'Alert', 'Open for', 'Do'],
         alerts.map((a) => {
           const r = RESPONSES[a.kind] ?? FALLBACK_RESPONSE
-          return [fmt(a.t), levelWord(a.level), input.alertTitle(a) || KIND_LABEL[a.kind] || a.kind, a.until !== null ? formatDuration(a.until - a.t) : 'still open', `${a.level === 'critical' ? r.critical : r.warn} (${r.ref})`]
+          return [fmt(a.t), levelWord(a.level), input.alertTitle(a) || KIND_LABEL[a.kind] || a.kind, a.until !== null ? formatDuration(a.until - a.t) : openWord(timeline), `${a.level === 'critical' ? r.critical : r.warn} (${r.ref})`]
         }),
       ),
       '',

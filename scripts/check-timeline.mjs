@@ -283,6 +283,8 @@ const live = (extra = {}) => ({
   check(noFrame.spans[noFrame.spans.length - 1].state === null && noFrame.spans[noFrame.spans.length - 1].t0 === 1030 && noFrame.spans[noFrame.spans.length - 1].t1 === 1100, 'replay on an older bridge: known only as far as it has played, the rest marked unknown')
   const running = tl.buildTimeline(live({ replay: { ...rp, t1: null, t: 1005 }, timeline: frame }), [], [], { first: null, last: null })
   check(running.t1 > running.t0, 'a recording whose end is not indexed yet still has a span')
+  const one = tl.buildTimeline(live({ replay: { ...rp, t1: 1000, t: 1000 }, timeline: frame }), [], [], { first: null, last: null })
+  check(one.t1 > one.t0, 'a recording of a single sample (t1 = t0) still has a span')
   check(Math.abs(tl.timeAtX({ t0: 0, t1: 10 }, 150, 50, 100) - 10) < 1e-9 && tl.timeAtX({ t0: 0, t1: 10 }, -20, 50, 100) === 0 && tl.timeAtX({ t0: 0, t1: 10 }, 900, 50, 100) === 10, 'x to time clamps to the band')
   check(Math.abs(tl.xAtTime({ t0: 0, t1: 10 }, 5, 50, 100) - 100) < 1e-9, 'time to x')
 }
@@ -315,6 +317,20 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   check(mem.find((x) => x.id === 'tilt:null').t === 121, 'it keeps its real start time')
   mem = tl.mergeTimelineAlerts(mem, viewOf({ active: [itemOf(alertOf('knee:3', 200), true)] }), 122)
   check(mem.length === before + 1, 'a genuinely new alert after a seek is added')
+  // replay: the same alert passed again after a seek back has a slightly different start; it is still one occurrence
+  const pdClosed = viewOf({ closed: [itemOf(alertOf('pd_demand:4', 120), false, 'warn', 4)] })
+  const seeded = tl.mergeTimelineAlerts([], pdClosed, null)
+  const again = tl.mergeTimelineAlerts(seeded, viewOf({ active: [itemOf(alertOf('pd_demand:4', 120.003), true)] }), 100)
+  check(again.length === 1 && again[0].t === 120 && again[0].key === seeded[0].key, 'after a seek back, the same alert 3 ms later is one occurrence, with its first start')
+  check(again[0].until === 124, 'an occurrence that closed does not turn open again because the replay passes it once more')
+  const early = tl.mergeTimelineAlerts(seeded, viewOf({ active: [itemOf(alertOf('pd_demand:4', 119.8), true)] }), 100)
+  check(early.length === 1, 'the hold time before it opened is allowed for (0.5 s)')
+  const far = tl.mergeTimelineAlerts(seeded, viewOf({ active: [itemOf(alertOf('pd_demand:4', 125), true)] }), 100)
+  check(far.length === 2, 'the same alert well after the first one closed is a second occurrence')
+  const reopen = tl.mergeTimelineAlerts(seeded, viewOf({ closed: [itemOf(alertOf('pd_demand:4', 120), false, 'warn', 4)], active: [itemOf(alertOf('pd_demand:4', 124.2), true)] }), 100)
+  check(reopen.length === 2, 'a close and a reopen seen together stay two occurrences')
+  const live3 = tl.mergeTimelineAlerts(seeded, viewOf({ active: [itemOf(alertOf('pd_demand:4', 120.003), true)] }), null)
+  check(live3.length === 2, 'live data (no seek) is unchanged: a different start is a new occurrence')
   const info = tl.mergeTimelineAlerts([], viewOf({ info: [itemOf(alertOf('joint_range:3', 10, 'warn'), true, 'info')] }), null)
   check(info.length === 1 && info[0].level === 'info', 'an alert lowered by a severity rule is kept at info')
   const order = tl.mergeTimelineAlerts([], viewOf({ active: [itemOf(alertOf('b:1', 5), true), itemOf(alertOf('a:1', 5), true), itemOf(alertOf('c:1', 3), true)] }), null)
@@ -345,6 +361,12 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   check(md.includes('7.1 Nm 29%') && md.includes('6.5 / 1.2 / 3.5') && md.includes('-0.8° / 1.2°') && md.includes('80.0 s'), 'per-state numbers use the same rounding as the page')
   check(md.includes('pipe \\| in note new line') && !/pipe \| in note/.test(md), 'a pipe or line break in a note cannot break a table')
   check(md.includes('still open'), 'an open alert says so')
+  {
+    const rows7 = md.split('## 7. Alerts')[1].split('## 8.')[0].split('\n').filter((l) => l.startsWith('|')).length - 2
+    const sum = md.match(/Alerts: (\d+) critical, (\d+) warning, (\d+) info/).slice(1).reduce((x, y) => x + Number(y), 0)
+    check(rows7 === sum && rows7 === 2, 'the summary count equals the rows of the alert table')
+  }
+  check(!md.includes('Numbers from'), 'a run from its start (or live) has no partial-numbers line')
   check(!/\bsafe to (start|continue|proceed)\b/i.test(md.replace(/is not "safe to continue"/g, '')) && /not a clearance/.test(md), 'the report never calls the robot safe and says it is not a clearance')
   const lines = md.split('\n').filter((l) => l.startsWith('|'))
   check(lines.length > 10, 'tables are present')
@@ -353,6 +375,16 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   const noProc = report.buildReport({ state, profileName: 'x', generatedAt: new Date(), timeline: m, alertTitle: () => '', abortChecks: abort, procedure: null })
   check(!noProc.includes('Guided checks') && noProc.includes('## 5. Abort checks'), 'without a procedure the sections renumber')
   const rep = report.buildReport({ state: { ...state, replay: { file: 'stand_cal16', store: 's', t0: 100, t1: 200, t: 150, speed: 1, playing: false, ended: false, indexing: false, busy: null, speeds: [1] }, hello: { ...state.hello, source: 'replay', replay: { file: 'stand_cal16', store: 'z.zip', notes: [] } } }, profileName: 'x', generatedAt: new Date(), timeline: { ...m, replay: true, playedTo: 150 }, alertTitle: () => 'a', abortChecks: abort, procedure: null })
+  check(rep.includes('open where play stopped') && !rep.includes('still open'), 'a recording not played to its end says the alert was open where play stopped')
+  const repOf = (replay, playedTo) => report.buildReport({ state: { ...state, replay, hello: { ...state.hello, source: 'replay', replay: { file: 'stand_cal16', store: 'z.zip', notes: [] } } }, profileName: 'x', generatedAt: new Date(), timeline: { ...m, replay: true, playedTo, t1: 200 }, alertTitle: () => 'a', abortChecks: abort, procedure: proc })
+  const rpl = { file: 'stand_cal16', store: 's', t0: 100, t1: 200, t: 200, speed: 1, playing: false, ended: true, indexing: false, busy: null, speeds: [1] }
+  const atEnd = repOf(rpl, 200)
+  check(atEnd.includes('open at end of recording') && !atEnd.includes('still open'), 'a recording played to its end says the alert was open at the end of the recording')
+  check(!atEnd.includes('Numbers from'), 'played from the start: no partial-numbers line')
+  const seeked = repOf({ ...rpl, statsFrom: 130 }, 200)
+  check(seeked.includes('Numbers from 30.0 s to 100.0 s only: the recording was started at 30.0 s.') && seeked.split('Numbers from').length === 3, 'after a seek the per-state and guided-check sections each say the numbers are partial')
+  check(!repOf({ ...rpl, statsFrom: 100.2 }, 200).includes('Numbers from'), 'a start within 0.5 s of the recording start is not partial')
+  check(tl.openWord({ replay: false, playedTo: null, t1: 5 }) === 'still open' && tl.openWord({ replay: true, playedTo: 199.6, t1: 200 }) === 'open at end of recording' && tl.openWord({ replay: true, playedTo: 150, t1: 200 }) === 'open where play stopped', 'openWord: live, end of recording, stopped earlier')
   check(rep.includes('REPLAY stand_cal16') && rep.includes('played to 50.0 s'), 'a recording\'s report names the recording and how far it was played')
 }
 

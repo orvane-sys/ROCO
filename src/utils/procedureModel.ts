@@ -2,6 +2,7 @@ import type { MonitorSource, MonitorState, FsmEvent, FsmSegment } from '../types
 import type { AutoRule, ItemKind, LogRule, ProcItem, Procedure, References, Stage } from '../config/procedures/types'
 import { SQUAT_LEAN_REF_DEG, SQUAT_LEAN_STOP_DEG } from '../config/alertPolicy'
 import { currentRun } from './alertModel'
+import { statsSinceNote } from './monitorFormat'
 
 /**
  * Turns a procedure (data) and what the bridge reports into a result for every check. Pure, so scripts/check-procedures.mjs
@@ -90,6 +91,8 @@ function visits(run: Run, name: string): FsmSegment[] {
   return out
 }
 
+const sinceNote = (run: Run): string => statsSinceNote(run.state)
+
 function autoVerdict(rule: AutoRule, run: Run, source: MonitorSource | null): Verdict {
   const { state, events } = run
   switch (rule.type) {
@@ -147,31 +150,31 @@ function autoVerdict(rule: AutoRule, run: Run, source: MonitorSource | null): Ve
     }
     case 'segment': {
       const v = visits(run, rule.state)
-      if (v.length === 0) return { status: 'pending', detail: `No ${rule.state} visit in this run yet.` }
+      if (v.length === 0) return { status: 'pending', detail: `No ${rule.state} visit${sinceNote(run) || ' in this run yet'}.` }
       const worst = v.reduce((a, b) => (b[rule.field] > a[rule.field] ? b : a))
       const val = worst[rule.field]
       const what = rule.field === 'tauAnkP' ? 'ankle pitch torque' : 'knee torque'
       if (val > rule.stop) return { status: 'stop', detail: `${what} reached ${f1(val)} Nm in ${rule.state} (limit ${rule.stop} Nm).`, t: worst.t0 }
-      return { status: 'ok', detail: `Peak ${f1(val)} Nm over ${v.length} ${v.length === 1 ? 'visit' : 'visits'} (max over both sides).`, t: worst.t0 }
+      return { status: 'ok', detail: `Peak ${f1(val)} Nm over ${v.length} ${v.length === 1 ? 'visit' : 'visits'} (max over both sides)${sinceNote(run)}.`, t: worst.t0 }
     }
     case 'squatLean': {
       const v = visits(run, 'squat')
-      if (v.length === 0) return { status: 'pending', detail: 'No squat in this run yet.' }
+      if (v.length === 0) return { status: 'pending', detail: `No squat${sinceNote(run) || ' in this run yet'}.` }
       const lean = Math.max(...v.map((s) => s.tiltDeg[1]))
       if (lean > SQUAT_LEAN_STOP_DEG)
         return { status: 'stop', detail: `Body pitch reached ${f1(lean)}° (reference ${SQUAT_LEAN_REF_DEG}°; ROCO stops above ${SQUAT_LEAN_STOP_DEG}°).`, t: v[v.length - 1].t0 }
       if (lean > SQUAT_LEAN_REF_DEG)
-        return { status: 'check', detail: `Body pitch reached ${f1(lean)}°, a little above ${SQUAT_LEAN_REF_DEG}°. The manual stops at “much more”.`, t: v[v.length - 1].t0 }
-      return { status: 'ok', detail: `Body pitch peak ${f1(lean)}° (size only, not direction).`, t: v[v.length - 1].t0 }
+        return { status: 'check', detail: `Body pitch reached ${f1(lean)}°, a little above ${SQUAT_LEAN_REF_DEG}°. The manual stops at “much more”${sinceNote(run)}.`, t: v[v.length - 1].t0 }
+      return { status: 'ok', detail: `Body pitch peak ${f1(lean)}° (size only, not direction)${sinceNote(run)}.`, t: v[v.length - 1].t0 }
     }
     case 'legSpeed': {
       const segs = [...state.fsm.segments.filter((s) => s.name !== 'Passive' && (run.start === null || s.t0 === null || s.t0 >= run.start))]
       const now = state.fsm.segment
       if (now && state.fsm.state !== null && now.name === state.fsm.state && now.name !== 'Passive') segs.push(now)
-      if (segs.length === 0) return { status: 'pending', detail: 'No visit outside Passive in this run yet.' }
+      if (segs.length === 0) return { status: 'pending', detail: `No visit outside Passive${sinceNote(run) || ' in this run yet'}.` }
       const worst = segs.reduce((a, b) => (b.legDqMax > a.legDqMax ? b : a))
       if (worst.legDqMax >= rule.stop) return { status: 'stop', detail: `A leg joint reached ${f1(worst.legDqMax)} rad/s in ${worst.name} (limit ${rule.stop}).`, t: worst.t0 }
-      return { status: 'ok', detail: `Fastest leg joint ${f1(worst.legDqMax)} rad/s (${worst.name}).`, t: worst.t0 }
+      return { status: 'ok', detail: `Fastest leg joint ${f1(worst.legDqMax)} rad/s (${worst.name})${sinceNote(run)}.`, t: worst.t0 }
     }
     case 'lowcmdRate': {
       const link = state.aux?.link
@@ -189,10 +192,10 @@ function autoVerdict(rule: AutoRule, run: Run, source: MonitorSource | null): Ve
     }
     case 'squatCount': {
       const n = visits(run, 'squat').length
-      if (n === 0) return { status: 'pending', detail: 'No squat in this run yet.' }
+      if (n === 0) return { status: 'pending', detail: `No squat${sinceNote(run) || ' in this run yet'}.` }
       // "about 5" is a session limit, not an abort condition: it asks for a look, it does not trip
-      if (n > rule.about) return { status: 'check', detail: `${n} squats in this run; the manual limits a session to about ${rule.about}.` }
-      return { status: 'ok', detail: `${n} of about ${rule.about} squats in this run.` }
+      if (n > rule.about) return { status: 'check', detail: `${n} squats${sinceNote(run) || ' in this run'}; the manual limits a session to about ${rule.about}.` }
+      return { status: 'ok', detail: `${n} of about ${rule.about} squats${sinceNote(run) || ' in this run'}.` }
     }
   }
 }

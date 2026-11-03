@@ -35,6 +35,17 @@ export function formatDataTime(t: number | null | undefined, state: MonitorState
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
 }
 
+/**
+ * After a replay seek the bridge restarts its statistics, so the state visits it reports start at the seek. The log lines still
+ * cover the whole recording; verdicts built from visits add this so the two do not seem to contradict each other.
+ * Empty when the data is the whole run (live, or a recording played from its start, or an older bridge that does not say).
+ */
+export function statsSinceNote(state: MonitorState): string {
+  const r = state.replay
+  if (!r || r.statsFrom === undefined || r.statsFrom <= r.t0 + 0.5) return ''
+  return ` since ${formatDataTime(r.statsFrom, state)} (the recording was started there)`
+}
+
 export function formatDuration(s: number): string {
   if (!Number.isFinite(s) || s < 0) return '—'
   if (s < 60) return `${s.toFixed(1)} s`
