@@ -20,10 +20,12 @@ import hmac
 import json
 import math
 import os
+import socket
 import struct
 import sys
 import time
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 # Try importing numpy; fallback to math if unavailable
@@ -1094,6 +1096,13 @@ BROWSER_DEFAULT_ORIGIN_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
 MAX_MESSAGE_BYTES = 4096  # teleop frames are 32 B; JSON commands are < 1 KB
 MAX_CLIENTS = 8
 HANDSHAKE_TIMEOUT_S = 5.0
+# A client whose oldest unsent frame is this old while its socket is full is disconnected; the page reconnects and gets a
+# full greeting. Frames are not dropped instead: fsm and alert events are sent once, so a gap would go unseen.
+MAX_CLIENT_LAG_S = 1.0
+# Kernel send buffer per client (Linux doubles it). Data queued there is invisible to the lag check, so keep it to a fraction
+# of a second instead of the auto-tuned megabytes.
+CLIENT_SNDBUF_BYTES = 64 * 1024
+CLOSE_TIMEOUT_S = 1.0
 
 
 class AccessPolicy:
@@ -1129,6 +1138,17 @@ class AccessPolicy:
 # ==============================================================================
 # Built-in Lightweight RFC-6455 Asyncio WebSocket Server (Zero-Dependency)
 # ==============================================================================
+class _Client:
+    """One connected client: its unsent frames and the task that writes them, so a slow reader only delays itself."""
+
+    def __init__(self, writer: asyncio.StreamWriter):
+        self.writer = writer
+        self.queue: Deque[Tuple[float, bytes]] = deque()   # (monotonic time queued, frame)
+        self.wake = asyncio.Event()
+        self.draining_since: Optional[float] = None        # set while drain() waits for a full socket
+        self.task: Optional[asyncio.Task] = None
+
+
 class BuiltinWebSocketServer:
     """Minimal, robust RFC-6455 WebSocket server implemented on asyncio.start_server."""
 
@@ -1139,23 +1159,22 @@ class BuiltinWebSocketServer:
         self.on_connect = on_connect
         self.on_message_cb = on_message_cb
         self.policy = policy or AccessPolicy(host)
-        self.clients: Set[asyncio.StreamWriter] = set()
+        self.clients: Dict[asyncio.StreamWriter, _Client] = {}
         self.server: Optional[asyncio.Server] = None
+        self.dropped_slow = 0
 
     async def start(self):
         self.server = await asyncio.start_server(self._handle_client, self.host, self.port)
 
     async def stop(self):
+        # Clients first: from Python 3.12 the server's wait_closed() waits for every connection to end.
         if self.server:
             self.server.close()
-            await self.server.wait_closed()
-        for w in list(self.clients):
-            w.close()
-            try:
-                await w.wait_closed()
-            except Exception:
-                pass
+        for c in list(self.clients.values()):
+            c.writer.transport.abort()
         self.clients.clear()
+        if self.server:
+            await self.server.wait_closed()
 
     @staticmethod
     def _frame(data) -> bytes:
@@ -1177,19 +1196,47 @@ class BuiltinWebSocketServer:
         await self.broadcast(data)
 
     async def broadcast(self, data):
+        """Queues the frame for every client and returns at once; each client's own task writes it."""
         if not self.clients:
             return
         frame = self._frame(data)
-        dead_clients = []
-        for writer in list(self.clients):   # drain() yields: clients may join or leave meanwhile
-            try:
-                writer.write(frame)
-                await writer.drain()
-            except Exception:
-                dead_clients.append(writer)
+        now = time.monotonic()
+        for c in list(self.clients.values()):
+            # Only a client whose socket is full counts as behind: after a stall of the bridge itself, every queue has
+            # old frames but no writer has had a turn yet.
+            if c.draining_since is not None and c.queue and now - c.queue[0][0] > MAX_CLIENT_LAG_S:
+                self._drop_slow(c, now - c.queue[0][0])
+            else:
+                self._enqueue(c, frame, now)
 
-        for d in dead_clients:
-            self.clients.discard(d)
+    @staticmethod
+    def _enqueue(c: _Client, frame: bytes, now: float):
+        c.queue.append((now, frame))
+        c.wake.set()
+
+    def _drop_slow(self, c: _Client, lag: float):
+        self.clients.pop(c.writer, None)
+        self.dropped_slow += 1
+        peer = c.writer.get_extra_info("peername")
+        print(f"[ROCO Bridge] Disconnected a client that fell {lag:.1f} s behind ({len(c.queue)} frames unsent, peer {peer}); "
+              "it can reconnect")
+        c.writer.transport.abort()   # close() would wait to flush to a reader that is not reading
+
+    @staticmethod
+    async def _send_loop(c: _Client):
+        w = c.writer
+        try:
+            while True:
+                while not c.queue:
+                    c.wake.clear()
+                    await c.wake.wait()
+                _, frame = c.queue.popleft()
+                w.write(frame)
+                c.draining_since = time.monotonic()
+                await w.drain()
+                c.draining_since = None
+        except (ConnectionError, OSError):
+            pass   # the reader side sees the same loss and cleans up
 
     @staticmethod
     async def _reject(writer: asyncio.StreamWriter, status: str):
@@ -1203,7 +1250,11 @@ class BuiltinWebSocketServer:
             pass
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        client: Optional[_Client] = None
         try:
+            sock = writer.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, CLIENT_SNDBUF_BYTES)
             try:
                 request_bytes = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HANDSHAKE_TIMEOUT_S)
             except (asyncio.TimeoutError, asyncio.LimitOverrunError):
@@ -1242,11 +1293,14 @@ class BuiltinWebSocketServer:
             writer.write(response.encode('latin1'))
             await writer.drain()
 
-            self.clients.add(writer)
-            if self.on_connect:
-                for msg in self.on_connect():
-                    writer.write(self._frame(msg))
-                await writer.drain()
+            # Greeting, then broadcasts, all through the client's queue: nothing awaits between these lines, so no
+            # broadcast can come before the greeting.
+            client = _Client(writer)
+            now = time.monotonic()
+            for msg in (self.on_connect() if self.on_connect else ()):
+                self._enqueue(client, self._frame(msg), now)
+            self.clients[writer] = client
+            client.task = asyncio.ensure_future(self._send_loop(client))
 
             while True:
                 hdr = await reader.readexactly(2)
@@ -1261,7 +1315,8 @@ class BuiltinWebSocketServer:
                     payload_len = struct.unpack('!Q', await reader.readexactly(8))[0]
 
                 if payload_len > MAX_MESSAGE_BYTES:
-                    # 1009 = message too big
+                    # 1009 = message too big. Written past the queue (writes are whole frames, so it cannot split one);
+                    # close() below flushes it.
                     writer.write(bytes([0x88, 0x02]) + struct.pack('!H', 1009))
                     break
 
@@ -1274,8 +1329,8 @@ class BuiltinWebSocketServer:
                 if opcode == 0x08:  # Close
                     break
                 elif opcode == 0x09:  # Ping: echo the payload in the pong (control frames are <= 125 B)
-                    writer.write(bytes([0x8A, len(payload)]) + payload[:125])
-                    await writer.drain()
+                    payload = payload[:125]
+                    self._enqueue(client, bytes([0x8A, len(payload)]) + payload, time.monotonic())
                 elif opcode in (0x02, 0x01):  # Binary or Text
                     self.on_message_cb(payload)
 
@@ -1288,12 +1343,14 @@ class BuiltinWebSocketServer:
         ):
             pass
         finally:
-            self.clients.discard(writer)
+            self.clients.pop(writer, None)
+            if client is not None and client.task is not None:
+                client.task.cancel()
             writer.close()
             try:
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), CLOSE_TIMEOUT_S)
             except Exception:
-                pass
+                writer.transport.abort()   # the peer is not reading what is left: do not hold the socket open
 
 
 # ==============================================================================
@@ -1445,13 +1502,12 @@ class RocoBridge:
             if self.server:
                 await self.server.broadcast_binary(frame)
             elif HAS_WEBSOCKETS and hasattr(self, 'ws_clients'):
-                dead = set()
-                for ws in self.ws_clients:
-                    try:
-                        await ws.send(frame)
-                    except Exception:
-                        dead.add(ws)
-                self.ws_clients.difference_update(dead)
+                # Not `await ws.send()` client by client: one slow reader would hold up every other. Each frame is a full
+                # LowState_, so a client that is behind just skips this one and gets the next.
+                ready = [ws for ws in self.ws_clients
+                         if getattr(ws, "transport", None) is None
+                         or ws.transport.get_write_buffer_size() <= CLIENT_SNDBUF_BYTES]
+                websockets.broadcast(ready, frame)
 
             elapsed = time.perf_counter() - loop_start
             sleep_time = max(0.001, interval - elapsed)
@@ -1474,6 +1530,9 @@ class RocoBridge:
                     print(f"[ROCO Bridge] Rejected connection: {reason}")
                     await websocket.close(1008, "forbidden")
                     return
+                sock = websocket.transport.get_extra_info("socket") if getattr(websocket, "transport", None) else None
+                if sock is not None:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, CLIENT_SNDBUF_BYTES)
                 self.ws_clients.add(websocket)
                 try:
                     async for message in websocket:
@@ -1481,6 +1540,9 @@ class RocoBridge:
                             self.on_teleop_message(message.encode('utf-8'))
                         elif isinstance(message, bytes):
                             self.on_teleop_message(message)
+                except websockets.ConnectionClosed as e:
+                    # e.g. a client that stopped reading misses the keepalive pings; not worth a traceback
+                    print(f"[ROCO Bridge] Client closed: {e}")
                 finally:
                     self.ws_clients.discard(websocket)
 

@@ -30,6 +30,7 @@ import json
 import math
 import os
 import re
+import socket
 import struct
 import sys
 import threading
@@ -45,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mujoco_roco_bridge import (  # noqa: E402
     LOOPBACK_HOSTS,
     LOW_STATE_BYTE_LENGTH,
+    MAX_CLIENT_LAG_S,
     MOTOR_COUNT,
     OFFSET_CRC,
     OFFSET_MOTOR_STATE_ARRAY,
@@ -1642,6 +1644,121 @@ def build_hello(args, limits: dict, source: str, extra: dict) -> dict:
 # ==============================================================================
 # Self-test
 # ==============================================================================
+async def _ws_server_checks() -> List[Tuple[bool, str]]:
+    """BuiltinWebSocketServer with raw-socket clients on loopback. Returns (passed, what) pairs."""
+    out: List[Tuple[bool, str]] = []
+    loop = asyncio.get_running_loop()
+
+    async def connect(rcvbuf: Optional[int] = None):
+        s = socket.socket()
+        if rcvbuf:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        s.setblocking(False)
+        await loop.sock_connect(s, ("127.0.0.1", port))
+        r, w = await asyncio.open_connection(sock=s)
+        w.write(b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        status = (await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), 2.0)).split(b"\r\n")[0]
+        return r, w, status
+
+    async def read_frame(r):
+        b1, b2 = await r.readexactly(2)
+        n = b2 & 0x7F
+        if n == 126:
+            n = struct.unpack("!H", await r.readexactly(2))[0]
+        elif n == 127:
+            n = struct.unpack("!Q", await r.readexactly(8))[0]
+        return b1 & 0x0F, await r.readexactly(n)
+
+    server = BuiltinWebSocketServer("127.0.0.1", 0, lambda payload: None, on_connect=lambda: ["greeting"])
+    await server.start()
+    port = server.server.sockets[0].getsockname()[1]
+    try:
+        fr, fw, status = await connect()
+        first = await asyncio.wait_for(read_frame(fr), 2.0)
+        out.append((status.endswith(b"101 Switching Protocols") and first == (0x1, b"greeting"),
+                    "a new client gets the greeting first"))
+        got: List[Tuple[float, int, bytes]] = []
+
+        async def fast_reader():
+            try:
+                while True:
+                    op, p = await read_frame(fr)
+                    got.append((time.monotonic(), op, p))
+            except (asyncio.IncompleteReadError, ConnectionError):
+                pass
+
+        reader = asyncio.ensure_future(fast_reader())
+        sr, sw, _ = await connect(rcvbuf=4096)
+        sw.transport.pause_reading()   # handshakes, then never reads
+        # 64 KiB frames fill a stuck client's socket buffers in about a second even when the kernel has auto-tuned them to MB.
+        payload, sent, dropped_at, late_first = bytes(65536), 0, None, None
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < MAX_CLIENT_LAG_S + 3.0:
+            await server.broadcast(payload)
+            sent += 1
+            if dropped_at is None and server.dropped_slow:
+                dropped_at = time.monotonic() - t0
+            if sent == 100:   # joins while frames are streaming
+                lr, lw, _ = await connect()
+                late_first = await asyncio.wait_for(read_frame(lr), 2.0)
+                lw.close()
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)
+        frames = [t for t, op, _ in got if op == 0x2]
+        gap = max(b - a for a, b in zip([t0] + frames, frames)) if frames else float("inf")
+        out.append((len(frames) == sent and gap < 0.15,
+                    f"the reading client got {len(frames)} of {sent} frames while the other was stuck, longest gap {gap * 1000:.0f} ms"))
+        out.append((server.dropped_slow == 1 and len(server.clients) == 1 and dropped_at is not None
+                    and dropped_at < MAX_CLIENT_LAG_S + 2.5,
+                    f"the stuck client is disconnected ({'never' if dropped_at is None else f'after {dropped_at:.1f} s'}), "
+                    f"the reading one is kept"))
+        sw.transport.resume_reading()
+        try:
+            while True:
+                await asyncio.wait_for(read_frame(sr), 2.0)
+        except (asyncio.IncompleteReadError, ConnectionError):
+            ended = True
+        except asyncio.TimeoutError:
+            ended = False
+        sw.close()
+        out.append((ended, "the stuck client's connection is closed, so its page reconnects and gets a full greeting"))
+        out.append((late_first == (0x1, b"greeting"), "a client joining while frames stream gets the greeting before them"))
+
+        fw.write(bytes([0x89, 0x83, 1, 2, 3, 4]) + bytes(b ^ m for b, m in zip(b"abc", (1, 2, 3))))
+        await asyncio.sleep(0.2)
+        out.append(((0xA, b"abc") in [(op, p) for _, op, p in got], "a ping is answered with a pong carrying its payload"))
+
+        n0 = len(got)
+        await server.broadcast(payload)
+        time.sleep(MAX_CLIENT_LAG_S + 0.5)   # the bridge itself stalls before the writers get a turn
+        await server.broadcast(payload)
+        await asyncio.sleep(0.2)
+        out.append((server.dropped_slow == 1 and len(server.clients) == 1 and len(got) - n0 == 2,
+                    "a stall of the bridge itself does not disconnect a client that reads"))
+
+        _, stuck_w, _ = await connect(rcvbuf=4096)
+        stuck_w.transport.pause_reading()
+        for _ in range(200):
+            await server.broadcast(payload)
+        t = time.monotonic()
+        try:
+            await asyncio.wait_for(server.stop(), 3.0)
+            stopped = True
+        except asyncio.TimeoutError:
+            stopped = False
+        out.append((stopped and not server.clients, f"stop() returns with a stuck client connected ({time.monotonic() - t:.2f} s)"))
+        reader.cancel()
+        fw.close()
+        stuck_w.close()
+    finally:
+        try:
+            await asyncio.wait_for(server.stop(), 3.0)
+        except asyncio.TimeoutError:
+            pass
+    return out
+
+
 def run_self_test() -> bool:
     ok = True
 
@@ -1924,6 +2041,13 @@ def run_self_test() -> bool:
     ev = book.take_pending()
     check(still and "pd:4" not in book.active and [e["event"] for e in ev] == ["open", "close"]
           and ev[1]["peakLevel"] == "critical" and ev[1]["peak"] == 101.0, "alert opens, escalates, holds 0.5 s, closes")
+
+    print("\n--- WebSocket server: a client that stops reading does not hold up the others ---")
+    try:
+        for cond, what in asyncio.run(asyncio.wait_for(_ws_server_checks(), 30.0)):
+            check(cond, what)
+    except asyncio.TimeoutError:
+        check(False, "WebSocket server checks finished in 30 s (a stuck client holds up broadcast())")
 
     print("\n" + "=" * 72)
     print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
