@@ -14,6 +14,8 @@ export interface ReportInput {
   state: MonitorState
   /** Display name of the robot profile. */
   profileName: string
+  /** How an imported robot's joints were tied to motors (motorOrderNote). Null or absent for a built-in robot. */
+  motorNote?: string | null
   generatedAt: Date
   timeline: TimelineModel
   /** Name of an alert for the report (joint names come from the active profile). */
@@ -94,6 +96,7 @@ export function buildReport(input: ReportInput): string {
   if (hello) {
     setup.push(['Bridge', `${hello.bridge}, protocol ${hello.protocol}, ${hello.rateHz} Hz, read-only`])
     setup.push(['Robot', `${input.profileName}, mode_machine ${hello.modeMachine ?? hello.limits.modeMachine ?? 'unknown'}${hello.limits.lockedJoints.length ? `, locked motors ${hello.limits.lockedJoints.join('/')}` : ''}`])
+    if (input.motorNote) setup.push(['Motor order', input.motorNote])
     if (hello.limits.ctrlConfig) setup.push(['Controller config', reportPath(hello.limits.ctrlConfig)])
     if (hello.limits.model) setup.push(['Robot model', reportPath(hello.limits.model)])
     if (hello.replay) setup.push(['Recording', `${reportPath(hello.replay.file)} in ${reportPath(hello.replay.store)}`])

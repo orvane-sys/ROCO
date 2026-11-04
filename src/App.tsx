@@ -45,6 +45,7 @@ import { evaluateProcedure, newReachedOk } from './utils/procedureModel'
 import { buildTimeline } from './utils/timelineModel'
 import { buildReport } from './utils/sessionReport'
 import { alertTitle } from './utils/monitorFormat'
+import { motorOrderNote } from './utils/motorMatch'
 import { addMarkNow } from './services/addMark'
 import { marksStore, useMarks, type MarkScope } from './services/marksStore'
 import { setPlotSet, setWindow } from './services/plotPrefs'
@@ -481,6 +482,7 @@ export function App() {
         buildReport({
           state: telemetryService.getMonitorState(),
           profileName: activeProfile.name,
+          motorNote: motorOrderNote(activeProfile.motorOrder, activeProfile.motorMatch),
           generatedAt: new Date(),
           timeline,
           alertTitle: (a) => alertTitle(a, activeProfile, monitor),

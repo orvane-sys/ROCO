@@ -31,6 +31,7 @@ import type {
   ReplayTimeline,
 } from '../types/monitor'
 import { PLOT_SLOTS, PlotRing } from './plotRing'
+import { matchMotorSlots } from '../utils/motorMatch'
 
 type TelemetryListener = (telemetry: RobotTelemetry) => void
 type StatusListener = (status: ConnectionStatus) => void
@@ -301,6 +302,11 @@ export class TelemetryStreamService {
   private withBridgeLimits(profile: RobotProfile): RobotProfile {
     const lim = this.monitor.hello?.limits
     if (!lim || profile.codecType !== 'unitree_hg_2092') return profile
+    // an imported robot lists its joints in its own order: tie each to the motor of the same name (limits below stay as they were)
+    if (profile.motorOrder === 'fileOrder') {
+      const r = matchMotorSlots(profile.joints, lim.jointNames)
+      profile = { ...profile, joints: r.joints, motorMatch: r.match }
+    }
     if (lim.modeMachine != null && profile.modeMachine !== lim.modeMachine) return profile
     const slot = new Map(lim.jointNames.map((n, i) => [n, i]))
     const locked = new Set(lim.lockedJoints)

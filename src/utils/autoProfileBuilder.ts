@@ -187,6 +187,8 @@ export function buildProfileFromParsedRobot(
     codecType: 'unitree_hg_2092',
     groups,
     joints: jointDefs,
+    // idx above is only the place in the file: the bridge's motor names decide the real slot (src/utils/motorMatch.ts)
+    motorOrder: 'fileOrder',
   }
 
   registerCustomRobotProfile(profile)

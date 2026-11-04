@@ -6,6 +6,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { parseRobotDescription } from './modelFormatParser'
 import { buildProfileFromParsedRobot } from './autoProfileBuilder'
+import { motorOrderNote } from './motorMatch'
 import { getRobotProfile, unregisterRobotProfile, type RobotProfile } from '../config/robotRegistry'
 import { telemetryService } from '../services/telemetryStream'
 
@@ -385,6 +386,18 @@ export async function importRobotFiles(files: FileList | File[]): Promise<Import
   // 7. Activate the imported profile, then free robots we no longer keep.
   telemetryService.setActiveRobotProfile(profile.id)
   evictOldImports(profile.id)
+
+  // the file's joint order need not be the robot's motor order: say how the joints were tied to motors (always shown, so the dialog stays open)
+  const active = telemetryService.getActiveRobotProfile()
+  const orderNote = motorOrderNote(active.motorOrder, active.motorMatch)
+  if (orderNote) {
+    const unchecked = !active.motorMatch || active.motorMatch.source === 'fileOrder'
+    warnings.push(
+      unchecked
+        ? `${orderNote} When a ROCO bridge connects they are matched to its motors by name. Check that each joint moves with the right motor.`
+        : orderNote,
+    )
+  }
 
   return { profile: getRobotProfile(profile.id), warnings }
 }

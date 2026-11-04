@@ -6,6 +6,7 @@ import type { MonitorState } from '../types/monitor'
 import { PLOT_SLOTS } from '../services/plotRing'
 import { useCursorSample, type CursorSample } from '../services/viewStore'
 import { formatDataTime } from '../utils/monitorFormat'
+import { motorOrderNote } from '../utils/motorMatch'
 import { Activity, AlertOctagon, Gauge, Flame, Compass, Layers, Rows3, LayoutGrid, Search, X } from 'lucide-react'
 import { cn } from '../utils/cn'
 
@@ -63,8 +64,9 @@ const getDemandTone = (ratio: number) => {
 function jointsAt(joints: JointState[], profile: RobotProfile, c: CursorSample): JointState[] {
   return joints.map((j) => {
     const di = profile.joints.findIndex((d) => d.id === j.id)
-    if (di < 0) return j
-    const b = c.i * PLOT_SLOTS + (profile.joints[di].sdkMotorIndex ?? di)
+    const slot = di < 0 ? -1 : profile.joints[di].sdkMotorIndex ?? di
+    if (slot < 0) return j // a joint with no motor in the bridge's list keeps its rest values
+    const b = c.i * PLOT_SLOTS + slot
     const q = c.ring.q[b]
     const tau = c.ring.tau[b]
     const qc = c.ring.qCmd[b]
@@ -140,6 +142,13 @@ export function MotorTelemetryGrid({
     [activeProfile]
   )
 
+  // imported robot: joints with no motor of that name in the bridge's list (slot -1) have no data to show
+  const noMotorIds = useMemo(
+    () => new Set(activeProfile.joints.filter((j) => j.sdkMotorIndex === -1).map((j) => j.id)),
+    [activeProfile]
+  )
+  const orderNote = motorOrderNote(activeProfile.motorOrder, activeProfile.motorMatch)
+
   const jointLabel = (joint: JointState, fallbackIdx: number) => {
     const idx = jointIndexMap.get(joint.id) ?? fallbackIdx
     return `J${String(idx + 1).padStart(2, '0')}`
@@ -183,6 +192,11 @@ export function MotorTelemetryGrid({
     <section aria-labelledby="actuators-heading" className="flex flex-col gap-3">
       {/* Title & joint group filter */}
       <div className="flex flex-col gap-2 px-1">
+        {orderNote && (
+          <p role="status" className={cn('text-xs', noMotorIds.size > 0 || !activeProfile.motorMatch ? 'text-warn-ink' : 'text-ink-muted')}>
+            {orderNote}
+          </p>
+        )}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
             <Activity className="w-5 h-5 text-accent" aria-hidden="true" />
@@ -344,6 +358,7 @@ export function MotorTelemetryGrid({
               {filteredJoints.map((joint, index) => {
                 const isSelected = selectedJointId === joint.id
                 const locked = lockedIds.has(joint.id)
+                const noMotor = noMotorIds.has(joint.id)
                 const target = heldTarget(joint)
                 const ratio = demandRatio(joint)
                 const demand = getDemandTone(ratio)
@@ -375,7 +390,11 @@ export function MotorTelemetryGrid({
                         {joint.name}
                       </button>
                     </th>
-                    {locked ? (
+                    {noMotor ? (
+                      <td colSpan={6} className="px-2 py-1 font-sans text-warn-ink">
+                        not in the bridge’s motor list — no data
+                      </td>
+                    ) : locked ? (
                       <td colSpan={6} className="px-2 py-1 font-sans text-warn-ink">
                         locked — reading invalid
                       </td>
@@ -405,8 +424,10 @@ export function MotorTelemetryGrid({
                         </td>
                       </>
                     )}
-                    <td className={cn('px-2 py-1 text-right', sim ? 'text-ink-muted font-sans' : temp.color)}>
-                      {sim ? (
+                    <td className={cn('px-2 py-1 text-right', sim || noMotor ? 'text-ink-muted font-sans' : temp.color)}>
+                      {noMotor ? (
+                        '—'
+                      ) : sim ? (
                         'n/a (sim)'
                       ) : (
                         <>
@@ -416,7 +437,9 @@ export function MotorTelemetryGrid({
                       )}
                     </td>
                     <td className="px-2 py-1 text-right">
-                      {sim ? (
+                      {noMotor ? (
+                        <span className="text-ink-muted font-sans">—</span>
+                      ) : sim ? (
                         <span className="text-ink-muted font-sans">n/a (sim)</span>
                       ) : fault ? (
                         <span className="inline-flex items-center gap-1 text-crit-ink font-semibold">

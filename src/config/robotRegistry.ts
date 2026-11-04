@@ -1,3 +1,4 @@
+import type { MotorMatch } from '../utils/motorMatch'
 import type { JointDefinition } from '../types/telemetry'
 
 export type RobotCategory = 'biped' | 'quadruped' | 'fixed_manipulator'
@@ -25,6 +26,13 @@ export interface RobotProfile {
   modeMachine?: number
   groups: RobotGroup[]
   joints: JointDefinition[]
+  /**
+   * fileOrder: an imported robot whose joints have no known motor slots, so they are matched by name to the bridge's motor list
+   * (src/utils/motorMatch.ts). Unset: the joints carry their own slots (built-in robots) and are never remapped.
+   */
+  motorOrder?: 'fixed' | 'fileOrder'
+  /** How the joints were matched to motors at the last bridge hello. Set with the active profile, never stored in the registry. */
+  motorMatch?: MotorMatch
 }
 
 // Unitree's published G1 type codes: 4 = 23-DoF, 5 = 29-DoF, 6 = 29-DoF with the waist roll/pitch locked

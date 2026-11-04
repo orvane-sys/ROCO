@@ -501,7 +501,8 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         snapshot.joints.forEach((joint, idx) => {
           let target = joint.position
           if (cs && defs) {
-            const q = cs.ring.q[cs.i * PLOT_SLOTS + (defs[idx]?.sdkMotorIndex ?? idx)]
+            const slot = defs[idx]?.sdkMotorIndex ?? idx
+            const q = slot >= 0 ? cs.ring.q[cs.i * PLOT_SLOTS + slot] : NaN
             if (Number.isFinite(q)) target = q
           }
           const current = smoothedJoints.get(joint.id)

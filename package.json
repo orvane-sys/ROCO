@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/prune-models.mjs",
-    "lint": "oxlint && node scripts/check-colors.mjs && node scripts/check-contrast.mjs && node scripts/check-alerts.mjs && node scripts/check-procedures.mjs && node scripts/check-timeline.mjs && node scripts/summarize-operator-test.mjs --self-test",
+    "lint": "oxlint && node scripts/check-colors.mjs && node scripts/check-contrast.mjs && node scripts/check-alerts.mjs && node scripts/check-profiles.mjs && node scripts/check-procedures.mjs && node scripts/check-timeline.mjs && node scripts/summarize-operator-test.mjs --self-test",
     "preview": "vite preview"
   },
   "dependencies": {
