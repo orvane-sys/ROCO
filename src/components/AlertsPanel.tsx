@@ -219,6 +219,7 @@ export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHis
   return (
     <section
       id="alerts"
+      data-tour="alerts"
       tabIndex={-1}
       aria-labelledby="alerts-heading"
       className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2 outline-none focus-visible:outline-2 focus-visible:outline-focus"

@@ -6,7 +6,13 @@ interface DialogProps {
   icon?: ReactNode
   onClose: () => void
   children: ReactNode
+  /** 'clear' leaves the page behind readable (the tour points at parts of it) */
+  backdrop?: 'dim' | 'clear'
+  /** where the panel sits, so it does not cover what the tour points at */
+  align?: 'center' | 'top' | 'bottom'
 }
+
+const ALIGN = { center: 'items-center', top: 'items-start', bottom: 'items-end' }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -15,7 +21,7 @@ const FOCUSABLE =
  * Modal dialog with Escape-to-close, backdrop click, a Tab focus trap, and focus restore to the
  * element that opened it. Focus lands on the first form field (else the first control) on open.
  */
-export function Dialog({ title, icon, onClose, children }: DialogProps) {
+export function Dialog({ title, icon, onClose, children, backdrop = 'dim', align = 'center' }: DialogProps) {
   const titleId = useId()
   const panelRef = useRef<HTMLDivElement | null>(null)
   const onCloseRef = useRef(onClose)
@@ -66,7 +72,7 @@ export function Dialog({ title, icon, onClose, children }: DialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sunken/80 backdrop-blur-sm"
+      className={`fixed inset-0 z-50 flex ${ALIGN[align]} justify-center p-4 ${backdrop === 'dim' ? 'bg-sunken/80 backdrop-blur-sm' : ''}`}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}

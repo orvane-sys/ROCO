@@ -148,7 +148,7 @@ export function StatusBar({
   const SrcIcon = src.Icon
 
   return (
-    <header className="border-b border-line/80 bg-sunken/80 backdrop-blur-md px-3 lg:px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-2 z-20 shrink-0">
+    <header data-tour="bar" className="border-b border-line/80 bg-sunken/80 backdrop-blur-md px-3 lg:px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-2 z-20 shrink-0">
       <h1 className="font-mono text-lg font-black tracking-wider text-ink flex items-center gap-2 mr-1">
         <span className="w-8 h-8 rounded-lg bg-gradient-to-tr from-accent-solid to-info flex items-center justify-center shrink-0" aria-hidden="true">
           <Bot className="w-5 h-5 text-on-accent" />

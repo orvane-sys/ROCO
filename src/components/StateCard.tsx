@@ -11,7 +11,7 @@ export function StateCard({ state }: { state: MonitorState }) {
   const changes = fsm.events.filter((e) => e.to)
 
   return (
-    <section aria-labelledby="state-heading" className="bg-surface/80 border border-line/90 rounded-xl p-4 flex flex-col gap-3 shadow-xl">
+    <section aria-labelledby="state-heading" data-tour="state" className="bg-surface/80 border border-line/90 rounded-xl p-4 flex flex-col gap-3 shadow-xl">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Eye className="w-5 h-5 text-accent" aria-hidden="true" />

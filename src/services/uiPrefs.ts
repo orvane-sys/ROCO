@@ -118,6 +118,9 @@ function apply(): void {
   root.dataset.theme = state.resolvedTheme
   // rem units follow this, so every size on the page, and the canvases, scale with it
   root.style.fontSize = state.textScale === 100 ? '' : `${state.textScale}%`
+  // the browser's own bar (phones) takes the header's colour, from the theme's tokens
+  const bar = getComputedStyle(root).getPropertyValue('--c-sunken').trim()
+  if (bar) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bar)
 }
 
 function refresh(): void {
