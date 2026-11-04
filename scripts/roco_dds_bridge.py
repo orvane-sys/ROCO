@@ -2736,9 +2736,12 @@ def run_self_test() -> bool:
                       (t_base + 12.0, "info", "FSM: Change state from Velocity to squat"),
                       (t_base + 16.0, "info", "FSM: Change state from squat to Velocity")]
 
+        # without deploy_lock (CI) there is no temp_warn, so no alert: use the deploy config's own thresholds then
+        L_syn = {**L, "safety": {"temp_warn": 65, "temp_stop": 80, "temp_index": [0, 1], **L["safety"]}}
+
         def open_syn(index=True):
             store, prefix = resolve_replay(os.path.join(d, "syn"))
-            mon_ = Monitor(L, "replay")
+            mon_ = Monitor(L_syn, "replay")
             rp_ = Replayer(store, prefix, mon_, list(log_events), index=index)
             if index:
                 end_ = time.time() + 10
