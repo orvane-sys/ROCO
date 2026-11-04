@@ -95,6 +95,13 @@ The bridge prints a link; open it. Without a bridge the page shows a "Not connec
 
 Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, procedure and timeline checks), `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`.
 
+Regression tests against real bridge processes (about 1 minute, Python and Node only, writes its own 60 s recording to a temporary folder):
+`python3 scripts/regress.py`. It starts bridges on free ports and checks that a client that stops reading does not hold up the others,
+that recordings cut off mid-write open and play to the end, and that the session report after a jump equals the report of the played
+run. `--live` adds an old run's log (state stays unknown) and a bridge restart (new session, its own alert history); these use a
+synthetic LowState_ on DDS domain 42, so a simulator or robot on domain 0 never sees it. It prints PASS / FAIL / SKIP per case and
+exits 1 on a failure. It is not part of `npm run lint`.
+
 ## Safety
 
 - The bridge subscribes only. A guard stops any DDS writer from being created in the process, so it cannot command the
