@@ -31,6 +31,7 @@ import math
 import os
 import pickle
 import re
+import secrets
 import signal
 import socket
 import struct
@@ -2115,6 +2116,9 @@ def build_hello(args, limits: dict, source: str, extra: dict) -> dict:
         "rateHz": args.rate,
         "limits": limits,
         "manual": manual_info(getattr(args, "manual", None) or MANUAL_PATH),
+        # One id per bridge start: a page that reconnects with the same id knows the bridge kept running (a reload or a dropped
+        # link); a new id means a restart, so the alerts it kept from before belong to the earlier session.
+        "session": {"id": secrets.token_hex(8), "startedAt": time.time()},
         **extra,
     }
 
@@ -2633,6 +2637,28 @@ def run_self_test() -> bool:
     ev = book.take_pending()
     check(still and "pd:4" not in book.active and [e["event"] for e in ev] == ["open", "close"]
           and ev[1]["peakLevel"] == "critical" and ev[1]["peak"] == 101.0, "alert opens, escalates, holds 0.5 s, closes")
+    # live keeps the history too: a client that connects late (a page reload) gets it in its first full frame
+    live = Monitor(L, "sim")
+    check(live.fsm_frame(full=True).get("alertHistory") is None, "no alert history key while the log is off")
+    live.alerts.log, live.alerts.log_max = [], 500
+    live.alerts.step(1.0, "ls", {"tilt": ("warn", "tilt", None, 25.0, "x")})
+    live.alerts.step(2.0, "ls", {})
+    live.alerts.step(3.0, "ls", {})
+    hist = live.fsm_frame(full=True).get("alertHistory") or []
+    check([e["event"] for e in hist] == ["open", "close"] and hist[0]["id"] == "tilt" and hist[0]["since"] == 1.0
+          and live.alerts.take_pending() and not live.fsm_rebuilt,
+          "live: the full fsm frame carries the alert history, and the broadcast backlog is left alone")
+    big = AlertBook()
+    big.log, big.log_max = [], 500
+    for i in range(2500):
+        big.step(float(i), "ls", {"x": ("warn", "tilt", None, 1.0, "x")})
+        big.step(i + 0.9, "ls", {})
+    check(len(big.log) <= 1000 and big.log[-1]["event"] == "close" and big.log[-1]["since"] == 2499.0,
+          f"live alert history stays bounded over 5000 events ({len(big.log)} kept, newest last)")
+    ha = build_hello(argparse.Namespace(rate=30, iface="lo", domain=1), L, "sim", {})
+    hb = build_hello(argparse.Namespace(rate=30, iface="lo", domain=1), L, "sim", {})
+    check(re.fullmatch(r"[0-9a-f]{16}", ha["session"]["id"]) and ha["session"]["id"] != hb["session"]["id"]
+          and abs(ha["session"]["startedAt"] - time.time()) < 5, "hello carries a session id that differs per bridge start")
 
     print("\n--- jump with whole-run numbers: a seek restored from checkpoints equals playing from the start ---")
     import pickle as _pickle
@@ -2843,6 +2869,9 @@ def main():
     else:
         odom = [args.odom_topic]
     monitor = Monitor(limits, source)
+    # Live keeps the alert history too (an entry per alert opening or closing, never per sample), so a page that reloads or
+    # connects late gets it back in its first full frame.
+    monitor.alerts.log, monitor.alerts.log_max = [], 500
     dds = DdsSource(monitor, args.iface, args.domain, odom)
     dds.start()
     log_path = None if args.no_ctrl_log else (args.ctrl_log or dp["ctrl_log"])

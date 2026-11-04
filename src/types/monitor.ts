@@ -52,6 +52,8 @@ export interface BridgeHello {
   replay?: { store: string; file: string; notes: string[] }
   /** The test manual the bridge can read (SHA-256 of its bytes), or null when it is not on this machine. Absent on an older bridge. */
   manual?: { file: string; sha256: string; bytes: number } | null
+  /** One id per bridge start: the same id on a reconnect means the bridge kept running. Absent on an older bridge. */
+  session?: { id: string; startedAt: number }
 }
 
 export interface MonitorAlert {
@@ -71,6 +73,24 @@ export interface MonitorAlert {
 export interface AlertEvent extends MonitorAlert {
   event: 'open' | 'close'
   durationS?: number
+  /** Kept from an earlier bridge session of the same day (the page's own memory, not sent by the bridge). */
+  earlier?: boolean
+  /** Closed by the page because the bridge that raised it stopped and the new one did not see it again. */
+  endedByRestart?: boolean
+}
+
+/**
+ * An alert that was open when the bridge stopped and opened again within seconds of the next start: one occurrence for the operator,
+ * with its first-out time kept. `newSince` is the time the new bridge gave it; the page shows `since`.
+ */
+export interface AlertCarry {
+  since: number
+  /** Not set until the new bridge has opened the alert again. */
+  newSince?: number
+  /** Data time the earlier bridge was last heard, or null when that was not recorded. */
+  gapFrom: number | null
+  /** The new bridge's start. */
+  gapTo: number
 }
 
 /** A g1_ctrl info line the bridge parsed into numbers (TEST_MANUAL section 3 checks these by eye). */
@@ -226,4 +246,8 @@ export interface MonitorState {
   timeline?: ReplayTimeline | null
   /** Opened and closed alerts, newest last (bounded). */
   alertLog: AlertEvent[]
+  /** Live only: alerts carried over a bridge restart, by alert id. Absent when there are none. */
+  alertCarry?: Record<string, AlertCarry>
+  /** Data time up to which an alert of the earlier session may still be seen again (carried). Absent once decided. */
+  alertCarryUntil?: number
 }

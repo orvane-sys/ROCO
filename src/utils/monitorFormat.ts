@@ -1,5 +1,5 @@
 import type { RobotProfile } from '../config/robotRegistry'
-import type { MonitorState } from '../types/monitor'
+import type { AlertCarry, MonitorState } from '../types/monitor'
 
 /**
  * g1_ctrl (unitree_rl_mjlab deploy_lock) operator keys, from the header comment of its config.yaml.
@@ -33,6 +33,15 @@ export function formatDataTime(t: number | null | undefined, state: MonitorState
   const d = new Date(t * 1000)
   const pad = (n: number, w = 2) => String(n).padStart(w, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+}
+
+/** "open since 10:41:07, before a bridge restart; not watched from 10:42:30 to 10:42:33": the first time of a carried alert and what was missed. */
+export function carriedNote(c: AlertCarry, state: MonitorState): string {
+  const gap =
+    c.gapFrom !== null && c.gapFrom < c.gapTo
+      ? `not watched from ${formatDataTime(c.gapFrom, state)} to ${formatDataTime(c.gapTo, state)}`
+      : `not watched before ${formatDataTime(c.gapTo, state)}`
+  return `open since ${formatDataTime(c.since, state)}, before a bridge restart; ${gap}`
 }
 
 /**

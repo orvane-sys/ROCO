@@ -1,4 +1,4 @@
-import type { AlertLevel, FsmEvent, FsmSegment, MonitorAlert, MonitorState } from '../types/monitor'
+import type { AlertCarry, AlertEvent, AlertLevel, FsmEvent, FsmSegment, MonitorAlert, MonitorState } from '../types/monitor'
 import {
   ABORT_LOG_LEVELS,
   ABORT_LOG_PATTERNS,
@@ -99,6 +99,12 @@ export interface AlertItem {
   acknowledged: boolean
   shelved: boolean
   durationS?: number
+  /** Kept from an earlier bridge session of the same day (not carried over: that one shows `carried`). */
+  earlier?: boolean
+  /** The earlier bridge stopped while this was open; the new one opened it again, so it keeps its first time. */
+  carried?: AlertCarry
+  /** The bridge that raised it stopped and the new one did not see it again. */
+  endedByRestart?: boolean
 }
 
 export interface AlertGroup {
@@ -215,16 +221,27 @@ export function buildAlertView(state: MonitorState, controls: AlertControls = NO
   const jointNames = state.hello?.limits.jointNames ?? []
   const changes = stateChanges(state.fsm.events)
   const passive = passiveChanges(changes, state.fsm.events)
-  const activeList = state.aux?.alerts ?? []
+  const carry = state.alertCarry
+  // a live alert the earlier bridge also had open keeps its first time (the log's events were put back when they arrived)
+  const activeList = (state.aux?.alerts ?? []).map((a) => {
+    const c = carry?.[a.id]
+    return c && c.newSince === a.since ? { ...a, since: c.since } : a
+  })
 
   const items = new Map<string, AlertItem>()
-  const make = (a: MonitorAlert, active: boolean, dur?: number) =>
-    buildItem(a, active, dur, changes, passive, state.fsm.state, jointNames, controls)
+  const make = (a: MonitorAlert, active: boolean, dur?: number, ev?: AlertEvent) => {
+    const it = buildItem(a, active, dur, changes, passive, state.fsm.state, jointNames, controls)
+    const c = carry?.[a.id]
+    if (c && c.newSince !== undefined && c.since === a.since) it.carried = c
+    else if (ev?.earlier) it.earlier = true
+    if (ev?.endedByRestart) it.endedByRestart = true
+    return it
+  }
   // log first (open then close events), then the live alerts override: they are the current truth
   for (const e of state.alertLog) {
     const k = occurrenceKey(e)
-    if (e.event === 'close') items.set(k, make(e, false, e.durationS))
-    else if (!items.has(k)) items.set(k, make(e, true))
+    if (e.event === 'close') items.set(k, make(e, false, e.durationS, e))
+    else if (!items.has(k)) items.set(k, make(e, true, undefined, e))
   }
   const activeKeys = new Set<string>()
   for (const a of activeList) {

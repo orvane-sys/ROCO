@@ -32,6 +32,9 @@ import type {
 } from '../types/monitor'
 import { PLOT_SLOTS, PlotRing } from './plotRing'
 import { matchMotorSlots } from '../utils/motorMatch'
+import { alertHistoryStore, alertScopeKey } from './alertHistoryStore'
+import { reduceAux, reduceFsm, reduceHello } from './monitorReducer'
+import type { AlertPersist } from './monitorReducer'
 
 type TelemetryListener = (telemetry: RobotTelemetry) => void
 type StatusListener = (status: ConnectionStatus) => void
@@ -40,8 +43,6 @@ type RobotProfileListener = (profile: RobotProfile) => void
 type NoticeListener = (message: string | null) => void
 type MonitorListener = (state: MonitorState) => void
 
-const MAX_FSM_EVENTS = 200
-const MAX_ALERT_LOG = 200
 /** Odometry older than this no longer counts as a measured body velocity. */
 const ODOM_FRESH_MS = 500
 
@@ -328,8 +329,29 @@ export class TelemetryStreamService {
     }
   }
 
+  /** The live bridge session whose alerts are being kept in the alert history store (null: replay, demo). */
+  private alertScope: { scope: string; session: string } | null = null
+
+  private persistAlerts(p: AlertPersist): void {
+    const a = this.alertScope
+    if (!a) return
+    alertHistoryStore.add(a.scope, a.session, p.events)
+    if (p.carry) alertHistoryStore.setCarry(a.scope, a.session, p.carry)
+  }
+
   private handleHello(hello: BridgeHello): void {
-    this.setMonitor({ hello })
+    alertHistoryStore.end()
+    if (hello.source === 'replay') {
+      this.alertScope = null
+      this.setMonitor(reduceHello(hello, null, ''))
+    } else {
+      const scope = alertScopeKey(hello)
+      const session = hello.session?.id ?? `page-${Date.now().toString(36)}`
+      this.alertScope = { scope, session }
+      const restored = alertHistoryStore.load(scope)
+      alertHistoryStore.begin(scope, session)
+      this.setMonitor(reduceHello(hello, restored, session))
+    }
     if (hello.readOnly && this.isEmergencyStopped) this.setEmergencyStop(false)
     const mm = hello.modeMachine ?? hello.limits?.modeMachine
     const detected = mm ? getProfileIdByModeMachine(mm) : null
@@ -341,29 +363,17 @@ export class TelemetryStreamService {
   }
 
   private handleFsm(frame: FsmFrame): void {
-    const prev = this.monitor.fsm
-    const events = frame.full ? [...frame.events] : [...prev.events, ...frame.events]
     if (frame.full && this.monitor.replay) this.plotRing.clear() // a seek: the plotted past is gone
-    this.setMonitor({
-      fsm: {
-        state: frame.state,
-        since: frame.since,
-        events: events.length > MAX_FSM_EVENTS ? events.slice(-MAX_FSM_EVENTS) : events,
-        segments: frame.segments ?? (frame.full ? [] : prev.segments),
-        segment: frame.segment,
-      },
-      // after a replay seek the alert history is what the bridge says it is at the cursor (empty from a bridge that restarts its numbers)
-      ...(frame.full && this.monitor.replay ? { alertLog: (frame.alertHistory ?? []).slice(-MAX_ALERT_LOG) } : {}),
-    })
+    const r = reduceFsm(this.monitor, frame)
+    this.setMonitor(r.patch)
+    if (r.persist) this.persistAlerts(r.persist)
   }
 
   private handleAux(aux: AuxFrame): void {
-    let alertLog = this.monitor.alertLog
-    if (aux.alertEvents.length) {
-      alertLog = [...alertLog, ...aux.alertEvents]
-      if (alertLog.length > MAX_ALERT_LOG) alertLog = alertLog.slice(-MAX_ALERT_LOG)
-    }
-    this.setMonitor({ aux, alertLog, fsm: { ...this.monitor.fsm, segment: aux.segment } })
+    const r = reduceAux(this.monitor, aux)
+    this.setMonitor(r.patch)
+    if (r.persist) this.persistAlerts(r.persist)
+    alertHistoryStore.touch(aux.t)
     this.applyAuxToSnapshot()
     this.recordPlotSample(aux)
     // Paused replay or a silent robot: no binary frames, but commands and alerts still change.
@@ -518,6 +528,7 @@ export class TelemetryStreamService {
 
   private setStatus(newStatus: ConnectionStatus): void {
     if (this.status !== newStatus) {
+      if (newStatus === 'DISCONNECTED' || newStatus === 'CONNECTING') alertHistoryStore.end()
       this.status = newStatus
       this.statusListeners.forEach((listener) => listener(newStatus))
     }

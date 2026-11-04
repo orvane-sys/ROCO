@@ -1,4 +1,4 @@
-import type { FsmSegment, MonitorState } from '../types/monitor'
+import type { AlertEvent, FsmSegment, MonitorState } from '../types/monitor'
 import { FALLBACK_RESPONSE, RESPONSES } from '../config/alertPolicy'
 import type { AbortCheck } from './alertModel'
 import { KIND_LABEL, SOURCE_LABEL, formatDataTime, formatDuration, reportPath, sourceBadge } from './monitorFormat'
@@ -54,6 +54,45 @@ const MANUAL_NOTE = {
   unknown: 'not reported (older bridge)',
 }
 
+
+interface EarlierAlert {
+  a: TimelineAlert
+  note: string
+  /** Set when there is no close to measure from. */
+  openFor: string
+}
+
+/** One row per alert occurrence in the page's log that began before `t0` or that an earlier bridge session raised, oldest first. */
+function earlierAlertRows(state: MonitorState, shown: ReadonlySet<string>, t0: number): EarlierAlert[] {
+  const byKey = new Map<string, { open: AlertEvent | null; close: AlertEvent | null }>()
+  for (const e of state.alertLog) {
+    const k = `${e.id}@${e.since}`
+    const slot = byKey.get(k) ?? { open: null, close: null }
+    if (e.event === 'open') slot.open = e
+    else slot.close = e
+    byKey.set(k, slot)
+  }
+  const out: EarlierAlert[] = []
+  for (const [key, { open, close }] of byKey) {
+    const e = close ?? open
+    if (!e || shown.has(key)) continue
+    const carried = state.alertCarry?.[e.id]?.since === e.since
+    if (!e.earlier && !carried && e.since >= t0 - 1e-6) continue
+    const until = close ? (close.durationS !== undefined ? close.since + close.durationS : close.last) : null
+    const note = close?.endedByRestart
+      ? 'ended when the bridge stopped'
+      : carried
+        ? 'open when the bridge stopped; seen again after the restart'
+        : close
+          ? 'cleared'
+          : 'no close seen'
+    const c = state.alertCarry?.[e.id]
+    const stillOpen = carried && !close && (state.aux?.alerts ?? []).some((x) => x.id === e.id && x.since === c?.newSince)
+    out.push({ a: { key, id: e.id, kind: e.kind, joint: e.joint, level: e.peakLevel, t: e.since, until }, note, openFor: stillOpen ? 'still open' : 'no close seen' })
+  }
+  return out.sort((x, y) => x.a.t - y.a.t)
+}
+
 export function buildReport(input: ReportInput): string {
   const { state, timeline, procedure } = input
   const hello = state.hello
@@ -79,7 +118,8 @@ export function buildReport(input: ReportInput): string {
   out.push(`- Source: ${SOURCE_LABEL[hello?.source ?? ''] ?? 'unknown'}${state.replay ? ` (${state.replay.file})` : ''}`)
   out.push(`- Data from ${fmt(timeline.t0)} to ${fmt(timeline.t1)} (${formatDuration(timeline.t1 - timeline.t0)})${state.replay && timeline.playedTo !== null && timeline.playedTo < timeline.t1 - 0.5 ? `; played to ${fmt(timeline.playedTo)}` : ''}`)
   out.push(`- g1_ctrl states: ${path.length ? path.join(' → ') : 'none seen'}`)
-  out.push(`- Alerts: ${count('critical')} critical, ${count('warn')} warning, ${count('info')} info`)
+  const before = earlierAlertRows(state, new Set(alerts.map((a) => a.key)), timeline.t0)
+  out.push(`- Alerts: ${count('critical')} critical, ${count('warn')} warning, ${count('info')} info${before.length ? `; ${before.length} more from before this bridge started (section ${procedure ? 7 : 6})` : ''}`)
   out.push(
     tripped.length
       ? `- Abort checks tripped: ${tripped.map((c) => c.label).join('; ')}`
@@ -166,6 +206,21 @@ export function buildReport(input: ReportInput): string {
           const r = RESPONSES[a.kind] ?? FALLBACK_RESPONSE
           return [fmt(a.t), levelWord(a.level), input.alertTitle(a) || KIND_LABEL[a.kind] || a.kind, a.until !== null ? formatDuration(a.until - a.t) : openWord(timeline), `${a.level === 'critical' ? r.critical : r.warn} (${r.ref})`]
         }),
+      ),
+      '',
+    )
+  }
+
+  // alerts the timeline above does not show because they began before this page's data: kept from an earlier bridge session today,
+  // or still open from it (their first time is kept)
+  if (before.length > 0) {
+    const restartedAt = state.hello?.session?.startedAt
+    out.push(
+      `Alerts from before this bridge started${restartedAt !== undefined ? ` (it was started at ${fmt(restartedAt)})` : ''}. Nothing was watched while the bridge was down.`,
+      '',
+      ...table(
+        ['Opened', 'Level', 'Alert', 'Open for', 'Note'],
+        before.map((b) => [fmt(b.a.t), levelWord(b.a.level), input.alertTitle(b.a) || KIND_LABEL[b.a.kind] || b.a.kind, b.a.until !== null ? formatDuration(b.a.until - b.a.t) : b.openFor, b.note]),
       ),
       '',
     )

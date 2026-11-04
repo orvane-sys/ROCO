@@ -4,7 +4,7 @@ import type { RobotProfile } from '../config/robotRegistry'
 import type { EffectiveLevel } from '../config/alertPolicy'
 import type { MonitorState } from '../types/monitor'
 import type { AlertGroup, AlertItem, AlertView } from '../utils/alertModel'
-import { alertTitle, formatDataTime } from '../utils/monitorFormat'
+import { alertTitle, carriedNote, formatDataTime } from '../utils/monitorFormat'
 import { acknowledge, shelve, unshelve, unshelveAll } from '../services/alertControls'
 import { cn } from '../utils/cn'
 
@@ -79,12 +79,14 @@ function AlertRow({ item, state, profile, onSelectSlot, label, history = false }
               {history && item.durationS !== undefined ? ` · ${(item.durationS * 1000).toFixed(0)} ms` : ''}
             </span>
           </div>
-          {(label || item.acknowledged || peakCrit || (!item.active && !history) || item.follows) && (
+          {(label || item.acknowledged || peakCrit || (!item.active && !history) || item.follows || item.earlier || item.endedByRestart) && (
             <div className="flex flex-wrap gap-1.5">
               {label && <span className={cn(tag, 'font-semibold')}>{label}</span>}
               {peakCrit && <span className={tag}>peak was critical</span>}
               {!item.active && !history && <span className={tag}>cleared{item.durationS !== undefined ? ` after ${(item.durationS * 1000).toFixed(0)} ms` : ''}</span>}
               {item.follows && !label && <span className={tag}>after the change to Passive</span>}
+              {item.endedByRestart && <span className={tag}>ended when the bridge stopped</span>}
+              {item.earlier && !item.endedByRestart && <span className={tag}>earlier bridge session</span>}
               {item.acknowledged && item.active && (
                 <span className={tag}>
                   <Check className="w-3 h-3" aria-hidden="true" />
@@ -94,6 +96,7 @@ function AlertRow({ item, state, profile, onSelectSlot, label, history = false }
             </div>
           )}
           <p className="text-xs text-ink break-words">{a.text}</p>
+          {item.carried && <p className="text-xs text-ink-muted">{carriedNote(item.carried, state)}</p>}
           {!history && item.level !== 'info' && item.active && (
             <p className="text-xs text-ink">
               <span className="font-semibold">Do: </span>
