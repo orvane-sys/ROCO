@@ -13,16 +13,16 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # the clone-size check below counts the whole history
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
           cache: pip
@@ -32,11 +32,14 @@ jobs:
         run: npm ci
 
       - name: Install the bridge's packages
-        # unitree_sdk2py at the commit ROCO was checked against. --no-deps: it lists opencv-python, which no module it
-        # imports needs.
+        # unitree_sdk2py at the commit ROCO was checked against, used from its source folder as on the dev PC: a pip build
+        # leaves out unitree_sdk2py/b2 (no __init__.py), which the package's own __init__ imports.
         run: |
           python -m pip install numpy pyyaml pyflakes cyclonedds==0.10.2
-          python -m pip install --no-deps "git+https://github.com/unitreerobotics/unitree_sdk2_python.git@a035adeaa6f8ea171bef9a43e8477abb87a0b35e"
+          git clone --quiet https://github.com/unitreerobotics/unitree_sdk2_python.git "$RUNNER_TEMP/unitree_sdk2_python"
+          git -C "$RUNNER_TEMP/unitree_sdk2_python" checkout --quiet a035adeaa6f8ea171bef9a43e8477abb87a0b35e
+          echo "PYTHONPATH=$RUNNER_TEMP/unitree_sdk2_python" >> "$GITHUB_ENV"
+          PYTHONPATH="$RUNNER_TEMP/unitree_sdk2_python" python -c "from unitree_sdk2py.core import channel; print('DDS packages import')"
 
       - name: Type check
         run: npx tsc -b
