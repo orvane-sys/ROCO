@@ -335,13 +335,12 @@ export function App() {
         return
       }
       if (anyDialogOpen || e.repeat || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(document.activeElement)) return
+      // Monitor only: in drive mode / would move the focus into the filter box, and the driving keys would type there.
+      if (!isMonitor) return
       if (e.key === '/') {
         e.preventDefault()
         goToWorkspace('analyze', 'joint-filter')
-        return
-      }
-      if (!isMonitor) return
-      if (e.key === '1' || e.key === '2' || e.key === '3') {
+      } else if (e.key === '1' || e.key === '2' || e.key === '3') {
         e.preventDefault()
         goToWorkspace(WORKSPACES[Number(e.key) - 1].id)
       } else if (e.key === '?') {
@@ -393,8 +392,8 @@ export function App() {
     if (isMonitor) {
       for (const w of WORKSPACES) list.push({ id: `ws-${w.id}`, group: 'Workspace', label: `${w.label}: ${w.hint}`, keywords: w.label, hint: w.key, run: () => goToWorkspace(w.id) })
       list.push({ id: 'alerts', group: 'Go to', label: 'Alerts', keywords: 'first-out critical warning', run: () => goToWorkspace('run', 'alerts') })
+      list.push({ id: 'joint-filter', group: 'Go to', label: 'Filter the joint table', hint: '/', run: () => goToWorkspace('analyze', 'joint-filter') })
     }
-    list.push({ id: 'joint-filter', group: 'Go to', label: 'Filter the joint table', hint: '/', run: () => goToWorkspace('analyze', 'joint-filter') })
     for (const j of activeProfile.joints) {
       list.push({
         id: `joint-${j.id}`,

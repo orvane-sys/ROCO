@@ -37,7 +37,8 @@ def page_url(web_port: int, bridge_port: int, token=None) -> str:
 
 def bridge_command(args) -> list:
     # --page-port makes the bridge print the address of this page, not the dev server's
-    cmd = [sys.executable, BRIDGE, "--port", str(args.port), "--page-port", str(args.web_port)]
+    # --exit-with-stdin: the bridge stops when this launcher is gone, even after a kill -9 (its stdin is our pipe)
+    cmd = [sys.executable, BRIDGE, "--port", str(args.port), "--page-port", str(args.web_port), "--exit-with-stdin"]
     if args.mode == "replay":
         cmd += ["--replay", args.target]
     elif args.mode == "robot":
@@ -57,6 +58,32 @@ def port_free(port: int, host: str = LOOPBACK) -> bool:
         except OSError:
             return False
     return True
+
+
+def _die_with_parent() -> None:
+    """In the bridge, before it starts (Linux): the kernel sends it SIGTERM when this launcher dies, however it dies."""
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(1, signal.SIGTERM)   # 1 = PR_SET_PDEATHSIG
+    except Exception:
+        pass
+
+
+def wait_listening(proc: subprocess.Popen, port: int, note_after_s: float = 15.0) -> bool:
+    """True once the bridge accepts connections on its port, False if it exits first. A long recording can take a while to
+    open, so after note_after_s this says so and keeps waiting."""
+    t0, noted = time.monotonic(), False
+    while proc.poll() is None:
+        try:
+            socket.create_connection((LOOPBACK, port), 0.5).close()
+            return True
+        except OSError:
+            pass
+        if not noted and time.monotonic() - t0 > note_after_s:
+            print("[roco] the bridge is still starting (a long recording takes a while to open)")
+            noted = True
+        time.sleep(0.1)
+    return False
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -108,16 +135,20 @@ def run(args) -> int:
             print(f"[roco] port {port} ({name}) is already in use. Is another roco or bridge running? Use --port / --web-port to change it.")
             return 2
     server = make_server(DIST, args.web_port)
-    threading.Thread(target=server.serve_forever, name="web", daemon=True).start()
     cmd = bridge_command(args)
     print("[roco] starting the bridge: " + " ".join(cmd[1:]))
-    bridge = subprocess.Popen(cmd)
-    url = page_url(args.web_port, args.port, os.environ.get("ROCO_BRIDGE_TOKEN"))
-    print(f"[roco] open {url}")
-    if args.open:
-        import webbrowser
-        webbrowser.open(url)
+    # Started before the web thread: preexec_fn is not safe once this process has threads.
+    bridge = subprocess.Popen(cmd, stdin=subprocess.PIPE, preexec_fn=_die_with_parent if sys.platform.startswith("linux") else None)
+    threading.Thread(target=server.serve_forever, name="web", daemon=True).start()
     try:
+        if not wait_listening(bridge, args.port):
+            print(f"[roco] the bridge stopped before it was ready (exit code {bridge.returncode}); see its message above")
+            return bridge.returncode or 1
+        url = page_url(args.web_port, args.port, os.environ.get("ROCO_BRIDGE_TOKEN"))
+        print(f"[roco] open {url}")
+        if args.open:
+            import webbrowser
+            webbrowser.open(url)
         while bridge.poll() is None:
             time.sleep(0.2)
         print(f"[roco] the bridge stopped (exit code {bridge.returncode})")
@@ -147,11 +178,11 @@ def self_test() -> bool:
 
     print("roco launcher self-test")
     _, a = parse(["sim"])
-    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "8780", "--iface", "lo"], "sim: bridge on the loopback interface")
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "8780", "--exit-with-stdin", "--iface", "lo"], "sim: bridge on the loopback interface")
     _, a = parse(["robot", "enp2s0", "--port", "9000"])
-    check(bridge_command(a)[1:] == [BRIDGE, "--port", "9000", "--page-port", "8780", "--iface", "enp2s0", "--source", "robot"], "robot: interface and source 'robot'")
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "9000", "--page-port", "8780", "--exit-with-stdin", "--iface", "enp2s0", "--source", "robot"], "robot: interface and source 'robot'")
     _, a = parse(["replay", "/x/log.zip:stand", "--web-port", "9100"])
-    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "9100", "--replay", "/x/log.zip:stand"], "replay: the path as given, the bridge told the page's port")
+    check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "9100", "--exit-with-stdin", "--replay", "/x/log.zip:stand"], "replay: the path as given, the bridge told the page's port")
     _, a = parse(["sim", "--deploy-dir", "/opt/dl"])
     check(bridge_command(a)[-2:] == ["--deploy-dir", "/opt/dl"], "the deploy folder is passed on only when given")
     check(page_url(8780, 8765) =="http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765", "page address names the bridge and monitor mode")
@@ -183,6 +214,21 @@ def self_test() -> bool:
             except OSError:
                 pass
         check(port_free(port), "a stopped server frees its port")
+    # B9: the address is printed only once the bridge listens, and never when it exits first
+    with socket.socket() as s:
+        s.bind((LOOPBACK, 0))
+        port = s.getsockname()[1]
+    late = subprocess.Popen([sys.executable, "-c", "import socket, time; time.sleep(0.6); s = socket.socket(); "
+                             f"s.bind(('{LOOPBACK}', {port})); s.listen(); time.sleep(5)"])
+    t = time.monotonic()
+    try:
+        ready = wait_listening(late, port)
+        check(ready and time.monotonic() - t >= 0.5, f"waits until the bridge listens ({time.monotonic() - t:.1f} s)")
+    finally:
+        late.kill()
+        late.wait()
+    early = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    check(not wait_listening(early, port) and early.returncode == 3, "a bridge that exits first gives no address")
     print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
     return ok
 

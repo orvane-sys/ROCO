@@ -2,7 +2,7 @@
 """
 Regression tests for the ROCO bridge against real processes (the audit's reproductions, repeatable).
 
-  python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump  (about 60 s)
+  python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump, R6 launcher  (about 60 s)
   python3 scripts/regress.py --live     # also R3 old log, no --log, and R5 bridge restart (DDS domain 42, needs unitree_sdk2py)
 
 Standard library only. It writes its own 60 s recording to a temporary folder (no files in ~ are used), starts each bridge on a
@@ -34,6 +34,7 @@ from typing import List, Optional, Tuple
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BRIDGE = os.path.join(HERE, "roco_dds_bridge.py")
+LAUNCHER = os.path.join(HERE, "roco")
 DOMAIN = 42                     # private DDS domain of the live cases
 N_BODY = 29
 REC_S, REC_HZ = 60.0, 500
@@ -603,6 +604,87 @@ def r5_bridge_restart(tmp: str, res: Results) -> None:
         pub.stop()
 
 
+def children(pid: int) -> List[int]:
+    try:
+        with open(f"/proc/{pid}/task/{pid}/children") as f:
+            return [int(x) for x in f.read().split()]
+    except OSError:
+        return []
+
+
+def running(pid: int) -> bool:
+    """False once the process has ended (a zombie waiting for its reaper counts as ended)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+def r6_launcher(tmp: str, rec: str, res: Results) -> None:
+    case = "R6 the launcher prints the address once the bridge listens, and a killed launcher takes the bridge with it"
+    if not os.path.isfile(os.path.join(ROOT, "dist", "index.html")):
+        res.say(case, "SKIP", "the page is not built: npm run build")
+        return
+    if not sys.platform.startswith("linux"):
+        res.say(case, "SKIP", "reads /proc")
+        return
+    port, web_port = free_port(), free_port()
+    deploy = os.path.join(tmp, "deploy")
+    os.makedirs(deploy, exist_ok=True)
+    child = Child([LAUNCHER, "replay", rec, "--port", str(port), "--web-port", str(web_port), "--deploy-dir", deploy], tmp, "r6")
+    left: List[int] = []
+    try:
+        t_end, listening = time.time() + 20, None
+        while time.time() < t_end and child.alive() and "[roco] open " not in child.stdout():
+            time.sleep(0.05)
+        if "[roco] open " in child.stdout():
+            try:
+                socket.create_connection(("127.0.0.1", port), 1.0).close()
+                listening = True
+            except OSError:
+                listening = False
+        stats_pass = None
+        if listening:   # the checkpoint worker runs to the end under the launcher too
+            ws = Ws(port)
+            control(ws, "speed", SPEEDS_MAX)
+            t_end, seen = time.monotonic() + 60, set()
+            # "off" is also the state before the worker's first message, so only "off" after "running" (or the bridge's
+            # message) is a failure
+            while (time.monotonic() < t_end and stats_pass != "done" and not ("running" in seen and stats_pass == "off")
+                   and "checkpoint pass failed" not in child.stdout()):
+                try:
+                    op, payload = ws.frame(2.0)
+                except TimeoutError:
+                    continue
+                if op == 0x1 and is_type(payload, "replay"):
+                    stats_pass = json.loads(payload).get("statsPass")
+                    seen.add(stats_pass)
+            ws.close()
+        bridge = children(child.pid)
+        tree = bridge + [g for b in bridge for g in children(b)]   # the bridge and its checkpoint worker, if still running
+        if not listening or stats_pass != "done" or not tree:
+            res.say(case, "FAIL", f"address printed: {listening is not None}, bridge listening then: {bool(listening)}, "
+                                  f"checkpoint pass: {stats_pass}, bridge processes: {len(tree)}\n{child.stdout()}{child.stderr()}")
+            return
+        os.kill(child.pid, signal.SIGKILL)
+        child.proc.wait(5)
+        t0 = time.time()
+        while time.time() - t0 < 3 and any(running(p) for p in tree):
+            time.sleep(0.05)
+        left = [p for p in tree if running(p)]
+        res.say(case, "FAIL" if left else "PASS",
+                f"{len(left)} of {len(tree)} still running 3 s after kill -9" if left else
+                f"{len(tree)} processes gone {time.time() - t0:.2f} s after kill -9 of the launcher")
+    finally:
+        for p in left:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        child.stop()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="ROCO bridge regression tests against real processes")
     ap.add_argument("--live", action="store_true", help="also the cases that need DDS (domain 42): R3 and R5")
@@ -623,7 +705,7 @@ def main() -> int:
         rec = os.path.join(rec_dir, "rec")
         print(f"[regress] recording written in {time.time() - t0:.1f} s", flush=True)
         cases = [("R1", lambda: r1_stuck_client(tmp, rec, res)), ("R2", lambda: r2_cut_recordings(tmp, rec_dir, res)),
-                 ("R4", lambda: r4_report_after_jump(tmp, rec, res))]
+                 ("R4", lambda: r4_report_after_jump(tmp, rec, res)), ("R6", lambda: r6_launcher(tmp, rec, res))]
         if args.live:
             cases += [("R3", lambda: r3_old_log(tmp, res)), ("R5", lambda: r5_bridge_restart(tmp, res))]
         for name, run in cases:

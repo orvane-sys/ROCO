@@ -430,6 +430,11 @@ class BuiltinWebSocketServer:
                 has_mask = (b2 & 0x80) != 0
                 payload_len = b2 & 0x7F
 
+                if not has_mask:
+                    # RFC 6455 5.1: every client frame is masked. 1002 = protocol error.
+                    writer.write(bytes([0x88, 0x02]) + struct.pack('!H', 1002))
+                    break
+
                 if payload_len == 126:
                     payload_len = struct.unpack('!H', await reader.readexactly(2))[0]
                 elif payload_len == 127:
@@ -441,11 +446,9 @@ class BuiltinWebSocketServer:
                     writer.write(bytes([0x88, 0x02]) + struct.pack('!H', 1009))
                     break
 
-                mask_key = await reader.readexactly(4) if has_mask else None
+                mask_key = await reader.readexactly(4)
                 payload = await reader.readexactly(payload_len)
-
-                if has_mask and mask_key:
-                    payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
 
                 if opcode == 0x08:  # Close
                     break

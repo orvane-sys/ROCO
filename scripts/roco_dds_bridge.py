@@ -1292,10 +1292,11 @@ class Store:
         return self.zip.getinfo(name).file_size if self.zip else os.path.getsize(os.path.join(self.path, name))
 
     def recordings(self) -> List[str]:
-        """Prefixes (relative names without _lowstate.csv) that have both CSV files."""
-        names = set(self.names)
-        return [n[: -len("_lowstate.csv")] for n in self.names
-                if n.endswith("_lowstate.csv") and n[: -len("_lowstate.csv")] + "_lowcmd.csv" in names]
+        """Prefixes (relative names without _lowstate.csv). A recording without its _lowcmd.csv plays state only."""
+        return [n[: -len("_lowstate.csv")] for n in self.names if n.endswith("_lowstate.csv")]
+
+    def has_cmd(self, prefix: str) -> bool:
+        return prefix + "_lowcmd.csv" in self.names
 
 
 class ReplayError(Exception):
@@ -1328,9 +1329,17 @@ def resolve_replay(spec: str) -> Tuple[Store, str]:
         store = Store(d)
         return store, os.path.relpath(os.path.abspath(path), d)
     if not os.path.exists(path):
+        if os.path.isfile(path + "_lowcmd.csv"):
+            raise ReplayError(f"found {os.path.basename(path)}_lowcmd.csv but no {os.path.basename(path)}_lowstate.csv: "
+                              "ROCO needs the lowstate file to replay")
         raise ReplayError(f"replay source not found: {spec}")
     store = Store(path)
     recs = store.recordings()
+    if not recs:
+        cmd_only = [n for n in store.names if n.endswith("_lowcmd.csv")]
+        raise ReplayError(f"no *_lowstate.csv in {path}" + (
+            f" (found {os.path.basename(cmd_only[0])}, but ROCO needs the lowstate file to replay)" if cmd_only else
+            ": g1_record writes <name>_lowstate.csv and <name>_lowcmd.csv"))
     if inner:
         match = [r for r in recs if r == inner or r.endswith("/" + inner) or os.path.basename(r) == inner]
         if len(match) != 1:
@@ -1338,8 +1347,26 @@ def resolve_replay(spec: str) -> Tuple[Store, str]:
         return store, match[0]
     if len(recs) == 1:
         return store, recs[0]
-    listing = "\n  ".join(f"{r}  ({store.size(r + '_lowstate.csv') / 1e6:.0f} MB)" for r in recs)
+    listing = "\n  ".join(f"{r}  ({store.size(r + '_lowstate.csv') / 1e6:.0f} MB{'' if store.has_cmd(r) else ', state only'})"
+                          for r in recs)
     raise ReplayError(f"{path} holds {len(recs)} recordings, pick one with {path}:<name>:\n  {listing}")
+
+
+class NoRows:
+    """Stands in for a missing _lowcmd.csv: a stream with no rows, so the recording plays state only (as a header-only file)."""
+    kind, t_first, t_last, index_done, rows = "lc", None, None, True, 0
+
+    def build_index(self):
+        pass
+
+    def peek(self):
+        return None
+
+    def pop(self):
+        return None
+
+    def seek(self, t: float):
+        pass
 
 
 class CsvStream:
@@ -1520,7 +1547,7 @@ class Replayer:
                  index: bool = True):
         self.store, self.prefix, self.monitor = store, prefix, monitor
         self.ls = CsvStream(store, prefix + "_lowstate.csv", "ls")
-        self.lc = CsvStream(store, prefix + "_lowcmd.csv", "lc")
+        self.lc = CsvStream(store, prefix + "_lowcmd.csv", "lc") if store.has_cmd(prefix) else NoRows()
         first = self.ls.peek()
         if first is None:
             raise ReplayError(f"{prefix}_lowstate.csv {NO_SAMPLES}")
@@ -1889,6 +1916,8 @@ def open_replay(args, dp: dict, index: bool = True):
     if cfg is not None:
         apply_ctrl_config(limits, cfg)
         limits["ctrlConfig"] = cfg_name
+    if not store.has_cmd(prefix):
+        notes.append(f"no {os.path.basename(prefix)}_lowcmd.csv: the robot's state only, without commands or PD demand")
     monitor = Monitor(limits, "replay")
     replayer = Replayer(store, prefix, monitor, events, index=index)
     return store, prefix, limits, notes, monitor, replayer
@@ -1981,7 +2010,9 @@ def start_checkpoint_pass(args, replayer: Replayer):
     """Starts the pass in a child process. Returns the Popen, or None when it cannot start (seeks then restart the numbers)."""
     try:
         r, w = os.pipe()
-        cmd = [sys.executable, os.path.abspath(__file__), *sys.argv[1:], "--checkpoint-worker", "--checkpoint-fd", str(w)]
+        # not --exit-with-stdin: the worker's stdin is /dev/null, and it dies with the bridge through PR_SET_PDEATHSIG
+        cmd = [sys.executable, os.path.abspath(__file__), *(a for a in sys.argv[1:] if a != "--exit-with-stdin"),
+               "--checkpoint-worker", "--checkpoint-fd", str(w)]
         env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
         proc = subprocess.Popen(cmd, pass_fds=(w,), env=env, stdin=subprocess.DEVNULL)
         os.close(w)
@@ -2218,6 +2249,17 @@ async def _ws_server_checks() -> List[Tuple[bool, str]]:
         await asyncio.sleep(0.2)
         out.append((server.dropped_slow == 1 and len(server.clients) == 1 and len(got) - n0 == 2,
                     "a stall of the bridge itself does not disconnect a client that reads"))
+
+        ur, uw, _ = await connect()
+        await asyncio.wait_for(read_frame(ur), 2.0)   # greeting
+        uw.write(bytes([0x81, 0x03]) + b"abc")   # text frame without a mask
+        try:
+            close = await asyncio.wait_for(read_frame(ur), 2.0)
+            await asyncio.wait_for(ur.read(), 2.0)   # b"" once the server has closed the connection
+        except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
+            close = None
+        uw.close()
+        out.append((close == (0x8, struct.pack("!H", 1002)), "an unmasked client frame is closed with 1002 (protocol error)"))
 
         _, stuck_w, _ = await connect(rcvbuf=4096)
         stuck_w.transport.pause_reading()
@@ -2497,6 +2539,17 @@ def run_self_test() -> bool:
         write("nocmd_lowstate.csv", csv_text(ls_cols, times))
         _, _, rp = opened(os.path.join(d, "nocmd"))
         check(rp.t1 == times[-1] and rp.lc.peek() is None, "a lowcmd with a header only still plays (without commands)")
+        os.makedirs(os.path.join(d, "stateonly"))
+        write("stateonly/run_lowstate.csv", csv_text(ls_cols, times))
+        _, prefix, rp = opened(os.path.join(d, "stateonly"))
+        rp.seek(times[len(times) // 2])
+        check(prefix == "run" and rp.t1 == times[-1] and rp.lc.peek() is None and rp.ls.peek() is not None,
+              "a recording without its lowcmd.csv plays and seeks, state only")
+        os.makedirs(os.path.join(d, "cmdonly"))
+        write("cmdonly/run_lowcmd.csv", csv_text(lc_cols, times))
+        check(fails(os.path.join(d, "cmdonly"), "found run_lowcmd.csv, but ROCO needs the lowstate file"),
+              "a folder with only a lowcmd.csv says the lowstate file is missing")
+        check(fails(os.path.join(d, "cmdonly", "run"), "no run_lowstate.csv"), "the same for a recording named by its prefix")
         write("empty_lowcmd.csv", csv_text(lc_cols, times))
         write("empty_lowstate.csv", "")
         check(fails(os.path.join(d, "empty"), "is empty"), "an empty lowstate is one line, not a traceback")
@@ -2788,6 +2841,17 @@ def run_self_test() -> bool:
 # ==============================================================================
 # Main
 # ==============================================================================
+def _exit_when_stdin_closes() -> None:
+    """Blocks on stdin; end of file means the launcher is gone (even after kill -9), so stop as on Ctrl-C."""
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    except (OSError, ValueError):
+        pass
+    print("[ROCO DDS] the launcher is gone: stopping")
+    os.kill(os.getpid(), signal.SIGINT)
+
+
 def main():
     ap = argparse.ArgumentParser(description="ROCO read-only DDS monitor bridge (Unitree G1)")
     ap.add_argument("--iface", default="lo", help="DDS network interface (lo = unitree_mujoco on this PC)")
@@ -2814,6 +2878,8 @@ def main():
     ap.add_argument("--token", default=os.environ.get("ROCO_BRIDGE_TOKEN"))
     ap.add_argument("--no-checkpoints", action="store_true",
                     help="replay: do not run the background pass that makes the numbers after a jump equal a played run")
+    ap.add_argument("--exit-with-stdin", action="store_true",
+                    help="stop when stdin closes (scripts/roco passes it, so the bridge never outlives the launcher)")
     ap.add_argument("--checkpoint-worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-fd", type=int, default=-1, help=argparse.SUPPRESS)
     ap.add_argument("--self-test", action="store_true")
@@ -2823,6 +2889,9 @@ def main():
         sys.exit(0 if run_self_test() else 1)
     if args.host not in LOOPBACK_HOSTS and not args.token:
         ap.error(f"--host {args.host} is not loopback: pass --token SECRET (or set ROCO_BRIDGE_TOKEN)")
+
+    if args.exit_with_stdin and not args.checkpoint_worker:
+        threading.Thread(target=_exit_when_stdin_closes, name="stdin-watch", daemon=True).start()
 
     dp = deploy_paths(args.deploy_dir or DEPLOY_LOCK)
     args.manual = dp["manual"]
