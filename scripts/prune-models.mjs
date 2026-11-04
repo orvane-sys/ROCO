@@ -3,7 +3,7 @@
 //
 // `public/models` is copied verbatim into `dist/`, but the dashboard only fetches the URDFs listed in
 // src/config/robotRegistry.ts and the meshes those URDFs reference. Variant URDFs, MJCF files (used by
-// scripts/mujoco_roco_bridge.py straight from public/), hand models, images and notebooks are not needed
+// tools/sim-drive/mujoco_roco_bridge.py straight from public/), hand models, images and notebooks are not needed
 // in the shipped bundle. Source files in public/ are never touched.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'

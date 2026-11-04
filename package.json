@@ -1,7 +1,7 @@
 {
   "name": "roco",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -31,5 +31,23 @@
     "vite": "^8.3.5"
   },
   "description": "Read-only browser-based test monitor for robots: live 3D view, limit alerts and session replay.",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "homepage": "https://orvane-sys.github.io/ROCO/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orvane-sys/ROCO.git"
+  },
+  "bugs": {
+    "url": "https://github.com/orvane-sys/ROCO/issues"
+  },
+  "keywords": [
+    "unitree",
+    "unitree-g1",
+    "humanoid",
+    "robotics",
+    "telemetry",
+    "dds",
+    "cyclonedds",
+    "digital-twin"
+  ]
 }

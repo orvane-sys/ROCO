@@ -93,7 +93,10 @@ page says "since X s". Once it has, a jump shows the same numbers as playing fro
 The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
 **Demo data** is only shown if you press the button (or open `?demo=1`) and is labelled DEMO everywhere.
 
-Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, procedure and timeline checks), `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`.
+Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure and timeline checks),
+`python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,
+`python3 tools/sim-drive/mujoco_roco_bridge.py --self-test`. CI (`.github/workflows/ci.yml`) runs all of them, `regress.py`
+and a check that a full clone stays under 25 MB. See `CONTRIBUTING.md`.
 
 Regression tests against real bridge processes (about 1 minute, Python and Node only, writes its own 60 s recording to a temporary folder):
 `python3 scripts/regress.py`. It starts bridges on free ports and checks that a client that stops reading does not hold up the others,
@@ -115,8 +118,9 @@ exits 1 on a failure. It is not part of `npm run lint`.
 ## Layout
 
 - `src/` the page. `src/services/telemetryStream.ts` is the WebSocket client; `src/types/monitor.ts` the bridge frames.
-- `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/mujoco_roco_bridge.py` an older simulator bridge that
-  can accept drive commands (demo and sim only).
+- `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/roco_common.py` the wire format,
+  robot profiles and WebSocket server both bridges share.
+- `tools/sim-drive/` an older MuJoCo simulator bridge that accepts drive commands. It is not part of the monitor; see its README.
 - Other robots are not supported yet.
 
 ## Licence

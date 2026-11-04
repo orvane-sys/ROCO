@@ -1,0 +1,22 @@
+name: Feature request
+description: Something ROCO should show or do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you need to see or do during a test?
+      description: Describe the moment in the test, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea for it (optional)
+  - type: checkboxes
+    id: readonly
+    attributes:
+      label: ROCO only watches
+      options:
+        - label: This does not need ROCO to send anything to the robot or the controller.
+          required: true

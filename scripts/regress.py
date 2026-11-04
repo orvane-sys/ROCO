@@ -17,6 +17,7 @@ The in-process `roco_dds_bridge.py --self-test` stays: it checks the pieces. Thi
 import argparse
 import base64
 import datetime
+import importlib
 import json
 import math
 import os
@@ -185,7 +186,7 @@ def start_bridge(tmp: str, name: str, *extra: str, port: Optional[int] = None) -
 
 def have_dds() -> bool:
     try:
-        import unitree_sdk2py  # noqa: F401
+        importlib.import_module("unitree_sdk2py")
         return True
     except Exception:
         return False

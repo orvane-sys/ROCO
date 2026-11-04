@@ -47,7 +47,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mujoco_roco_bridge import (  # noqa: E402
+from roco_common import (  # noqa: E402
     LOOPBACK_HOSTS,
     LOW_STATE_BYTE_LENGTH,
     MAX_CLIENT_LAG_S,
@@ -302,7 +302,7 @@ _CRC_T0, _CRC_T1, _CRC_T2, _CRC_T3 = _crc_tables()
 
 
 def fast_crc32(words) -> int:
-    """Same result as mujoco_roco_bridge.calc_crc32 (checked in --self-test), about 4x faster."""
+    """Same result as roco_common.calc_crc32 (checked in --self-test), about 4x faster."""
     crc = 0xFFFFFFFF
     t0, t1, t2, t3 = _CRC_T0, _CRC_T1, _CRC_T2, _CRC_T3
     for w in words:

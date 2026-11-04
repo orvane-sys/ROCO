@@ -38,7 +38,7 @@ export interface RobotProfile {
 // Unitree's published G1 type codes: 4 = 23-DoF, 5 = 29-DoF, 6 = 29-DoF with the waist roll/pitch locked
 // (Unitree lists it as "27-DoF"; confirmed as 6 on a real 29-DoF EDU with locked waist).
 // The dual-arm torso has no Unitree code; 100 is a ROCO simulator-only value that cannot collide.
-// KEEP IN SYNC with MODE_MACHINE_* in scripts/mujoco_roco_bridge.py.
+// KEEP IN SYNC with MODE_MACHINE_* in scripts/roco_common.py.
 export const MODE_MACHINE_G1_23DOF = 4
 export const MODE_MACHINE_G1_29DOF = 5
 export const MODE_MACHINE_G1_29DOF_WAIST_LOCKED = 6
