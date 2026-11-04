@@ -122,6 +122,8 @@ export interface FsmFrame {
   events: FsmEvent[]
   segment: FsmSegment
   segments?: FsmSegment[]
+  /** Replay only, full frames only: every alert event from the recording's start to the cursor (the last 500). */
+  alertHistory?: AlertEvent[]
 }
 
 export interface AuxCommand {
@@ -187,6 +189,10 @@ export interface ReplayStatus {
   t: number
   /** Where the bridge's statistics (state visits, alerts) start: the recording's start, or the last seek. Absent on an older bridge. */
   statsFrom?: number
+  /** The bridge's background pass that lets a jump keep whole-run numbers: running, done, or off (not started, failed or stopped). */
+  statsPass?: 'running' | 'done' | 'off'
+  /** Data time the pass has covered, or null when it is off. A jump to this time or earlier keeps the numbers from the recording's start. */
+  statsReady?: number | null
   speed: number
   playing: boolean
   ended: boolean

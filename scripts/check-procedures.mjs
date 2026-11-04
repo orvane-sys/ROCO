@@ -339,5 +339,61 @@ st = await loadStore('blocked')
 st.procedureStore('live').toggleTick('g1_type6', 'pre-rope')
 check(st.procDataOf(st.procedureStore('live').get(), 'g1_type6').ticked.join() === 'pre-rope', 'with storage blocked the ticks still work for this page')
 
+
+// -- numbers that start after the recording does (1.5 B3) -------------------------------------------------------------------
+const rep = (extra = {}) => ({ type: 'replay', file: 'x', store: 'x', t0: 1000, t1: 1236, t: 1100, statsFrom: 1000, speed: 1, playing: true, ended: false, indexing: false, busy: null, speeds: [1], ...extra })
+const inReplay = (state, replay, t) => ({ ...state, hello: { ...state.hello, source: 'replay' }, aux: state.aux ? { ...state.aux, t: t ?? state.aux.t } : state.aux, replay })
+const velo = [seg('Velocity', { t0: 1010, tauAnkP: 6 })]
+const whole = ev1('t5-ankle', inReplay(mk({ segments: velo, state: 'Velocity' }), rep()))
+check(whole.status === 'ok' && whole.word === 'Within limit', 'numbers from the recording start: plain "Within limit"')
+const late = ev1('t5-ankle', inReplay(mk({ segments: velo, state: 'Velocity' }), rep({ statsFrom: 1228 })))
+check(late.status === 'ok' && late.word === 'Within limit since 228.0 s', `numbers from a jump to 228 s: the word says since when (is "${late.word}")`)
+check(ev1('t5-ankle', inReplay(mk({ segments: velo, state: 'Velocity' }), rep({ statsFrom: 1000.4 }))).word === 'Within limit', 'a start within 0.5 s of the recording start is the whole run')
+check(ev1('t5-ankle', inReplay(mk({ segments: [seg('Velocity', { tauAnkP: 30 })], state: 'Velocity' }), rep({ statsFrom: 1228 }))).word === 'Stop limit crossed', 'a stop reads Stop limit crossed whatever the start')
+check(ev1('t5-ankle', mk({ segments: velo, state: 'Velocity' })).word === 'Within limit', 'live: plain "Within limit"')
+check(ev1('t0-one-sender', inReplay(mk({ link: lowcmd(500) }), rep({ statsFrom: 1228 }))).word === 'Within limit', 'a check of the present moment does not claim a start')
+check(ev1('t5-ankle', inReplay(mk({ segments: velo, state: 'Velocity' }), rep({ statsFrom: 1228 })), ops({ confirmed: ['t5-ankle'] })).word === 'Within limit since 228.0 s', 'confirmed by you does not change an ok verdict')
+
+// -- a check of the present moment stays confirmed in a replay (1.5 W6) ------------------------------------------------------
+const L = model.newReachedOk
+const at = (link, t, latch, extra = {}) => ev1('t0-one-sender', inReplay(mk({ link }), rep({ t, ...extra }), t), { ...NO_OPS, latch })
+{
+  const latch = L()
+  check(at(lowcmd(500), 1060, latch).status === 'ok', 'latch: reads ok at 60 s')
+  const gone = at(lowcmd(0), 1070, latch)
+  check(gone.status === 'ok' && /Confirmed at 60\.0 s; now: No rt\/lowcmd/.test(gone.detail), `latch: stays ok when the rate drops to nothing (is "${gone.detail}")`)
+  check(at(lowcmd(1600), 1080, latch).status === 'stop', 'latch: a stop always shows')
+  check(at(lowcmd(0), 1090, latch).status === 'ok', 'latch: after a stop and back to nothing it is still confirmed')
+  check(at(lowcmd(0), 1050, latch).status === 'pending', 'latch: a seek back before the confirmation drops it')
+  check(at(lowcmd(500), 1055, latch).status === 'ok' && at(lowcmd(0), 1056, latch).detail.includes('Confirmed at 55.0 s'), 'latch: confirmed again at the new time')
+  const other = L()
+  check(at(lowcmd(0), 1070, other).status === 'pending', 'latch: a fresh latch (new file) has nothing')
+  check(ev1('t0-one-sender', mk({ link: lowcmd(0) }), { ...NO_OPS, latch }).status === 'pending', 'latch: not used live')
+}
+{
+  const latch = L()
+  const gap = (g, t, run = []) => ev1('t7-gap', inReplay(mk({ link: { ...lowcmd(500), lowstateGapMaxMs: g }, events: run }), rep({ t }), t), { ...NO_OPS, latch })
+  check(gap(10, 1060).status === 'ok', 'latch gap: ok at 60 s')
+  check(gap(120, 1070).status === 'check', 'latch gap: a gap that asks for a look is shown as it is')
+  check(gap(150, 1080).status === 'stop', 'latch gap: a stop shows')
+  const noLink = ev1('t7-gap', inReplay(mk({ link: null }), rep({ t: 1090 }), 1090), { ...NO_OPS, latch })
+  check(noLink.status === 'ok' && noLink.detail.startsWith('Confirmed at 60.0 s'), 'latch gap: no link frame right now keeps the confirmation')
+  const newRun = gap(10, 1095, [ev(1094, 'Config: again', { session: true })])
+  check(newRun.status === 'ok', 'latch gap: a new run reads fresh')
+  const afterNewRun = ev1('t7-gap', inReplay(mk({ link: null, events: [ev(1094, 'Config: again', { session: true })] }), rep({ t: 1096 }), 1096), { ...NO_OPS, latch })
+  check(afterNewRun.status === 'ok' && afterNewRun.detail.includes('Confirmed at 95.0 s'), 'latch gap: after a new run only that run counts')
+}
+
+
+// -- the Review card's progress text -----------------------------------------------------------------------------------------
+const fmt = await bundle('src/utils/monitorFormat.ts')
+const pass = (r) => ({ hello: { source: 'replay' }, replay: rep(r) })
+check(fmt.statsPassNote(pass({ statsPass: 'running', statsReady: 1118 })) === 'Preparing numbers for jumps (50 %)', 'progress text: half way')
+check(fmt.statsPassNote(pass({ statsPass: 'running', statsReady: 1000 })) === 'Preparing numbers for jumps (0 %)', 'progress text: at the start')
+check(fmt.statsPassNote(pass({ statsPass: 'done', statsReady: 1236 })) === null, 'progress text: gone when done')
+check(fmt.statsPassNote(pass({ statsPass: 'off', statsReady: null })) === null, 'progress text: gone when off')
+check(fmt.statsPassNote(pass({ statsPass: 'running', statsReady: 1118, t1: null })) === null, 'progress text: none before the length is known')
+check(fmt.statsPassNote(pass({})) === null && fmt.statsPassNote({ hello: null, replay: null }) === null, 'progress text: none from an older bridge or live')
+
 console.log(`check-procedures: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
 if (failed) process.exit(1)

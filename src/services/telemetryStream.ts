@@ -22,7 +22,6 @@ import {
   getProfileIdByModeMachine,
 } from '../config/robotRegistry'
 import type {
-  AlertEvent,
   AuxFrame,
   BridgeHello,
   FsmFrame,
@@ -347,8 +346,8 @@ export class TelemetryStreamService {
         segments: frame.segments ?? (frame.full ? [] : prev.segments),
         segment: frame.segment,
       },
-      // after a replay seek the bridge restarts its statistics, so the alert history restarts too
-      ...(frame.full && this.monitor.replay ? { alertLog: [] as AlertEvent[] } : {}),
+      // after a replay seek the alert history is what the bridge says it is at the cursor (empty from a bridge that restarts its numbers)
+      ...(frame.full && this.monitor.replay ? { alertLog: (frame.alertHistory ?? []).slice(-MAX_ALERT_LOG) } : {}),
     })
   }
 

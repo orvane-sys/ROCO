@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ConnectScreen } from './components/ConnectScreen'
 import { StatusBar } from './components/StatusBar'
 import { WorkspaceBar } from './components/WorkspaceBar'
@@ -41,7 +41,7 @@ import { telemetryService } from './services/telemetryStream'
 import { acknowledge, getAlertControls, resetAlertControls, unshelveAll, useAlertControls } from './services/alertControls'
 import { playTestTone, prepareAudio, soundSupported, speak, speechSupported, useAudioRunning } from './services/alertCues'
 import { buildAlertView, evaluateAbortChecks } from './utils/alertModel'
-import { evaluateProcedure } from './utils/procedureModel'
+import { evaluateProcedure, newReachedOk } from './utils/procedureModel'
 import { buildTimeline } from './utils/timelineModel'
 import { buildReport } from './utils/sessionReport'
 import { alertTitle } from './utils/monitorFormat'
@@ -250,13 +250,15 @@ export function App() {
   // guided checks: a recording keeps its ticks in memory and forgets them when another one opens; live ticks last for the day
   const procScope: ProcScope = monitor.hello?.source === 'replay' ? 'replay' : 'live'
   const procState = useProcedureState(procScope)
+  const reachedOk = useRef(newReachedOk())
   useEffect(() => {
     procedureStore('replay').reset()
+    reachedOk.current = newReachedOk()
   }, [monitor.hello])
   const procResult = useMemo(() => {
     if (!isMonitor) return null
     const proc = PROCEDURES.find((p) => p.id === procState.procedure) ?? PROCEDURES[0]
-    return evaluateProcedure(proc, monitor, opsOf(procDataOf(procState, proc.id)))
+    return evaluateProcedure(proc, monitor, { ...opsOf(procDataOf(procState, proc.id)), latch: reachedOk.current })
   }, [isMonitor, monitor, procState])
   const stageStops = procResult?.counts.stop ?? 0
   // what the announcer says besides alerts: a tripped abort check or a crossed stop limit, once each

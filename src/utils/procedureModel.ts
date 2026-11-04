@@ -2,7 +2,7 @@ import type { MonitorSource, MonitorState, FsmEvent, FsmSegment } from '../types
 import type { AutoRule, ItemKind, LogRule, ProcItem, Procedure, References, Stage } from '../config/procedures/types'
 import { SQUAT_LEAN_REF_DEG, SQUAT_LEAN_STOP_DEG } from '../config/alertPolicy'
 import { currentRun } from './alertModel'
-import { statsSinceNote } from './monitorFormat'
+import { formatDataTime, statsSince, statsSinceNote } from './monitorFormat'
 
 /**
  * Turns a procedure (data) and what the bridge reports into a result for every check. Pure, so scripts/check-procedures.mjs
@@ -62,7 +62,20 @@ export interface ProcOps {
   confirmed: ReadonlySet<string>
   /** Stage ids the operator marked done. */
   done: ReadonlySet<string>
+  /** Replay only: what two checks that read the present moment already showed fine. Absent live and in tests that do not need it. */
+  latch?: ReachedOk
 }
+
+/**
+ * Two checks (rt/lowcmd rate, rt/lowstate gap) read the current moment, so a replay played past them flips them back to Waiting.
+ * Once one read fine at data time t, a replay shows it fine ("Confirmed at t") until the cursor goes back before t. A stop limit
+ * always shows. Held in memory only; it belongs to one g1_ctrl run of one recording.
+ */
+export interface ReachedOk {
+  run: number | null
+  at: Map<string, number>
+}
+export const newReachedOk = (): ReachedOk => ({ run: null, at: new Map() })
 
 const EMPTY: ReadonlySet<string> = new Set()
 export const NO_OPS: ProcOps = { ticked: EMPTY, skipped: EMPTY, confirmed: EMPTY, done: EMPTY }
@@ -223,10 +236,14 @@ function logVerdict(rule: LogRule, run: Run): Verdict {
   return { status: 'pending', detail: 'Not seen yet.' }
 }
 
-export function statusWord(kind: ItemKind, status: ItemStatus, byYou: boolean, rule?: LogRule): string {
+/** Measured checks whose numbers come from the bridge's visits: when those start after the recording does, say from when. */
+const SINCE_RULES: ReadonlySet<string> = new Set(['segment', 'squatLean', 'legSpeed', 'squatCount'])
+
+export function statusWord(kind: ItemKind, status: ItemStatus, byYou: boolean, rule?: LogRule, since = ''): string {
   switch (status) {
     case 'ok':
       if (byYou) return 'Checked by you'
+      if (kind === 'auto' && since) return `Within limit ${since}`
       return kind === 'manual' ? 'Ticked' : kind === 'log' ? (rule?.seen ? 'Seen' : 'None seen') : 'Within limit'
     case 'stop':
       return kind === 'log' ? 'Abort line seen' : 'Stop limit crossed'
@@ -239,14 +256,37 @@ export function statusWord(kind: ItemKind, status: ItemStatus, byYou: boolean, r
   }
 }
 
+const LATCHED_RULES: ReadonlySet<string> = new Set(['lowcmdRate', 'lowstateGap'])
+
+function latched(id: string, type: string, v: Verdict, runStart: number | null, state: MonitorState, latch?: ReachedOk): Verdict {
+  const r = state.replay
+  if (!latch || !r || !LATCHED_RULES.has(type)) return v
+  if (latch.run !== runStart) {
+    latch.at.clear()
+    latch.run = runStart
+  }
+  // a seek back before the moment it was confirmed: that moment has not happened yet
+  const at = latch.at.get(id)
+  if (at !== undefined && at > r.t) latch.at.delete(id)
+  if (v.status === 'ok') {
+    if (!latch.at.has(id)) latch.at.set(id, v.t ?? r.t)
+    return v
+  }
+  const seen = latch.at.get(id)
+  if (v.status === 'pending' && seen !== undefined)
+    return { status: 'ok', detail: `Confirmed at ${formatDataTime(seen, state)}; now: ${v.detail}`, t: seen }
+  return v
+}
+
 export function evaluateItem(item: ProcItem, state: MonitorState, ops: ProcOps): ItemResult {
   const cur = currentRun(state.fsm.events)
   const run: Run = { events: cur.run, start: cur.start, state }
   const source = state.hello?.source ?? null
+  const since = item.kind === 'auto' && item.auto && SINCE_RULES.has(item.auto.type) ? statsSince(state) : ''
   const make = (status: ItemStatus, detail: string | null, t: number | null, byYou = false): ItemResult => ({
     item,
     status,
-    word: statusWord(item.kind, status, byYou, item.log),
+    word: statusWord(item.kind, status, byYou, item.log, since),
     detail,
     t,
     byYou,
@@ -260,6 +300,7 @@ export function evaluateItem(item: ProcItem, state: MonitorState, ops: ProcOps):
   if (item.kind === 'auto' && item.auto) v = autoVerdict(item.auto, run, source)
   else if (item.kind === 'log' && item.log) v = logVerdict(item.log, run)
   else v = { status: 'pending', detail: 'This check has no rule.' }
+  if (item.kind === 'auto' && item.auto) v = latched(item.id, item.auto.type, v, cur.start, state, ops.latch)
 
   // a stop limit stays visible whatever the operator did: "not applicable" and "I checked this" never hide one
   if (v.status === 'stop') return make('stop', v.detail, v.t ?? null)

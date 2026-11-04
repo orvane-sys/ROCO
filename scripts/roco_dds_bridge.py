@@ -29,9 +29,12 @@ import hashlib
 import json
 import math
 import os
+import pickle
 import re
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -418,6 +421,16 @@ class AlertBook:
     def __init__(self):
         self.active: Dict[str, dict] = {}
         self.pending: List[dict] = []
+        # Replay keeps every open / close event, so a client that connects or seeks gets the history (None: not kept).
+        self.log: Optional[List[dict]] = None
+        self.log_max: Optional[int] = None
+
+    def _emit(self, ev: dict):
+        self.pending.append(ev)
+        if self.log is not None:
+            self.log.append(ev)
+            if self.log_max and len(self.log) > 2 * self.log_max:
+                del self.log[:-self.log_max]
 
     def step(self, t: float, scope: str, conds: Dict[str, tuple]):
         """conds: key -> (level, kind, joint_index | None, value, text). Closes this scope's absent keys."""
@@ -427,7 +440,7 @@ class AlertBook:
                 a = {"id": key, "scope": scope, "kind": kind, "joint": joint, "level": level, "peakLevel": level,
                      "value": value, "peak": value, "since": t, "last": t, "text": text, "critSamples": 0}
                 self.active[key] = a
-                self.pending.append({"event": "open", **_public(a)})
+                self._emit({"event": "open", **_public(a)})
             else:
                 a["level"], a["value"], a["last"], a["text"] = level, value, t, text
                 if _LEVELS[level] > _LEVELS[a["peakLevel"]]:
@@ -440,11 +453,13 @@ class AlertBook:
             a = self.active[key]
             if t - a["last"] >= self.HOLD_S or t < a["last"]:
                 del self.active[key]
-                self.pending.append({"event": "close", **_public(a), "durationS": round(a["last"] - a["since"], 3)})
+                self._emit({"event": "close", **_public(a), "durationS": round(a["last"] - a["since"], 3)})
 
     def clear(self):
         self.active.clear()
         self.pending.clear()
+        if self.log is not None:
+            self.log = []
 
     def take_pending(self) -> List[dict]:
         p, self.pending = self.pending, []
@@ -551,6 +566,7 @@ class Monitor:
         self.fsm_events: deque = deque(maxlen=200)
         self.fsm_new: List[dict] = []
         self.segments: List[dict] = []
+        self.segments_total = 0         # finished segments so far (self.segments keeps the last 100)
         self.segments_changed = False
         self.fsm_rebuilt = False        # after a replay seek: clients must replace their timeline
         self.segment = self._new_segment(None, None)
@@ -841,6 +857,7 @@ class Monitor:
         if self.segment["n"] >= 5:
             self.segments.append(self.segment)      # raw: durations use the latest median dt when sent
             self.segments = self.segments[-100:]
+            self.segments_total += 1
             self.segments_changed = True
         self.fsm_state, self.fsm_since = state, t
         self.segment = self._new_segment(state, t)
@@ -897,12 +914,66 @@ class Monitor:
         if self.cmd is not None and now - self.cmd.t > 0.5:
             self.alerts.step(now, "cmd", {})
 
+    def end_step(self, now: float):
+        """What the serve loop's snapshot does between two dashboard frames, for a replay that runs without clients
+        (the checkpoint pass, a seek): the link checks at this data time, and a new rate window."""
+        with self.lock:
+            self.link_checks(now)
+            self.dt_med()           # the median interval refreshes with each built frame; keep that cadence
+            self.window_sent = True
+
+    def snapshot_state(self) -> dict:
+        """Everything the numbers depend on, as plain data a checkpoint can carry (replay; called under no other writer).
+        Finished segments, fsm events and alert events are not in it: they only ever grow, the pass sends them once."""
+        with self.lock:
+            h = self.ls_interval_hist
+            nz = np.flatnonzero(h)
+            return {
+                "segments_total": self.segments_total,
+                "segment": dict(self.segment, tilt=list(self.segment["tilt"])),
+                "fsm_state": self.fsm_state, "fsm_since": self.fsm_since,
+                "ls": self.ls, "cmd": self.cmd, "ls_count": self.ls_count, "cmd_count": self.cmd_count,
+                "hist": (nz, h[nz]), "dt": self._dt, "dt_at": self._dt_at,
+                "dem": self.dem.copy(), "over_samples": self.over_samples.copy(),
+                "leg_fast_since": self.leg_fast_since.copy(), "any_leg_fast": self.any_leg_fast,
+                "alerts_active": {k: dict(a) for k, a in self.alerts.active.items()},
+            }
+
+    def restore_state(self, st: dict, segments: List[dict], events: List[dict], alert_log: List[dict]):
+        """Puts a snapshot_state back, with the finished segments, the latest fsm events and alert events up to it.
+        The caller holds self.lock. Clients get everything again with the next full fsm frame."""
+        self.reset_streams()
+        self.ls, self.cmd = st["ls"], st["cmd"]
+        self.ls_count, self.cmd_count = st["ls_count"], st["cmd_count"]
+        nz, vals = st["hist"]
+        self.ls_interval_hist[nz] = vals
+        self._dt, self._dt_at = st["dt"], st["dt_at"]
+        self.dem[:] = st["dem"]
+        self.over_samples[:] = st["over_samples"]
+        self.leg_fast_since[:] = st["leg_fast_since"]
+        self.any_leg_fast = st["any_leg_fast"]
+        self.alerts.active = {k: dict(a) for k, a in st["alerts_active"].items()}
+        self.alerts.pending = []
+        if self.alerts.log is not None:
+            self.alerts.log = list(alert_log)
+        self.segments_total = st["segments_total"]
+        self.segments = list(segments[-100:])
+        self.segment = dict(st["segment"], tilt=list(st["segment"]["tilt"]))
+        self.fsm_state, self.fsm_since = st["fsm_state"], st["fsm_since"]
+        self.fsm_events = deque((dict(e, history=True) for e in events[-200:]), maxlen=200)
+        self.fsm_new = []
+        self.segments_changed = True
+        self.fsm_rebuilt = True
+
     def fsm_frame(self, full: bool) -> Optional[dict]:
         """full: everything, for a newly connected client (leaves the broadcast backlog alone)."""
         if full:
-            return {"type": "fsm", "full": True, "state": self.fsm_state, "since": self.fsm_since,
-                    "events": list(self.fsm_events), "segment": self._segment_public(self.segment),
-                    "segments": [self._segment_public(g) for g in self.segments]}
+            frame = {"type": "fsm", "full": True, "state": self.fsm_state, "since": self.fsm_since,
+                     "events": list(self.fsm_events), "segment": self._segment_public(self.segment),
+                     "segments": [self._segment_public(g) for g in self.segments]}
+            if self.alerts.log is not None:     # replay: the page's alert history starts from the bridge's, not from empty
+                frame["alertHistory"] = list(self.alerts.log)
+            return frame
         if self.fsm_rebuilt:
             self.fsm_rebuilt = False
             self.fsm_new = []
@@ -1432,11 +1503,20 @@ def replay_timeline(log_events: List[Tuple[float, str, str]], t0: float) -> dict
 
 
 class Replayer:
-    """Plays a recording into a Monitor on a virtual clock (play, pause, speed, seek)."""
+    """Plays a recording into a Monitor on a virtual clock (play, pause, speed, seek).
+
+    Seeking: a second process (checkpoint_worker_main) plays the whole recording once at low priority and sends back a
+    checkpoint of the monitor every CHECKPOINT_EVERY_S of data. A seek restores the latest checkpoint before the target and
+    plays on from it, so the numbers equal those of a recording played from its start. Until the pass has reached the
+    target (or if it failed) a seek starts the numbers at the target instead (stats_from)."""
 
     SPEEDS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+    PASS_STEP_S = 0.02              # data time per step: the serve loop's 50 Hz frame
+    CHECKPOINT_EVERY_S = 2.0
+    MAX_FEED_S = 3.0                # a seek never plays on from further back than this
 
-    def __init__(self, store: Store, prefix: str, monitor: Monitor, log_events: List[Tuple[float, str, str]]):
+    def __init__(self, store: Store, prefix: str, monitor: Monitor, log_events: List[Tuple[float, str, str]],
+                 index: bool = True):
         self.store, self.prefix, self.monitor = store, prefix, monitor
         self.ls = CsvStream(store, prefix + "_lowstate.csv", "ls")
         self.lc = CsvStream(store, prefix + "_lowcmd.csv", "lc")
@@ -1452,18 +1532,95 @@ class Replayer:
         self.playing = True
         self.ended = False
         self.busy = None        # "seeking" while a seek runs
-        for s in (self.ls, self.lc):
-            threading.Thread(target=s.build_index, name=f"index_{s.kind}", daemon=True).start()
+        if index:
+            for s in (self.ls, self.lc):
+                threading.Thread(target=s.build_index, name=f"index_{s.kind}", daemon=True).start()
+        # checkpoints from the pass, oldest first; the first is the empty state at the start (the monitor is fresh here)
+        self.ck_lock = threading.Lock()
+        self.checkpoints: List[dict] = [self._checkpoint(consumed_le=-math.inf, cursor=self.t0)]
+        self.master = {"seg": [], "ev": [], "al": []}
+        self.pass_state = "off"         # "running" | "done" | "off" (no pass, or it failed)
+        self.pass_t = self.t0           # data time the pass has covered
+        self.ck_failed = False
+        monitor.alerts.log, monitor.alerts.log_max = [], 500
+
+    def _checkpoint(self, consumed_le: float, cursor: float) -> dict:
+        """The monitor's state and the stream positions now, for Replayer.seek."""
+        m = self.monitor
+        ck = m.snapshot_state()
+        ck.update(cursor=cursor, consumed_le=consumed_le, log_i=self.log_i, seg_n=m.segments_total,
+                  ev_n=len(m.fsm_new), al_n=len(m.alerts.log or ()))
+        return ck
+
+    # -- the checkpoint pass --------------------------------------------------------
+    def run_pass(self, emit, stop=lambda: False):
+        """Plays the whole recording into self.monitor with no clients (own process, own Replayer), calling emit(message) with
+        a checkpoint every CHECKPOINT_EVERY_S of data and one at the end. Each message also carries the finished segments, fsm
+        events and alert events since the last one, which only ever grow. The steps are the serve loop's, so the numbers are the
+        ones playing the recording gives (alert times can differ by one batch)."""
+        m = self.monitor
+        m.alerts.log, m.alerts.log_max = [], None
+        m.fsm_new = []
+        every = max(1, round(self.CHECKPOINT_EVERY_S / self.PASS_STEP_S))
+        sent_seg = sent_ev = sent_al = 0
+        i = 0
+        while not stop():
+            i += 1
+            target = self.t0 + i * self.PASS_STEP_S
+            self._feed(target)
+            self.cursor = target
+            m.end_step(target)
+            m.alerts.take_pending()         # nobody reads them: m.alerts.log is the history
+            end = self.ls.peek() is None
+            if i % every == 0 or end:
+                new = m.segments_total - sent_seg
+                ck = self._checkpoint(consumed_le=target, cursor=target)
+                emit({"seg": m.segments[len(m.segments) - new:] if new > 0 else [], "ev": m.fsm_new[sent_ev:],
+                      "al": m.alerts.log[sent_al:], "ck": ck, "done": end})
+                sent_seg, sent_ev, sent_al = m.segments_total, len(m.fsm_new), len(m.alerts.log)
+            if end:
+                return True
+        return False
+
+    def add_pass_message(self, msg: dict):
+        """From the reader of the pass's pipe: one checkpoint with the lists that grew since the last."""
+        with self.ck_lock:
+            for k in ("seg", "ev", "al"):
+                self.master[k].extend(msg[k])
+            ck = msg["ck"]
+            if (ck["seg_n"], ck["ev_n"], ck["al_n"]) != tuple(len(self.master[k]) for k in ("seg", "ev", "al")):
+                self.pass_state = "off"     # lists out of step: do not restore from them
+                self.ck_failed = True
+                return
+            self.checkpoints.append(ck)
+            self.pass_t = ck["cursor"]
+            self.pass_state = "done" if msg["done"] else "running"
+
+    def pass_stopped(self):
+        """The pass's pipe closed: a pass that did not finish leaves the checkpoints it has."""
+        with self.ck_lock:
+            if self.pass_state == "running":
+                self.pass_state = "off"
+                print("[ROCO DDS] the checkpoint pass stopped before the end; jumps past what it covered restart the numbers at the target")
 
     @property
     def t1(self) -> Optional[float]:
         return self.ls.t_last if self.ls.index_done else None
 
     def advance(self, wall_dt: float):
-        """Feeds every row up to the new cursor. Ties go log line -> lowstate -> lowcmd, as in real_log.py."""
         if not self.playing or self.ended or self.busy:
             return
         target = self.cursor + wall_dt * self.speed
+        self._feed(target)
+        self.cursor = target
+        if self.ls.peek() is None:
+            self.ended = True
+            self.playing = False
+            if self.ls.t_last is not None:
+                self.cursor = self.ls.t_last
+
+    def _feed(self, target: float, history: bool = False):
+        """Feeds every row and log line up to target. Ties go log line -> lowstate -> lowcmd, as in real_log.py."""
         m = self.monitor
         states, cmds = [], []
         while True:
@@ -1478,7 +1635,7 @@ class Replayer:
                 if states or cmds:          # a state change splits the batch, as it splits real_log's segments
                     m.ingest(states, cmds)
                     states, cmds = [], []
-                m.on_log_line(*self.log_events[self.log_i])
+                m.on_log_line(*self.log_events[self.log_i], history=history)
                 self.log_i += 1
             elif ts == tmin:
                 states.append(self.ls.pop())
@@ -1489,18 +1646,91 @@ class Replayer:
                 states, cmds = [], []
         if states or cmds:
             m.ingest(states, cmds)
-        self.cursor = target
-        if self.ls.peek() is None:
-            self.ended = True
-            self.playing = False
-            if self.ls.t_last is not None:
-                self.cursor = self.ls.t_last
+
+    def _run_to(self, target: float, history: bool = False):
+        """_feed in the pass's steps from the cursor to target, with the link checks between them."""
+        m = self.monitor
+        t = self.cursor
+        n = max(1, math.ceil((target - t) / self.PASS_STEP_S - 1e-9))
+        for i in range(1, n + 1):
+            nxt = target if i == n else t + i * self.PASS_STEP_S
+            self._feed(nxt, history)
+            self.cursor = nxt
+            m.end_step(nxt)
+
+    def _checkpoint_for(self, t: float):
+        """(checkpoint, finished segments, fsm events, alert events) to seek to t from, or None: the pass has not covered t."""
+        with self.ck_lock:
+            if self.ck_failed:
+                return None
+            ck = None
+            for c in reversed(self.checkpoints):
+                if c["cursor"] <= t:
+                    ck = c
+                    break
+            if ck is None or t - ck["cursor"] > self.MAX_FEED_S:
+                return None
+            return (ck, self.master["seg"][max(0, ck["seg_n"] - 100):ck["seg_n"]],
+                    self.master["ev"][max(0, ck["ev_n"] - 200):ck["ev_n"]],
+                    self.master["al"][max(0, ck["al_n"] - 500):ck["al_n"]])
 
     def seek(self, t: float):
-        """Blocking (run it off the event loop). Streams restart at t; statistics restart there too."""
+        """Blocking (run it off the event loop). From a checkpoint the numbers are those of playing from the start to t;
+        without one (the pass has not got there) the streams and statistics restart at t."""
         t = max(self.t0, t if self.t1 is None else min(t, self.t1))
-        self.ls.seek(t)
-        self.lc.seek(t - 0.5)               # the latest command before t applies to the first state
+        found = self._checkpoint_for(t)
+        if found is not None:
+            try:
+                self._seek_from(found, t)
+                return
+            except Exception as e:      # whatever went wrong, the plain seek below restores a consistent state
+                if not self.ck_failed:
+                    print(f"[ROCO DDS] seek from a checkpoint failed ({e!r}); seeks restart the numbers at the target")
+                self.ck_failed = True
+        self._seek_plain(t)
+
+    def _seek_streams(self, t_ls: float, t_lc: float):
+        """Both streams to their target rows. Inflating the two zip members is most of a seek and zlib releases the GIL,
+        so the smaller one goes on a thread."""
+        err = []
+
+        def lc():
+            try:
+                self.lc.seek(t_lc)
+            except Exception as e:
+                err.append(e)
+
+        th = threading.Thread(target=lc, name="seek_lc", daemon=True)
+        th.start()
+        try:
+            self.ls.seek(t_ls)
+        finally:
+            th.join()
+        if err:
+            raise err[0]
+
+    def _seek_from(self, found, t: float):
+        ck, segments, events, alerts = found
+        self._seek_streams(ck["consumed_le"], ck["consumed_le"])
+        for st in (self.ls, self.lc):       # the pass has played the rows up to the checkpoint
+            while True:
+                r = st.peek()
+                if r is None or r.t > ck["consumed_le"]:
+                    break
+                st.pop()
+        m = self.monitor
+        with m.lock:
+            m.restore_state(ck, segments, events, alerts)
+            self.log_i = ck["log_i"]
+            self.cursor = ck["cursor"]
+            self._run_to(t, history=True)
+            m.fsm_rebuilt = True
+        self.cursor = t
+        self.stats_from = self.t0
+        self.ended = False
+
+    def _seek_plain(self, t: float):
+        self._seek_streams(t, t - 0.5)      # the latest command before t applies to the first state
         m = self.monitor
         with m.lock:
             m.reset_streams()
@@ -1513,6 +1743,7 @@ class Replayer:
             m.fsm_events.clear()
             m.fsm_new = []
             m.segments = []
+            m.segments_total = 0
             m.segments_changed = True
             m.fsm_state, m.fsm_since = None, None
             m.segment = m._new_segment(None, t)
@@ -1536,10 +1767,12 @@ class Replayer:
         return replay_timeline(self.log_events, self.t0)
 
     def status(self) -> dict:
+        ready = None if self.pass_state == "off" else self.pass_t
         return {"type": "replay", "file": self.prefix, "store": os.path.basename(self.store.path),
                 "t0": self.t0, "t1": self.t1, "t": self.cursor, "statsFrom": self.stats_from, "speed": self.speed, "playing": self.playing,
                 "ended": self.ended, "indexing": not (self.ls.index_done and self.lc.index_done),
-                "busy": self.busy, "speeds": list(self.SPEEDS)}
+                "busy": self.busy, "speeds": list(self.SPEEDS),
+                "statsPass": self.pass_state, "statsReady": ready}
 
 
 def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl_config: Optional[str],
@@ -1638,6 +1871,126 @@ def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl
 # ==============================================================================
 # Server
 # ==============================================================================
+def open_replay(args, dp: dict, index: bool = True):
+    """Opens --replay: (store, prefix, limits, notes, monitor, replayer). Raises ReplayError. The bridge and the checkpoint
+    worker both call this, so the worker plays exactly what the bridge shows."""
+    store, prefix = resolve_replay(args.replay)
+    events, cfg, cfg_name, notes = find_replay_context(
+        store, prefix, args.ctrl_log, args.ctrl_config or dp["cfg_hw"], [args.ctrl_config, dp["cfg_sim"], dp["cfg_hw"]], dp["root"])
+    top = prefix.split("/")[0] if "/" in prefix else ""
+    model_in_store = [n for n in store.names if os.path.basename(n) == os.path.basename(args.model or "")
+                      and (not top or n.startswith(top + "/"))]
+    model_path = args.model
+    if model_in_store and not store.zip:
+        model_path = os.path.join(store.path, model_in_store[0])
+        notes.append(f"robot model of that day: {os.path.basename(store.path)}/{model_in_store[0]}")
+    limits = load_limits(model_path, None, args.tilt_warn_deg, args.tilt_crit_deg)
+    if cfg is not None:
+        apply_ctrl_config(limits, cfg)
+        limits["ctrlConfig"] = cfg_name
+    monitor = Monitor(limits, "replay")
+    replayer = Replayer(store, prefix, monitor, events, index=index)
+    return store, prefix, limits, notes, monitor, replayer
+
+
+# ==============================================================================
+# Checkpoint pass: numbers after a replay seek equal a played run
+# ==============================================================================
+def _send_frame(out, msg: dict):
+    data = pickle.dumps(msg, protocol=pickle.HIGHEST_PROTOCOL)
+    out.write(struct.pack("<I", len(data)) + data)
+    out.flush()
+
+
+def _read_frame(inp) -> Optional[dict]:
+    head = inp.read(4)
+    if len(head) < 4:
+        return None
+    n = struct.unpack("<I", head)[0]
+    data = inp.read(n)
+    return pickle.loads(data) if len(data) == n else None
+
+
+def checkpoint_worker_main(args, dp: dict) -> int:
+    """The child process: plays the recording once, silently and at the lowest priority, and sends checkpoints (Replayer.run_pass)
+    to the bridge over the pipe it was given. It exits when the pass is done or the bridge is gone (a closed pipe)."""
+    try:
+        if hasattr(os, "sched_setscheduler") and hasattr(os, "SCHED_IDLE"):
+            os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+        else:
+            os.nice(19)
+    except OSError:
+        try:
+            os.nice(19)
+        except OSError:
+            pass
+    try:                            # Linux: die with the bridge even if it is killed
+        import ctypes
+        ctypes.CDLL(None).prctl(1, signal.SIGTERM)
+    except Exception:
+        pass
+    out = os.fdopen(args.checkpoint_fd, "wb")
+    try:
+        _, _, _, _, _, rp = open_replay(args, dp, index=False)
+    except ReplayError as e:
+        print(f"[ROCO DDS] checkpoint pass: {e}", file=sys.stderr)
+        return 2
+    try:
+        _send_frame(out, {"hello": {"t0": rp.t0, "n_log": len(rp.log_events), "prefix": rp.prefix}})
+        rp.run_pass(lambda msg: _send_frame(out, msg))
+    except (BrokenPipeError, OSError):
+        pass
+    return 0
+
+
+class CheckpointReader(threading.Thread):
+    """Bridge side of the pass: reads its pipe and hands each message to the Replayer. Blocking reads, one message per 2 s of data."""
+
+    def __init__(self, replayer: Replayer, fd: int, proc):
+        super().__init__(name="checkpoints", daemon=True)
+        self.rp, self.fd, self.proc = replayer, fd, proc
+
+    def run(self):
+        rp = self.rp
+        try:
+            inp = os.fdopen(self.fd, "rb")
+            hello = _read_frame(inp)
+            h = hello.get("hello") if hello else None
+            if not h or h["t0"] != rp.t0 or h["n_log"] != len(rp.log_events) or h["prefix"] != rp.prefix:
+                raise ValueError("the pass opened a different recording")
+            with rp.ck_lock:
+                rp.pass_state = "running"
+            while True:
+                msg = _read_frame(inp)
+                if msg is None:
+                    break
+                rp.add_pass_message(msg)
+        except Exception as e:
+            print(f"[ROCO DDS] checkpoint pass failed ({e!r}); seeks restart the numbers at the target")
+            with rp.ck_lock:
+                rp.ck_failed = True
+                rp.pass_state = "off"
+        finally:
+            rp.pass_stopped()
+            if self.proc.poll() is None:
+                self.proc.terminate()
+
+
+def start_checkpoint_pass(args, replayer: Replayer):
+    """Starts the pass in a child process. Returns the Popen, or None when it cannot start (seeks then restart the numbers)."""
+    try:
+        r, w = os.pipe()
+        cmd = [sys.executable, os.path.abspath(__file__), *sys.argv[1:], "--checkpoint-worker", "--checkpoint-fd", str(w)]
+        env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
+        proc = subprocess.Popen(cmd, pass_fds=(w,), env=env, stdin=subprocess.DEVNULL)
+        os.close(w)
+    except OSError as e:
+        print(f"[ROCO DDS] cannot start the checkpoint pass ({e}); seeks restart the numbers at the target")
+        return None
+    CheckpointReader(replayer, r, proc).start()
+    return proc
+
+
 def dashboard_url(host: str, port: int, token: Optional[str], page_port: int = 5173) -> str:
     """The page's address: 5173 is `npm run dev`; scripts/roco serves the built page on its own port and passes --page-port."""
     ws = f"ws://{'localhost' if host in LOOPBACK_HOSTS else host}:{port}" + (f"/?token={token}" if token else "")
@@ -2281,6 +2634,118 @@ def run_self_test() -> bool:
     check(still and "pd:4" not in book.active and [e["event"] for e in ev] == ["open", "close"]
           and ev[1]["peakLevel"] == "critical" and ev[1]["peak"] == 101.0, "alert opens, escalates, holds 0.5 s, closes")
 
+    print("\n--- jump with whole-run numbers: a seek restored from checkpoints equals playing from the start ---")
+    import pickle as _pickle
+    with tempfile.TemporaryDirectory() as d:
+        t_base = 1000.0
+        n_rows = 10000                                      # 20 s at 500 Hz
+        # ankle pitch torque swells in two bursts and motor 0 runs hot from 6 to 9 s, so there are segments, peaks and an alert
+        def row_for(cols, i):
+            t_ = t_base + i * 0.002
+            vals = {"unix_t": repr(t_)}
+            ph = t_ - t_base
+            if "tau_est4" in cols:
+                vals["tau_est4"] = repr(20.0 * math.sin(ph) ** 2 if 3 < ph < 16 else 2.0)
+                vals["temp0_0"] = repr(70.0 if 6 < ph < 9 else 30.0)
+            return ",".join(vals.get(c, "0") for c in cols)
+        for name, cols in (("lowstate", ls_cols), ("lowcmd", lc_cols)):
+            with open(os.path.join(d, f"syn_{name}.csv"), "w") as f:
+                f.write(",".join(cols) + "\n" + "".join(row_for(cols, i) + "\n" for i in range(n_rows)))
+        log_events = [(t_base + 0.5, "info", "Config: /x/config.yaml"), (t_base + 2.0, "info", "FSM: Change state from Passive to FixStand"),
+                      (t_base + 6.0, "info", "FSM: Change state from FixStand to Velocity"),
+                      (t_base + 9.5, "info", "Velocity policy: 400 steps, first after 0.3 ms, step interval max 22.9 ms"),
+                      (t_base + 12.0, "info", "FSM: Change state from Velocity to squat"),
+                      (t_base + 16.0, "info", "FSM: Change state from squat to Velocity")]
+
+        def open_syn(index=True):
+            store, prefix = resolve_replay(os.path.join(d, "syn"))
+            mon_ = Monitor(L, "replay")
+            rp_ = Replayer(store, prefix, mon_, list(log_events), index=index)
+            if index:
+                end_ = time.time() + 10
+                while time.time() < end_ and not (rp_.ls.index_done and rp_.lc.index_done):
+                    time.sleep(0.02)
+            return rp_
+
+        def view(rp_):
+            m_ = rp_.monitor
+            with m_.lock:
+                return {"segs": [m_._segment_public(g) for g in m_.segments], "run": m_._segment_public(m_.segment), "state": m_.fsm_state,
+                        "active": sorted((a["id"], a["level"]) for a in m_.alerts.active.values()),
+                        "alog": [(e["event"], e["id"], e["since"]) for e in (m_.alerts.log or [])],
+                        "events": [(e["t"], e["text"]) for e in m_.fsm_events], "counts": (m_.ls_count, m_.cmd_count, round(m_.dt_med(), 7)),
+                        "over": m_.over_samples.tolist()}
+
+        def differs(a, b):
+            out = [k for k in ("segs", "run", "state", "events", "counts", "over", "active") if a[k] != b[k]]
+            if [x[:2] for x in a["alog"]] != [x[:2] for x in b["alog"]] or any(abs(x[2] - y[2]) >= 0.3 for x, y in zip(a["alog"], b["alog"])):
+                out.append("alog")
+            return out
+
+        def same(a, b):
+            return not differs(a, b)
+
+        ref = open_syn()
+        marks = [t_base + v for v in (0.5, 2.02, 5.98, 7.5, 9.98, 12.5, 16.5, 19.98)]
+        want, at_ = {}, {}
+        while not ref.ended and ref.cursor < marks[-1] - 1e-6:
+            ref.advance(0.02)
+            ref.monitor.snapshot(ref.cursor, build=True)
+            for mk in marks:
+                if abs(ref.cursor - mk) < 0.011 and mk not in want:
+                    want[mk] = view(ref)
+                    at_[mk] = ref.cursor        # the cursor as float arithmetic left it: seek to exactly this
+        check(len(want) == len(marks) and any(want[mk]["alog"] for mk in marks) and len(want[marks[-1]]["segs"]) >= 3,
+              f"synthetic recording played from the start has segments and alerts ({len(want[marks[-1]]['segs'])} segments, {len(want[marks[-1]]['alog'])} alert events)")
+        msgs = []
+        worker = open_syn(index=False)
+        done = worker.run_pass(lambda m_: msgs.append(_pickle.loads(_pickle.dumps(m_, protocol=_pickle.HIGHEST_PROTOCOL))))
+        check(done and msgs[-1]["done"] and len(msgs) >= 9, f"the pass reaches the end and sends a checkpoint every 2 s ({len(msgs)} messages)")
+        sk = open_syn()
+        for m_ in msgs:
+            sk.add_pass_message(m_)
+        check(sk.pass_state == "done" and abs(sk.pass_t - sk.t1) < 0.05, "the reader's side knows the pass is done and how far it got")
+        marks = [at_[mk] for mk in marks]
+        want = {at_[k]: v for k, v in want.items()}
+        for mk in marks:
+            sk.seek(mk)
+            dd = differs(want[mk], view(sk))
+            check(not dd and sk.stats_from == sk.t0,
+                  f"{dd or ''} seek to {mk - t_base:.2f} s: segments, events, active and past alerts, counts equal a played run; numbers start at the recording's start")
+        for mk in (marks[4], marks[1], marks[6], marks[0], marks[7]):
+            sk.seek(mk)
+            check(same(want[mk], view(sk)), f"seek back and forth, at {mk - t_base:.2f} s")
+        sk.seek(sk.t1 + 5)
+        check(sk.cursor <= sk.t1 + 1e-6 and sk.stats_from == sk.t0, "a seek past the end lands on the last sample with the whole run's numbers")
+        # the pass has covered only the first part: a jump beyond it behaves as before
+        part = open_syn()
+        for m_ in msgs[:3]:
+            part.add_pass_message(m_)
+        check(part.pass_state == "running", "a pass that has covered 6 s says running")
+        part.seek(marks[5])
+        check(part.stats_from == marks[5], "a jump beyond what the pass covered restarts the numbers there (as before)")
+        part.seek(marks[1])
+        check(part.stats_from == part.t0 and same(want[marks[1]], view(part)), "a jump within what the pass covered keeps the whole run")
+        # a pass that stops early, and a restore that fails, both fall back without a traceback
+        cut = open_syn()
+        for m_ in msgs[:2]:
+            cut.add_pass_message(m_)
+        cut.pass_stopped()
+        check(cut.pass_state == "off" and cut.status()["statsReady"] is None, "a stopped pass reports off")
+        cut.seek(marks[1])
+        check(cut.stats_from == cut.t0 or cut.stats_from == marks[1], "after a stopped pass a jump still works")
+        broken = open_syn()
+        for m_ in msgs:
+            broken.add_pass_message(m_)
+        broken._seek_from = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        broken.seek(marks[4])
+        check(broken.ck_failed and broken.stats_from == marks[4] and abs(broken.cursor - marks[4]) < 0.05,
+              f"a restore that raises falls back to the plain seek (failed {broken.ck_failed}, numbers from {broken.stats_from - t_base:.3f}, cursor {broken.cursor - t_base:.3f})")
+        bad = open_syn()
+        bad_msg = dict(msgs[0], seg=msgs[0]["seg"] + [{"x": 1}])
+        bad.add_pass_message(bad_msg)
+        check(bad.pass_state == "off" and bad.ck_failed, "lists that do not match the checkpoint turn the pass off")
+
     print("\n--- WebSocket server: a client that stops reading does not hold up the others ---")
     try:
         for cond, what in asyncio.run(asyncio.wait_for(_ws_server_checks(), 30.0)):
@@ -2321,6 +2786,10 @@ def main():
     ap.add_argument("--rate", type=float, default=50.0, help="dashboard frame rate in Hz (1..200)")
     ap.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN")
     ap.add_argument("--token", default=os.environ.get("ROCO_BRIDGE_TOKEN"))
+    ap.add_argument("--no-checkpoints", action="store_true",
+                    help="replay: do not run the background pass that makes the numbers after a jump equal a played run")
+    ap.add_argument("--checkpoint-worker", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-fd", type=int, default=-1, help=argparse.SUPPRESS)
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 
@@ -2336,24 +2805,14 @@ def main():
         print(f"[ROCO DDS] warning: deploy folder {dp['root']} not found: ROCO's default limits, no manual hash "
               "(set --deploy-dir or ROCO_DEPLOY_DIR)")
 
+    if args.checkpoint_worker:
+        if not args.replay or args.checkpoint_fd < 0:
+            ap.error("--checkpoint-worker is started by the bridge itself")
+        sys.exit(checkpoint_worker_main(args, dp))
+
     if args.replay:
         try:
-            store, prefix = resolve_replay(args.replay)
-            events, cfg, cfg_name, notes = find_replay_context(
-                store, prefix, args.ctrl_log, args.ctrl_config or dp["cfg_hw"], [args.ctrl_config, dp["cfg_sim"], dp["cfg_hw"]], dp["root"])
-            top = prefix.split("/")[0] if "/" in prefix else ""
-            model_in_store = [n for n in store.names if os.path.basename(n) == os.path.basename(args.model or "")
-                              and (not top or n.startswith(top + "/"))]
-            model_path = args.model
-            if model_in_store and not store.zip:
-                model_path = os.path.join(store.path, model_in_store[0])
-                notes.append(f"robot model of that day: {os.path.basename(store.path)}/{model_in_store[0]}")
-            limits = load_limits(model_path, None, args.tilt_warn_deg, args.tilt_crit_deg)
-            if cfg is not None:
-                apply_ctrl_config(limits, cfg)
-                limits["ctrlConfig"] = cfg_name
-            monitor = Monitor(limits, "replay")
-            replayer = Replayer(store, prefix, monitor, events)
+            store, prefix, limits, notes, monitor, replayer = open_replay(args, dp)
         except ReplayError as e:
             print(f"[ROCO DDS] cannot replay: {e}", file=sys.stderr)
             sys.exit(2)
@@ -2362,10 +2821,14 @@ def main():
         print(f"[ROCO DDS] replaying {store.path} :: {prefix}")
         hello = build_hello(args, public_limits(limits, dp["root"]), "replay",
                             {"replay": {"store": os.path.basename(store.path.rstrip("/\\")) or store.path, "file": prefix, "notes": notes}})
+        worker = None if args.no_checkpoints else start_checkpoint_pass(args, replayer)
         try:
             sys.exit(asyncio.run(serve(args, monitor, hello, replayer, None)) or 0)
         except KeyboardInterrupt:
             print("\n[ROCO DDS] stopped")
+        finally:
+            if worker is not None and worker.poll() is None:
+                worker.terminate()
         return
 
     source = args.source or ("sim" if args.iface == "lo" else "robot")

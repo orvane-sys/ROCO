@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Pause, Play, RotateCcw, Film } from 'lucide-react'
 import type { MonitorState } from '../types/monitor'
 import { telemetryService } from '../services/telemetryStream'
+import { statsPassNote } from '../utils/monitorFormat'
 
 /** Transport for a recording the bridge replays (`roco_dds_bridge.py --replay`). */
 /** `compact` leaves out the bridge's notes about the recording; the Review workspace shows them. */
@@ -13,6 +14,7 @@ export function ReplayControls({ state, compact = false }: { state: MonitorState
   const span = r.t1 !== null ? r.t1 - r.t0 : null
   const pos = drag ?? r.t - r.t0
   const notes = state.hello?.replay?.notes ?? []
+  const passNote = statsPassNote(state)
 
   const commit = () => {
     if (drag !== null) telemetryService.sendReplayControl('seek', r.t0 + drag)
@@ -32,6 +34,7 @@ export function ReplayControls({ state, compact = false }: { state: MonitorState
           {r.busy ? 'Seeking…' : r.ended ? 'Ended' : r.playing ? `Playing at ${r.speed}×` : 'Paused'}
           {r.indexing ? ' · building seek index' : ''}
         </span>
+        {passNote && <span className="text-xs text-ink-soft w-full sm:w-auto">{passNote}</span>}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">

@@ -41,9 +41,23 @@ export function formatDataTime(t: number | null | undefined, state: MonitorState
  * Empty when the data is the whole run (live, or a recording played from its start, or an older bridge that does not say).
  */
 export function statsSinceNote(state: MonitorState): string {
+  const s = statsSince(state)
+  return s ? ` ${s} (the recording was started there)` : ''
+}
+
+/** "since 228.0 s" when the numbers start after the recording's start, else empty. */
+export function statsSince(state: MonitorState): string {
   const r = state.replay
   if (!r || r.statsFrom === undefined || r.statsFrom <= r.t0 + 0.5) return ''
-  return ` since ${formatDataTime(r.statsFrom, state)} (the recording was started there)`
+  return `since ${formatDataTime(r.statsFrom, state)}`
+}
+
+/** While the bridge's background pass runs: "Preparing numbers for jumps (45 %)". Null otherwise (done, off, live, an older bridge). */
+export function statsPassNote(state: MonitorState): string | null {
+  const r = state.replay
+  if (!r || r.statsPass !== 'running' || r.t1 === null || r.t1 <= r.t0) return null
+  const done = Math.max(0, Math.min(1, ((r.statsReady ?? r.t0) - r.t0) / (r.t1 - r.t0)))
+  return `Preparing numbers for jumps (${Math.floor(done * 100)} %)`
 }
 
 /**

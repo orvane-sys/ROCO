@@ -21,8 +21,9 @@ ROCO is read-only. Nothing in this test sends anything to a robot.
 1. `npm run build`, then `npm run lint` must pass.
 2. Pilot the whole protocol on yourself or a colleague. Fix wording in this file, not in the middle of a session.
 3. Rehearse each glance scene (below) on your build and check the answer key against what the screen actually shows.
-   Reach each scene by playing from 0 and pausing at the time. I rehearsed only that way; I did not check whether jumping straight
-   to a time shows the same status bar, because limits are counted from the data played so far.
+   Reach each scene by playing from 0 and pausing at the time, or jump straight to it once the Review card no longer says
+   "Preparing numbers for jumps"; both give the same status bar (checked for scenes C to E on the 2026-10-24 squat recording).
+   A jump made while that text is shown restarts the numbers at the target and the page says "since X s".
 4. Start from a clean browser profile for each participant (no saved plot sets, tour not yet seen, text size 100 %).
 5. Wi-Fi does not matter for the test, but ROCO makes no external requests anyway.
 
@@ -182,7 +183,9 @@ After the tasks, ask three questions and write the answers verbatim:
 - **The recording script was run once as written in a scratch folder. I then changed the output log name to `log.txt`
   in the saved copy and checked only its syntax.** Run it once before relying on it.
 - **Live sim for task 3:** `drive_squat.py` no longer exists here, so only the plain simulator start can be used.
-- **Scenes were rehearsed by playing from 0**, not by jumping straight to a time.
+- **Scenes were rehearsed by playing from 0 and by jumping** (after the background pass finished) on the 2026-10-24 squat
+  recording: scenes C, D and E read 2, 5 and 5 (History 2) either way. The slider is not exact, so a jump lands within
+  a few seconds of the time asked, not on it. Scenes F and G (simulated fall) were not re-checked by jumping.
 - **Solo run:** if you do it alone, results are one person who knows the design. See "If you are testing alone".
 - **glance-drill.html** was tested in headless Chrome only (shuffle, 2 s display, scoring, invalid answer, CSV, summarizer reads
   it). Its pictures come from replays on this PC: scenes A to E from the real 2026-10-24 squat log and F and G from the simulated

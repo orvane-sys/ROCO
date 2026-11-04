@@ -84,6 +84,12 @@ python3 scripts/roco_dds_bridge.py --iface enp2s0 --source robot
 python3 scripts/roco_dds_bridge.py --replay <folder-or-zip>
 ```
 
+A replay also starts a second, low-priority Python process (idle scheduling class, one thread) that plays the whole
+recording once in the background. The page shows "Preparing numbers for jumps (N %)" while it runs (about 20 CPU seconds for
+a 4-minute recording on a desktop PC). Until it has covered a jump target, a jump restarts the numbers there and the
+page says "since X s". Once it has, a jump shows the same numbers as playing from the start. It keeps about 10 KB per
+2 s of recording in memory and writes nothing to disk. `--no-checkpoints` turns it off.
+
 The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
 **Demo data** is only shown if you press the button (or open `?demo=1`) and is labelled DEMO everywhere.
 
