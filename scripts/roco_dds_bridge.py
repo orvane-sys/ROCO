@@ -38,7 +38,7 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import deque
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -90,6 +90,31 @@ def deploy_paths(root: str) -> dict:
         "ctrl_log": os.path.join(root, "robots/g1/log/log.txt"),
         "manual": os.path.join(root, "TEST_MANUAL.md"),
     }
+
+
+def display_path(path: Optional[str], root: Optional[str]) -> Optional[str]:
+    """A path as the page and the session report show it: inside the deploy folder relative to it ("deploy/robots/g1/config/config.yaml"),
+    anywhere else only the file name, so a saved report does not carry the user's home folder."""
+    if not path:
+        return path
+    try:
+        full = os.path.abspath(os.path.expanduser(path))
+        base = os.path.abspath(os.path.expanduser(root)) if root else None
+        if base and full != base and os.path.commonpath([full, base]) == base:
+            return "deploy/" + os.path.relpath(full, base).replace(os.sep, "/")
+    except ValueError:
+        pass
+    return os.path.basename(path.rstrip("/\\")) or path
+
+
+def public_limits(limits: dict, root: Optional[str]) -> dict:
+    """The limits dict as the hello sends it: display paths for the robot model and the controller config."""
+    for key in ("model", "ctrlConfig"):
+        v = limits.get(key)
+        # only an absolute path is a path on this PC; a recording's own "<recording>:<member>" and a shortened one are left as they are
+        if v and os.path.isabs(v):
+            limits[key] = display_path(v, root)
+    return limits
 
 
 _DEPLOY = deploy_paths(DEPLOY_LOCK)
@@ -1517,7 +1542,8 @@ class Replayer:
                 "busy": self.busy, "speeds": list(self.SPEEDS)}
 
 
-def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl_config: Optional[str]
+def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl_config: Optional[str],
+                        deploy_cfgs: Sequence[Optional[str]] = (), deploy_root: Optional[str] = None
                         ) -> Tuple[List[Tuple[float, str, str]], Optional[dict], Optional[str], List[str]]:
     """g1_ctrl log lines for the recording's window, plus the config / model used that day when present.
     Logs: every log*.txt in the same top folder (zip or dir) and --ctrl-log, deduplicated; the window
@@ -1589,11 +1615,23 @@ def find_replay_context(store: Store, prefix: str, ctrl_log: Optional[str], ctrl
                 cfg = yaml.safe_load(f.read().decode())
             cfg_name = f"{os.path.basename(store.path)}:{cands[0]}"
             notes.append(f"controller config of that run: {cfg_name}")
+    if cfg is None and named and HAS_YAML:
+        # the recording holds no copy: the deploy folder's file of the same name is the one the log names (config.yaml for the
+        # simulator, config_hw.yaml for the robot), not whichever one happens to be the default
+        base = os.path.basename(named[-1])
+        for cand in deploy_cfgs:
+            if cand and os.path.basename(cand) == base and os.path.exists(cand):
+                with open(cand) as f:
+                    cfg = yaml.safe_load(f)
+                cfg_name = display_path(cand, deploy_root)
+                notes.append(f"controller config: {cfg_name} (the run's log names {base}; the recording has no copy of it)")
+                break
     if cfg is None and ctrl_config and os.path.exists(ctrl_config) and HAS_YAML:
         with open(ctrl_config) as f:
             cfg = yaml.safe_load(f)
-        cfg_name = ctrl_config
-        notes.append(f"controller config: {ctrl_config} (the run's own config was not found)")
+        cfg_name = display_path(ctrl_config, deploy_root)
+        why = f"the run's log names {os.path.basename(named[-1])}, which was not found" if named else "the run's own config was not found"
+        notes.append(f"controller config: {cfg_name} ({why}, so these limits may not be the ones that run used)")
     return events, cfg, cfg_name, notes
 
 
@@ -2122,6 +2160,41 @@ def run_self_test() -> bool:
         check(rp.t1 == times[-1], "the same cut recording inside a zip")
         store.zip.close()
 
+        # W8: a recording without a copy of the config its log names gets the deploy file of that name, not config_hw.yaml
+        if HAS_YAML:
+            root = os.path.join(d, "dep")
+            cfgdir = os.path.join(root, "robots/g1/config")
+            os.makedirs(cfgdir)
+            for nm, v in (("config.yaml", 11), ("config_hw.yaml", 22)):
+                with open(os.path.join(cfgdir, nm), "w") as f:
+                    f.write(f"marker: {v}\n")
+            dp2 = deploy_paths(root)
+            stamp = datetime.datetime.fromtimestamp(1001.0).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+            def context_for(named):
+                os.makedirs(os.path.join(d, "w8"), exist_ok=True)
+                write("w8/log.txt", f"[{stamp}] [info] Config: /elsewhere/{named}\n")
+                write("w8/run_lowcmd.csv", csv_text(lc_cols, times))
+                write("w8/run_lowstate.csv", csv_text(ls_cols, times))
+                st, pf = resolve_replay(os.path.join(d, "w8", "run"))
+                return find_replay_context(st, pf, None, dp2["cfg_hw"], [None, dp2["cfg_sim"], dp2["cfg_hw"]], root)
+
+            _, cfg, nm, notes = context_for("config.yaml")
+            check(cfg == {"marker": 11} and nm == "deploy/robots/g1/config/config.yaml", "a log naming config.yaml gets the deploy config.yaml (a simulator run)")
+            _, cfg, nm, notes = context_for("config_hw.yaml")
+            check(cfg == {"marker": 22} and nm == "deploy/robots/g1/config/config_hw.yaml", "a log naming config_hw.yaml gets config_hw.yaml")
+            _, cfg, nm, notes = context_for("other.yaml")
+            check(cfg == {"marker": 22} and any("other.yaml" in n and "not found" in n for n in notes),
+                  "a config named nowhere falls back to config_hw.yaml and says the named one was not found")
+            check(not any(d in n for n in notes), "the notes carry no absolute path of this PC")
+        # W13: what the hello shows of a path
+        check(display_path("/home/u/deploy/robots/g1/config/config.yaml", "/home/u/deploy") == "deploy/robots/g1/config/config.yaml",
+              "a path inside the deploy folder is shown relative to it")
+        check(display_path("/home/u/elsewhere/model.xml", "/home/u/deploy") == "model.xml", "any other path is shown as its file name")
+        check(display_path("/home/u/rec/", "/home/u/deploy") == "rec", "a folder with a trailing slash is its name")
+        pl = public_limits({"model": "/home/u/deploy/sim/g1/m.xml", "ctrlConfig": "day.zip:ctx/config.yaml"}, "/home/u/deploy")
+        check(pl["model"] == "deploy/sim/g1/m.xml" and pl["ctrlConfig"] == "day.zip:ctx/config.yaml", "the limits shown have no absolute path; a recording's own config name stays")
+
     print("\n--- g1_ctrl log: an old run's state is never shown as current ---")
     import subprocess
 
@@ -2266,14 +2339,15 @@ def main():
     if args.replay:
         try:
             store, prefix = resolve_replay(args.replay)
-            events, cfg, cfg_name, notes = find_replay_context(store, prefix, args.ctrl_log, args.ctrl_config or dp["cfg_hw"])
+            events, cfg, cfg_name, notes = find_replay_context(
+                store, prefix, args.ctrl_log, args.ctrl_config or dp["cfg_hw"], [args.ctrl_config, dp["cfg_sim"], dp["cfg_hw"]], dp["root"])
             top = prefix.split("/")[0] if "/" in prefix else ""
             model_in_store = [n for n in store.names if os.path.basename(n) == os.path.basename(args.model or "")
                               and (not top or n.startswith(top + "/"))]
             model_path = args.model
             if model_in_store and not store.zip:
                 model_path = os.path.join(store.path, model_in_store[0])
-                notes.append(f"robot model of that day: {model_path}")
+                notes.append(f"robot model of that day: {os.path.basename(store.path)}/{model_in_store[0]}")
             limits = load_limits(model_path, None, args.tilt_warn_deg, args.tilt_crit_deg)
             if cfg is not None:
                 apply_ctrl_config(limits, cfg)
@@ -2286,7 +2360,8 @@ def main():
         for n in notes:
             print(f"[ROCO DDS] {n}")
         print(f"[ROCO DDS] replaying {store.path} :: {prefix}")
-        hello = build_hello(args, limits, "replay", {"replay": {"store": store.path, "file": prefix, "notes": notes}})
+        hello = build_hello(args, public_limits(limits, dp["root"]), "replay",
+                            {"replay": {"store": os.path.basename(store.path.rstrip("/\\")) or store.path, "file": prefix, "notes": notes}})
         try:
             sys.exit(asyncio.run(serve(args, monitor, hello, replayer, None)) or 0)
         except KeyboardInterrupt:
@@ -2312,7 +2387,7 @@ def main():
         LogTailer(log_path, monitor).start()
     print(f"[ROCO DDS] read-only on {args.iface} (domain {args.domain}), source '{source}', odometry {odom or 'off'}, "
           f"g1_ctrl log {log_path or 'off'}")
-    hello = build_hello(args, limits, source, {"odomTopics": odom, "ctrlLog": log_path})
+    hello = build_hello(args, public_limits(limits, dp["root"]), source, {"odomTopics": odom, "ctrlLog": log_path})
     try:
         sys.exit(asyncio.run(serve(args, monitor, hello, None, dds)) or 0)
     except KeyboardInterrupt:

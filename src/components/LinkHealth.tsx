@@ -1,8 +1,9 @@
 import { Activity } from 'lucide-react'
 import type { RobotTelemetry } from '../types/telemetry'
-import type { FsmHealth, MonitorState } from '../types/monitor'
+import type { MonitorState } from '../types/monitor'
 import { useRenderStats } from '../services/renderStats'
 import { STEP_INTERVAL_STOP_MS } from '../config/alertPolicy'
+import { policyTimingSummary, policyTimingText } from '../utils/alertModel'
 
 interface LinkHealthProps {
   state: MonitorState
@@ -32,18 +33,6 @@ function Tile({ label, value, sub, tone }: { label: string; value: string; sub?:
   )
 }
 
-type PolicyTiming = Extract<FsmHealth, { kind: 'policyTiming' }>
-
-/** The newest "<policy> policy: N steps … step interval max" line g1_ctrl logged (TEST_MANUAL section 3: abort above 50 ms). */
-function lastPolicyTiming(state: MonitorState): PolicyTiming | null {
-  const events = state.fsm.events
-  for (let i = events.length - 1; i >= 0; i--) {
-    const h = events[i].health
-    if (h?.kind === 'policyTiming') return h
-  }
-  return null
-}
-
 /** Rates, gaps and the IMU, as the bridge measured them on every sample. */
 export function LinkHealth({ state, telemetry }: LinkHealthProps) {
   const aux = state.aux
@@ -55,7 +44,7 @@ export function LinkHealth({ state, telemetry }: LinkHealthProps) {
   const odom = aux?.odom
   const sim = state.hello?.source === 'sim'
   const lsAge = link?.lowstateAgeMs ?? null
-  const policy = lastPolicyTiming(state)
+  const policy = policyTimingSummary(state.fsm.events)
   const replayIdle = state.replay !== null && !state.replay.playing
   const draw = useRenderStats()
 
@@ -70,13 +59,13 @@ export function LinkHealth({ state, telemetry }: LinkHealthProps) {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
         <Tile
           label="rt/lowstate"
-          value={link ? `${link.lowstateHz.toFixed(0)} Hz` : '—'}
+          value={link && !replayIdle ? `${link.lowstateHz.toFixed(0)} Hz` : '—'}
           sub={lsAge === null ? 'no state yet' : `age ${lsAge.toFixed(0)} ms`}
           tone={!replayIdle && lsAge !== null && lsAge > timeout ? 'bad' : undefined}
         />
         <Tile
           label="rt/lowcmd"
-          value={link ? `${link.lowcmdHz.toFixed(0)} Hz` : '—'}
+          value={link && !replayIdle ? `${link.lowcmdHz.toFixed(0)} Hz` : '—'}
           sub={link?.lowcmdAgeMs == null ? 'no command yet' : `age ${link.lowcmdAgeMs.toFixed(0)} ms`}
           tone={!replayIdle && link?.lowcmdAgeMs != null && link.lowcmdAgeMs > 200 && (lsAge ?? Infinity) < 200 ? 'warn' : undefined}
         />
@@ -88,9 +77,9 @@ export function LinkHealth({ state, telemetry }: LinkHealthProps) {
         />
         <Tile
           label="Policy step interval"
-          value={policy ? `${policy.intervalMaxMs.toFixed(1)} ms max` : '—'}
-          sub={policy ? `${policy.policy}, ${policy.steps} steps · abort above ${STEP_INTERVAL_STOP_MS} ms` : 'logged when a policy state ends'}
-          tone={policy && policy.intervalMaxMs > STEP_INTERVAL_STOP_MS ? 'bad' : undefined}
+          value={policy ? `${policy.worst.ms.toFixed(1)} ms max` : '—'}
+          sub={policy ? `${policyTimingText(policy)}, newest ${policy.latestMs.toFixed(1)} ms · abort above ${STEP_INTERVAL_STOP_MS} ms` : 'logged when a policy state ends'}
+          tone={policy && policy.worst.ms > STEP_INTERVAL_STOP_MS ? 'bad' : undefined}
         />
         <Tile
           label="ROCO 3D drawing"

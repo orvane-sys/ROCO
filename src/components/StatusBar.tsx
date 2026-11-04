@@ -133,7 +133,7 @@ export function StatusBar({
   const parts = [
     counts.critical ? `${counts.critical} critical` : '',
     abortTrips ? `${abortTrips} abort check${abortTrips > 1 ? 's' : ''} tripped` : '',
-    stageStops ? `${stageStops} stage limit${stageStops > 1 ? 's' : ''} crossed` : '',
+    stageStops ? `${stageStops} guided-check limit${stageStops > 1 ? 's' : ''} crossed` : '',
     warn ? `${warn} warning${warn > 1 ? 's' : ''}` : '',
   ].filter(Boolean)
   const extra = [counts.followOn ? `${counts.followOn} after Passive` : '', counts.shelved ? `${counts.shelved} shelved` : ''].filter(Boolean)
@@ -179,7 +179,7 @@ export function StatusBar({
             type="button"
             onClick={onShowAlerts}
             className={cn(chip, 'cursor-pointer hover:border-line-hot font-semibold', crit ? TONE.crit : warn ? TONE.warn : TONE.neutral)}
-            aria-label={`${alertsText}${firstTitle && parts.length ? ` first: ${firstTitle}` : ''}${extra.length ? ` (${extra.join(', ')})` : ''}, show alerts`}
+            aria-label={`${alertsText}${firstTitle && parts.length ? ` first: ${firstTitle}` : ''}${extra.length ? ` (${extra.join(', ')})` : ''}, ${stageStops && !counts.critical && !counts.warn && !abortTrips ? 'show guided checks' : 'show alerts'}`}
           >
             {crit ? <AlertOctagon className="w-4 h-4" aria-hidden="true" /> : warn ? <AlertTriangle className="w-4 h-4" aria-hidden="true" /> : <CheckCircle2 className={cn('w-4 h-4', aux ? 'text-ok' : 'text-ink-muted')} aria-hidden="true" />}
             <span aria-hidden="true">{alertsText}</span>
@@ -202,10 +202,10 @@ export function StatusBar({
           </button>
           </div>
 
-          <div className={cn(chip, stateLost ? TONE.crit : TONE.neutral, 'font-mono tabular-nums')} role="group" aria-label={link ? `Robot state ${link.lowstateHz.toFixed(0)} hertz, commands ${link.lowcmdHz.toFixed(0)} hertz${stateLost ? ', state lost' : ''}` : 'Link: no data'}>
+          <div className={cn(chip, stateLost ? TONE.crit : TONE.neutral, 'font-mono tabular-nums')} role="group" aria-label={link ? (replayIdle ? 'Rates not shown while the replay is not playing' : `Robot state ${link.lowstateHz.toFixed(0)} hertz, commands ${link.lowcmdHz.toFixed(0)} hertz${stateLost ? ', state lost' : ''}`) : 'Link: no data'}>
             <Radio className="w-4 h-4" aria-hidden="true" />
             <span aria-hidden="true">
-              {link ? `state ${link.lowstateHz.toFixed(0)} Hz · cmd ${link.lowcmdHz.toFixed(0)} Hz` : 'no link data'}
+              {link ? (replayIdle ? 'state — Hz · cmd — Hz' : `state ${link.lowstateHz.toFixed(0)} Hz · cmd ${link.lowcmdHz.toFixed(0)} Hz`) : 'no link data'}
             </span>
             {stateLost && <span aria-hidden="true">LOST</span>}
           </div>

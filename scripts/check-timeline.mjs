@@ -38,6 +38,7 @@ const tl = await bundle('src/utils/timelineModel.ts')
 const registry = await bundle('src/config/robotRegistry.ts')
 const report = await bundle('src/utils/sessionReport.ts')
 const alertModel = await bundle('src/utils/alertModel.ts')
+const fmtMod = await bundle('src/utils/monitorFormat.ts')
 const procs = await bundle('src/config/procedures/g1_type6.ts')
 const procModel = await bundle('src/utils/procedureModel.ts')
 const conn = await bundle('src/utils/connectionChecks.ts')
@@ -359,6 +360,7 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   check(/Alerts: 1 critical, 1 warning, 0 info/.test(md), 'the summary counts alerts by level')
   check(md.includes('| Velocity (now) | 02:02:00.000'.slice(0, 16)) || md.includes('Velocity (now)'), 'the current state is marked in the per-state table')
   check(md.includes('7.1 Nm 29%') && md.includes('6.5 / 1.2 / 3.5') && md.includes('-0.8° / 1.2°') && md.includes('80.0 s'), 'per-state numbers use the same rounding as the page')
+  check(md.includes("one motor's peak (longest)"), 'the report names what the ankle percentage is of')
   check(md.includes('pipe \\| in note new line') && !/pipe \| in note/.test(md), 'a pipe or line break in a note cannot break a table')
   check(md.includes('still open'), 'an open alert says so')
   {
@@ -386,6 +388,11 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   check(!repOf({ ...rpl, statsFrom: 100.2 }, 200).includes('Numbers from'), 'a start within 0.5 s of the recording start is not partial')
   check(tl.openWord({ replay: false, playedTo: null, t1: 5 }) === 'still open' && tl.openWord({ replay: true, playedTo: 199.6, t1: 200 }) === 'open at end of recording' && tl.openWord({ replay: true, playedTo: 150, t1: 200 }) === 'open where play stopped', 'openWord: live, end of recording, stopped earlier')
   check(rep.includes('REPLAY stand_cal16') && rep.includes('played to 50.0 s'), 'a recording\'s report names the recording and how far it was played')
+  // W13: a saved report never carries the folders of this PC, even from an older bridge that sends absolute paths
+  const abs = report.buildReport({ state: { ...state, replay: rpl, hello: { ...state.hello, source: 'replay', limits: { ...state.hello.limits, model: '/home/crl/unitree_rl_mjlab/deploy_lock/sim/g1/g1_29dof_type6.xml', ctrlConfig: '/home/crl/unitree_rl_mjlab/deploy_lock/robots/g1/config/config.yaml' }, replay: { file: 'stand_cal16', store: '/home/crl/ROCO_test_recordings/sim_fall', notes: [] } } }, profileName: 'x', generatedAt: new Date(), timeline: { ...m, replay: true, playedTo: 200, t1: 200 }, alertTitle: () => 'a', abortChecks: abort, procedure: null })
+  check(!abs.includes('/home/') && abs.includes('g1_29dof_type6.xml') && abs.includes('config.yaml') && abs.includes('stand_cal16 in sim_fall'), 'an absolute path in the hello is cut to its file name in the report')
+  check(fmtMod.reportPath('deploy/sim/g1/m.xml') === 'deploy/sim/g1/m.xml' && fmtMod.reportPath('day.zip:ctx/config.yaml') === 'day.zip:ctx/config.yaml', 'a path the bridge already shortened is left as it is')
+  check(fmtMod.reportPath('C:\\Users\\a\\rec\\') === 'rec', 'a Windows path is cut too')
 }
 
 // -- connection checks ------------------------------------------------------------------------------------------------------
@@ -401,4 +408,25 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
 }
 
 console.log(`check-timeline: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
+
+// -- wording that depends on the replay position (3D badge, idle plots, position corner) ------------------------------------------
+{
+  const rp = (extra = {}) => live({ replay: { type: 'replay', file: 'f', store: 's', t0: 1000, t1: 1236.2, t: 1198.8, speed: 1, playing: true, ended: false, indexing: false, busy: null, speeds: [1], ...extra } })
+  check(fmtMod.replayBadge(live()) === null && fmtMod.replayIdleNote(live()) === null, 'live data: no replay badge, no idle note')
+  check(fmtMod.replayBadge(rp()) === 'Replay 198.8 s / 236.2 s', 'a playing replay says where it is, not Live')
+  check(fmtMod.replayBadge(rp({ playing: false })) === 'Replay paused at 198.8 s / 236.2 s', 'a paused replay says paused')
+  check(fmtMod.replayBadge(rp({ t1: null })) === 'Replay 198.8 s', 'no end time yet: the position alone')
+  check(fmtMod.replayBadge(rp({ ended: true, playing: false })) === 'Replay ended', 'an ended replay says so')
+  check(fmtMod.replayBadge(rp({ busy: 'seek' })) === 'Seeking…', 'a seek in progress says so')
+  check(fmtMod.replayIdleNote(rp()) === null, 'a playing replay has no idle note')
+  check(fmtMod.replayIdleNote(rp({ playing: false })) === 'Paused at 198.8 s', 'a paused replay: the plots say where')
+  check(fmtMod.replayIdleNote(rp({ ended: true, playing: false })) === 'Replay ended', 'an ended replay: the plots say so')
+  const pose = { x: 0, y: 0 }
+  check(fmtMod.positionText(rp(), pose, 2).recorded === false && fmtMod.positionText(rp(), pose, 2).x === '—', 'a recording without odometry: position not recorded, not 0.00')
+  check(fmtMod.positionText(rp({}), { x: 1.234, y: -2 }, 2).recorded === false, 'a replay never shows a made-up position')
+  const withOdom = live({ replay: rp().replay, aux: { t: 1, alerts: [], link: {}, odom: { topic: 'x', x: 1.234, y: -2, z: 0, vx: 0, vy: 0, vz: 0, ageMs: 1 } } })
+  check(fmtMod.positionText(withOdom, { x: 1.234, y: -2 }, 2).x === '1.23', 'with odometry the position is shown')
+  check(fmtMod.positionText(live(), pose, 2).x === '0.00', 'live data keeps showing the position')
+}
+
 if (failed) process.exit(1)

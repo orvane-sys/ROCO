@@ -6,7 +6,7 @@ import type { ConnectionStatus } from '../types/telemetry'
 import { telemetryService } from '../services/telemetryStream'
 import { PLOT_SLOTS } from '../services/plotRing'
 import { cursorSample, useCursorSample } from '../services/viewStore'
-import { formatDataTime } from '../utils/monitorFormat'
+import { formatDataTime, positionText, replayBadge } from '../utils/monitorFormat'
 import { setScene3d, themeVar, useUiPrefs } from '../services/uiPrefs'
 import { recordFrame, setRenderState, useRenderStats } from '../services/renderStats'
 import { hasGaitModel, type RobotProfile } from '../config/robotRegistry'
@@ -792,8 +792,13 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
   const progressPercent =
     loadProgress.total > 0 ? Math.round((loadProgress.loaded / loadProgress.total) * 100) : 0
 
+  const posNow = positionText(monitorNow, hudPose, 2)
+  const posAria = positionText(monitorNow, hudPose, 1).recorded
+    ? `at x ${positionText(monitorNow, hudPose, 1).x} metres, y ${positionText(monitorNow, hudPose, 1).y} metres`
+    : 'position not recorded'
   const statusLabel =
-    status === 'LIVE'
+    replayBadge(monitorNow) ??
+    (status === 'LIVE'
       ? 'Live'
       : status === 'MOCK'
       ? 'Demo data'
@@ -801,7 +806,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       ? 'Halted'
       : status === 'CONNECTING'
       ? 'Connecting'
-      : 'Offline'
+      : 'Offline')
 
   return (
     <section
@@ -844,7 +849,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       <div
         ref={mountRef}
         role="img"
-        aria-label={!enabled ? '3D view is off' : `3D view of the Unitree G1 robot at x ${hudPose.x.toFixed(1)} metres, y ${hudPose.y.toFixed(1)} metres, heading ${Math.round((hudPose.yaw * 180) / Math.PI)} degrees`}
+        aria-label={!enabled ? '3D view is off' : `3D view of the Unitree G1 robot ${posAria}, heading ${Math.round((hudPose.yaw * 180) / Math.PI)} degrees`}
         className="w-full flex-1 cursor-grab active:cursor-grabbing"
       />
 
@@ -991,7 +996,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
 
         {cursor && monitorNow.replay && (
           <div role="status" className="bg-accent-soft/90 px-2.5 py-1.5 rounded-lg border border-accent-line text-ink pointer-events-auto tabular-nums">
-            Joint angles and tilt at {formatDataTime(cursor.t, monitorNow)} (time cursor). Position is current.
+            Joint angles and tilt at {formatDataTime(cursor.t, monitorNow)} (time cursor).{posNow.recorded ? ' Position is current.' : ''}
           </div>
         )}
 
@@ -1018,8 +1023,14 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
             <Compass className="w-4 h-4" aria-hidden="true" />
             <span>Position</span>
           </div>
-          <span>x {hudPose.x.toFixed(2)} m</span>
-          <span>y {hudPose.y.toFixed(2)} m</span>
+          {posNow.recorded ? (
+            <>
+              <span>x {posNow.x} m</span>
+              <span>y {posNow.y} m</span>
+            </>
+          ) : (
+            <span>— not recorded</span>
+          )}
           <span>heading {((hudPose.yaw * 180) / Math.PI).toFixed(0)}°</span>
         </div>
       </div>

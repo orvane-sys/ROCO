@@ -367,7 +367,9 @@ export function App() {
     [activeProfile]
   )
 
-  const handleShowAlerts = useCallback(() => goToWorkspace('run', 'alerts'), [goToWorkspace])
+  // the status bar chip: when the only thing crossed is a guided-check stop limit, the Alerts list has nothing to show, so go to the checks
+  const onlyStageStops = alertView.counts.critical + alertView.counts.warn + abortTrips === 0 && stageStops > 0
+  const handleShowAlerts = useCallback(() => goToWorkspace('run', onlyStageStops ? 'guided-checks' : 'alerts'), [goToWorkspace, onlyStageStops])
   const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), [])
   const handleOpenImport = useCallback(() => {
     setIsSettingsOpen(false)
@@ -462,7 +464,7 @@ export function App() {
     />
   )
 
-  const alerts = <AlertsPanel state={monitor} profile={activeProfile} view={alertView} onSelectSlot={handleSelectSlot} defaultShowHistory={workspace === 'review'} />
+  const alerts = <AlertsPanel state={monitor} profile={activeProfile} view={alertView} stageStops={stageStops} onSelectSlot={handleSelectSlot} defaultShowHistory={workspace === 'review'} />
   const checks = <AbortChecks checks={abortChecks} state={monitor} />
   const guided = procResult ? <GuidedChecks state={monitor} scope={procScope} procState={procState} result={procResult} big={workspace === 'run'} /> : null
 

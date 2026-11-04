@@ -1,9 +1,10 @@
 import { AlertOctagon, AlertTriangle, Gauge } from 'lucide-react'
 import type { RobotProfile } from '../config/robotRegistry'
-import type { FsmHealth, MonitorState } from '../types/monitor'
+import type { MonitorState } from '../types/monitor'
 import type { RobotTelemetry } from '../types/telemetry'
 import { STEP_INTERVAL_STOP_MS } from '../config/alertPolicy'
 import { cn } from '../utils/cn'
+import { policyTimingSummary, policyTimingText } from '../utils/alertModel'
 
 type Level = 'ok' | 'warn' | 'crit'
 
@@ -22,15 +23,6 @@ const LEVEL_STYLE: Record<Level, string> = {
 
 /** Same rule as the bridge's own alerts: a warning from 80 % of a limit, critical from 100 %. */
 const byFraction = (f: number): Level => (f >= 1 ? 'crit' : f >= 0.8 ? 'warn' : 'ok')
-
-function lastPolicyTiming(state: MonitorState): Extract<FsmHealth, { kind: 'policyTiming' }> | null {
-  const events = state.fsm.events
-  for (let i = events.length - 1; i >= 0; i--) {
-    const h = events[i].health
-    if (h?.kind === 'policyTiming') return h
-  }
-  return null
-}
 
 /** Slot of the first joint whose id contains all of the words, e.g. `left`, `knee`. */
 function slotOf(profile: RobotProfile, ...words: string[]): number | null {
@@ -54,7 +46,7 @@ export function KeyLimits({ state, telemetry, profile }: { state: MonitorState; 
     tiles.push({
       label: `Ankle motor ${side === 'left' ? 'L' : 'R'}`,
       value: v === null ? '—' : `${v.toFixed(1)} Nm`,
-      sub: ank?.peak ? `${Math.round(f * 100)}% of ${ank.peak} Nm peak (approx.)` : 'no data yet',
+      sub: ank?.peak ? `${Math.round(f * 100)}% of one motor's ${ank.peak} Nm peak (approx.)` : 'no data yet',
       level: byFraction(f),
     })
   }
@@ -83,12 +75,14 @@ export function KeyLimits({ state, telemetry, profile }: { state: MonitorState; 
     level: tilt === null || warn === undefined || crit === undefined ? 'ok' : tilt >= crit ? 'crit' : tilt >= warn ? 'warn' : 'ok',
   })
 
-  const policy = lastPolicyTiming(state)
+  const policy = policyTimingSummary(state.fsm.events)
   tiles.push({
     label: 'Policy step interval',
-    value: policy ? `${policy.intervalMaxMs.toFixed(1)} ms max` : '—',
-    sub: policy ? `${policy.policy}, ${policy.steps} steps · abort above ${STEP_INTERVAL_STOP_MS} ms (manual §3)` : 'logged when a policy state ends',
-    level: policy && policy.intervalMaxMs > STEP_INTERVAL_STOP_MS ? 'crit' : 'ok',
+    value: policy ? `${policy.worst.ms.toFixed(1)} ms max` : '—',
+    sub: policy
+      ? `${policyTimingText(policy)}, newest ${policy.latestMs.toFixed(1)} ms · abort above ${STEP_INTERVAL_STOP_MS} ms (manual §3)`
+      : 'logged when a policy state ends',
+    level: policy && policy.worst.ms > STEP_INTERVAL_STOP_MS ? 'crit' : 'ok',
   })
 
   return (

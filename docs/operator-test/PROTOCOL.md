@@ -55,9 +55,9 @@ on your build and correct this table before the first participant:
 |---|---|---|---|---|
 | A | 17 s (19.5 s) | FixStand | No abort condition seen | none active |
 | B | 40 s (42.0 s) | Velocity | No abort condition seen | none active |
-| C | 80 s (82.3 s) | squat | 2 stage limits crossed | none active |
-| D | 112 s (113.8 s) | Velocity | 5 stage limits crossed | none active |
-| E | 228 s (230.0 s) | Passive | 5 stage limits crossed | none active (History 2) |
+| C | 80 s (82.3 s) | squat | 2 guided-check limits crossed | none active |
+| D | 112 s (113.8 s) | Velocity | 5 guided-check limits crossed | none active |
+| E | 228 s (230.0 s) | Passive | 5 guided-check limits crossed | none active (History 2) |
 
 Add two scenes from the simulator fall recording (see task 2), played from 0 and paused at the time shown:
 
@@ -66,15 +66,15 @@ Add two scenes from the simulator fall recording (see task 2), played from 0 and
 | F | 40 s (41.7 s) | Velocity | No abort condition seen |
 | G | 58 s (59.5 s) | Passive | 5 critical, first: Joint range · Right Ankle Pitch (5 after Passive) |
 
-The "stage limits crossed" in scenes C to E are the real-robot procedure's own stop limits (for example ankle pitch torque 29.8 Nm
+The "guided-check limits crossed" in scenes C to E are the real-robot procedure's own stop limits (for example ankle pitch torque 29.8 Nm
 in the squat against the 15 Nm limit at §6 T6), evaluated by the guided checks. No abort check and no alert is tripped. This
 is a real case: the 2026-10-24 report says the same squats were stopped for review, and the manual's own limits (knee peak
 45 Nm, ankle peak 15 Nm) were crossed. Score what the person **reads from the screen**, and whether they say the test should
 stop for review.
 
 The answer key above depends on the pause time. An earlier capture (before the frame was added) overshot by 1 to 4 s, and
-scene C then showed 3 stage limits and scene E showed no active alert; the second capture overshot by about 2 s, hence the
-"picture shows" times above. The pictures in `drill/` and `glance-drill.html` use what each picture shows. The pictures were
+scene C then showed 3 stage limits (the chip said "stage limits" then) and scene E showed no active alert; the second capture overshot by about 2 s, hence the
+"picture shows" times above. The pictures in `drill/` and `glance-drill.html` use what each picture shows. They were taken before the chip was renamed from "N stage limits crossed" to "N guided-check limits crossed" (1.8, W3), so the picture still reads "stage limits"; re-capture them before the real run. The pictures were
 re-captured on 2026-11-03 after the frame was added, so a drill run made on the earlier pictures (for example ID `P1`)
 saw the old top bar and is a baseline for that design only. If you pause live for a human observer, re-read the screen at the moment you
 pause and write that down, rather than trusting the table.

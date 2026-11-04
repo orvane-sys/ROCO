@@ -143,7 +143,12 @@ export function GuidedChecks({
   const sc = selected.counts
 
   return (
-    <section aria-labelledby={headId} className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2">
+    <section
+      id="guided-checks"
+      tabIndex={-1}
+      aria-labelledby={headId}
+      className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2 outline-none focus-visible:outline-2 focus-visible:outline-focus"
+    >
       <div className="flex items-center gap-2 flex-wrap">
         <ClipboardCheck className="w-5 h-5 text-accent" aria-hidden="true" />
         <h2 id={headId} className="text-base font-semibold text-ink">
@@ -153,7 +158,7 @@ export function GuidedChecks({
         {stops > 0 && (
           <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-crit-solid text-on-solid font-semibold tabular-nums">
             <OctagonAlert className="w-3 h-3" aria-hidden="true" />
-            {stops} stop {stops > 1 ? 'limits' : 'limit'} crossed
+            {stops} guided-check stop {stops > 1 ? 'limits' : 'limit'} crossed
           </span>
         )}
       </div>

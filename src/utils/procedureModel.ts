@@ -128,7 +128,7 @@ function autoVerdict(rule: AutoRule, run: Run, source: MonitorSource | null): Ve
       }
       if (!worst) return { status: 'pending', detail: 'No policy timing line yet. g1_ctrl logs it when a policy state ends.' }
       if (worst.ms > rule.stopMs) return { status: 'stop', detail: `${worst.policy} policy: step interval max ${f1(worst.ms)} ms (limit ${rule.stopMs}).`, t: worst.t }
-      return { status: 'ok', detail: `Largest ${f1(worst.ms)} ms (${worst.policy}) over ${n} ${n === 1 ? 'line' : 'lines'}.`, t: worst.t }
+      return { status: 'ok', detail: `Largest ${f1(worst.ms)} ms (${worst.policy}) over ${n} policy ${n === 1 ? 'visit' : 'visits'} in this run.`, t: worst.t }
     }
     case 'first2s': {
       let worst: { v: number; t: number; part: string } | null = null

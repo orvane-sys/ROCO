@@ -46,6 +46,47 @@ export function statsSinceNote(state: MonitorState): string {
   return ` since ${formatDataTime(r.statsFrom, state)} (the recording was started there)`
 }
 
+/**
+ * What the 3D view's badge says while data is replayed: where the recording is, instead of "Live". Null when this is not a replay.
+ * The position reads "Replay 198.8 s / 236.2 s" (no end time until the bridge has indexed the file).
+ */
+export function replayBadge(state: MonitorState): string | null {
+  const r = state.replay
+  if (!r) return null
+  if (r.busy) return 'Seeking…'
+  if (r.ended) return 'Replay ended'
+  const at = formatDataTime(r.t, state)
+  const where = r.t1 !== null ? `${at} / ${formatDataTime(r.t1, state)}` : at
+  return r.playing ? `Replay ${where}` : `Replay paused at ${where}`
+}
+
+/** Why plots and rates show nothing in a replay that is not moving: "Paused at 198.8 s", "Replay ended", "Seeking…". Null otherwise. */
+export function replayIdleNote(state: MonitorState): string | null {
+  const r = state.replay
+  if (!r) return null
+  if (r.busy) return 'Seeking…'
+  if (r.ended) return 'Replay ended'
+  return r.playing ? null : `Paused at ${formatDataTime(r.t, state)}`
+}
+
+/**
+ * The robot's x and y as text for the 3D view's corner and for screen readers. A recording from g1_record has no odometry, so the
+ * position there is not recorded: say so rather than 0.00 m.
+ */
+export function positionText(state: MonitorState, pose: { x: number; y: number }, digits: number): { x: string; y: string; recorded: boolean } {
+  if (state.replay && !state.aux?.odom) return { x: '—', y: '—', recorded: false }
+  return { x: pose.x.toFixed(digits), y: pose.y.toFixed(digits), recorded: true }
+}
+
+/**
+ * A file or folder as the saved report names it. The bridge sends names relative to the deploy folder; an absolute path (an older
+ * bridge) is cut to its last part, so a report shared with others does not carry the folders of this PC.
+ */
+export function reportPath(p: string): string {
+  if (!/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(p)) return p
+  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
+}
+
 export function formatDuration(s: number): string {
   if (!Number.isFinite(s) || s < 0) return '—'
   if (s < 60) return `${s.toFixed(1)} s`

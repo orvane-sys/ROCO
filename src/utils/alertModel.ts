@@ -318,20 +318,49 @@ export function currentRun(events: FsmEvent[]): { run: FsmEvent[]; start: number
 
 const fmt = (n: number, d = 1) => n.toFixed(d)
 
+export interface PolicyTimingSummary {
+  /** The largest step interval of the current g1_ctrl run, with the policy and time of the line that had it. */
+  worst: { ms: number; t: number; policy: string }
+  /** Policy visits (timing lines) in the current run. */
+  visits: number
+  /** The newest line's own maximum. */
+  latestMs: number
+  latestPolicy: string
+}
+
+/**
+ * The step interval as every place that shows it reads it: the worst over the current g1_ctrl run, how many policy visits that is,
+ * and the newest line on its own. Null until g1_ctrl has logged a timing line (it does when a policy state ends).
+ */
+export function policyTimingSummary(events: FsmEvent[]): PolicyTimingSummary | null {
+  let worst: PolicyTimingSummary['worst'] | null = null
+  let visits = 0
+  let latestMs = 0
+  let latestPolicy = ''
+  for (const e of currentRun(events).run) {
+    const h = e.health
+    if (h?.kind !== 'policyTiming') continue
+    visits++
+    latestMs = h.intervalMaxMs
+    latestPolicy = h.policy
+    if (!worst || h.intervalMaxMs > worst.ms) worst = { ms: h.intervalMaxMs, t: e.t, policy: h.policy }
+  }
+  return worst ? { worst, visits, latestMs, latestPolicy } : null
+}
+
+/** "max 22.0 ms (Velocity, 9 visits)": the one wording for the step interval. */
+export function policyTimingText(s: PolicyTimingSummary): string {
+  return `max ${fmt(s.worst.ms)} ms (${s.worst.policy}, ${s.visits} ${s.visits === 1 ? 'visit' : 'visits'})`
+}
+
 export function evaluateAbortChecks(state: MonitorState, controls: AlertControls = NO_CONTROLS): AbortCheck[] {
   const { run, start } = currentRun(state.fsm.events)
   const noLog = state.fsm.events.length === 0 && state.fsm.state === null
   const ack = (key: string) => controls.acked.has(key)
 
   // 1. policy step interval
-  let worst: { ms: number; t: number; policy: string } | null = null
-  let timings = 0
-  for (const e of run) {
-    const h = e.health
-    if (h?.kind !== 'policyTiming') continue
-    timings++
-    if (!worst || h.intervalMaxMs > worst.ms) worst = { ms: h.intervalMaxMs, t: e.t, policy: h.policy }
-  }
+  const timing = policyTimingSummary(state.fsm.events)
+  const worst = timing?.worst ?? null
   const stepKey = worst && worst.ms > STEP_INTERVAL_STOP_MS ? `step-interval@${worst.t}` : ''
   const step: AbortCheck = {
     id: 'step-interval',
@@ -342,7 +371,7 @@ export function evaluateAbortChecks(state: MonitorState, controls: AlertControls
       ? 'No policy timing line yet. g1_ctrl logs it when a policy state ends.'
       : worst.ms > STEP_INTERVAL_STOP_MS
       ? `${worst.policy} policy: step interval max ${fmt(worst.ms)} ms. Stop and investigate.`
-      : `Largest so far ${fmt(worst.ms)} ms (${worst.policy}), over ${timings} policy ${timings === 1 ? 'visit' : 'visits'}.`,
+      : `Largest so far ${fmt(worst.ms)} ms (${worst.policy}), over ${timing?.visits ?? 0} policy ${timing?.visits === 1 ? 'visit' : 'visits'} in this run.`,
     t: stepKey && worst ? worst.t : null,
     key: stepKey,
     acknowledged: ack(stepKey),

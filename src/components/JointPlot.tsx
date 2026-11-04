@@ -23,6 +23,7 @@ import {
 } from '../utils/plotModel'
 import { downloadText, fileStamp } from '../utils/download'
 import { cn } from '../utils/cn'
+import { replayIdleNote } from '../utils/monitorFormat'
 
 /**
  * The joint plots, drawn on canvas from the stream's PlotRing (no chart library). Each panel holds signals of one unit on one
@@ -683,7 +684,7 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
         <span className="ml-2">{set.hint}</span>
         {peaks.map((p) => (
           <span key={p.name} className="ml-2 whitespace-nowrap">
-            {peaks.length > 1 ? `${p.name} ` : ''}peak PD demand {p.abs.toFixed(1)} Nm{p.limit > 0 ? ` (${((p.abs / p.limit) * 100).toFixed(0)}% of ${p.limit} Nm)` : ''}
+            {peaks.length > 1 ? `${p.name} ` : ''}peak PD demand {p.abs.toFixed(1)} Nm{p.limit > 0 ? ` (${((p.abs / p.limit) * 100).toFixed(0)}% of the ${p.limit} Nm joint limit)` : ''}
           </span>
         ))}
         {sel?.def.locked && follows && <span className="ml-2 text-ink-muted">locked — reading invalid</span>}
@@ -745,7 +746,7 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
         ))}
 
         {!pv && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-ink-soft bg-surface/60 rounded-lg">Waiting for samples from the bridge…</div>
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-ink-soft bg-surface/60 rounded-lg">{replayIdleNote(state) ?? 'Waiting for samples from the bridge…'}</div>
         )}
 
         {hoverI !== null && pv && (

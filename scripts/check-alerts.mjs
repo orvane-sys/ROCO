@@ -221,6 +221,19 @@ const byId = (checks, id) => checks.find((c) => c.id === id)
   const s = byId(slow, 'step-interval')
   check(s.status === 'trip' && s.key === 'step-interval@90' && s.detail.includes('63.4'), 'a step interval above 50 ms trips, naming the worst')
 
+  // the step interval reads the same everywhere: worst of the current g1_ctrl run, its visits, and the newest line on its own
+  {
+    const two = [ev(1, 'Config: old', { session: true }), timing(5, 70, 'squat'), ev(20, 'Config: new', { session: true }), timing(30, 22), timing(40, 18.5), timing(50, 21.6)]
+    const sum = model.policyTimingSummary(two)
+    check(sum && sum.worst.ms === 22 && sum.visits === 3 && sum.latestMs === 21.6, 'the step interval summary covers only the current run')
+    check(model.policyTimingText(sum) === 'max 22.0 ms (Velocity, 3 visits)', 'the step interval wording names the policy and the visits')
+    check(model.policyTimingSummary([ev(1, 'FSM: Start Passive')]) === null, 'no timing line: no summary')
+    const one = model.policyTimingSummary([timing(5, 12)])
+    check(model.policyTimingText(one) === 'max 12.0 ms (Velocity, 1 visit)', 'one visit is singular')
+    const ab = byId(model.evaluateAbortChecks(mk({ events: two })), 'step-interval')
+    check(ab.status === 'ok' && ab.detail.includes('22.0 ms') && ab.detail.includes('3 policy visits'), 'the abort check reads the same worst and visits as the summary')
+  }
+
   const lines = [
     ['SAFETY STOP: leg runaway: motor 3 at 16.0 rad/s', 'critical'],
     ['SAFETY: no robot state (rt/lowstate) for more than 200 ms in Velocity -> Passive', 'warning'],

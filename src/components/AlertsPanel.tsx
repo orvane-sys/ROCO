@@ -16,6 +16,8 @@ interface AlertsPanelProps {
   onSelectSlot?: (slot: number) => void
   /** Open the list of cleared alerts at first (the Review workspace). */
   defaultShowHistory?: boolean
+  /** Guided-check stop limits crossed. They are not alerts, so the empty list says they exist and where to look. */
+  stageStops?: number
 }
 
 const LEVEL_STYLE: Record<EffectiveLevel, { label: string; row: string; icon: typeof AlertTriangle; iconColor: string }> = {
@@ -203,7 +205,7 @@ function Group({ group, state, profile, onSelectSlot }: GroupProps) {
 }
 
 /** The checks real_log.py runs after a test, evaluated live on every ~1 kHz sample by the bridge, then presented first-out. */
-export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHistory = false }: AlertsPanelProps) {
+export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHistory = false, stageStops = 0 }: AlertsPanelProps) {
   const [showHistory, setShowHistory] = useState(defaultShowHistory)
   const [showInfo, setShowInfo] = useState(false)
   const [showShelved, setShowShelved] = useState(false)
@@ -238,7 +240,10 @@ export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHis
       {view.groups.length === 0 ? (
         <p className="flex items-center gap-1.5 text-sm text-ink-soft">
           <CheckCircle2 className="w-4 h-4 text-ok shrink-0" aria-hidden="true" />
-          No limit, range, speed, fault or link check is tripped.
+          <span>
+            No limit, range, speed, fault or link check is tripped.
+            {stageStops > 0 && ` ${stageStops} guided-check stop limit${stageStops > 1 ? 's' : ''} crossed: see Guided checks.`}
+          </span>
         </p>
       ) : (
         <ul className="flex flex-col gap-2" aria-label="Active alerts, most severe group first">

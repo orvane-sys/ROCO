@@ -335,7 +335,7 @@ export function MotorTelemetryGrid({
                 <th scope="col" className="px-2 py-2 font-medium text-right">Error °</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">dq rad/s{atCursor ? ' (latest)' : ''}</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">τ Nm</th>
-                <th scope="col" className="px-2 py-2 font-medium text-right">PD demand</th>
+                <th scope="col" className="px-2 py-2 font-medium text-right">PD demand (% of joint limit)</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">Temp{atCursor ? ' (latest)' : ''}</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">Faults{atCursor ? ' (latest)' : ''}</th>
               </tr>
@@ -397,7 +397,7 @@ export function MotorTelemetryGrid({
                               {demand.status && <span className="ml-1 font-sans">({demand.status})</span>}
                               {ankPct !== null && (
                                 <div className="font-sans text-ink-muted font-normal">
-                                  motor ≈ {ankPct.toFixed(0)}% of {ankle?.peak}
+                                  one motor ≈ {ankPct.toFixed(0)}% of its {ankle?.peak} Nm peak
                                 </div>
                               )}
                             </>

@@ -1,7 +1,7 @@
 import type { FsmSegment, MonitorState } from '../types/monitor'
 import { FALLBACK_RESPONSE, RESPONSES } from '../config/alertPolicy'
 import type { AbortCheck } from './alertModel'
-import { KIND_LABEL, SOURCE_LABEL, formatDataTime, formatDuration, sourceBadge } from './monitorFormat'
+import { KIND_LABEL, SOURCE_LABEL, formatDataTime, formatDuration, reportPath, sourceBadge } from './monitorFormat'
 import { manualStatus, statusWord, type ProcedureResult } from './procedureModel'
 import { levelWord, openWord, timelineRows, type TimelineAlert, type TimelineModel } from './timelineModel'
 
@@ -94,9 +94,9 @@ export function buildReport(input: ReportInput): string {
   if (hello) {
     setup.push(['Bridge', `${hello.bridge}, protocol ${hello.protocol}, ${hello.rateHz} Hz, read-only`])
     setup.push(['Robot', `${input.profileName}, mode_machine ${hello.modeMachine ?? hello.limits.modeMachine ?? 'unknown'}${hello.limits.lockedJoints.length ? `, locked motors ${hello.limits.lockedJoints.join('/')}` : ''}`])
-    if (hello.limits.ctrlConfig) setup.push(['Controller config', hello.limits.ctrlConfig])
-    if (hello.limits.model) setup.push(['Robot model', hello.limits.model])
-    if (hello.replay) setup.push(['Recording', `${hello.replay.file} in ${hello.replay.store}`])
+    if (hello.limits.ctrlConfig) setup.push(['Controller config', reportPath(hello.limits.ctrlConfig)])
+    if (hello.limits.model) setup.push(['Robot model', reportPath(hello.limits.model)])
+    if (hello.replay) setup.push(['Recording', `${reportPath(hello.replay.file)} in ${reportPath(hello.replay.store)}`])
   }
   if (procedure) {
     const m = manualStatus(procedure.procedure, state)
@@ -126,7 +126,7 @@ export function buildReport(input: ReportInput): string {
   else {
     out.push(
       ...table(
-        ['State', 'At', 'Dur', 'Ank P demand', `>${hello?.limits.ankleMotorPeak ?? 24.8} Nm (longest)`, 'τ ankP / ankR / knee', 'Leg err', 'Leg dq', 'Tilt r / p', 'Gyro'],
+        ['State', 'At', 'Dur', 'Ank P demand', `>${hello?.limits.ankleMotorPeak ?? 24.8} Nm, one motor's peak (longest)`, 'τ ankP / ankR / knee', 'Leg err', 'Leg dq', 'Tilt r / p', 'Gyro'],
         segs.map((g) => [g.name, g.at, ...g.cells]),
       ),
       '',
