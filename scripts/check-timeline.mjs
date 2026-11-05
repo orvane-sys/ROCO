@@ -286,6 +286,50 @@ const live = (extra = {}) => ({
   check(running.t1 > running.t0, 'a recording whose end is not indexed yet still has a span')
   const one = tl.buildTimeline(live({ replay: { ...rp, t1: 1000, t: 1000 }, timeline: frame }), [], [], { first: null, last: null })
   check(one.t1 > one.t0, 'a recording of a single sample (t1 = t0) still has a span')
+  // why a span has no state, in words; a known state, whatever its name, is never "unknown"
+  check(empty.spans[0].unknown === 'no-log' && tl.spanText(empty.spans[0]) === 'state not known', 'no log at all: "state not known"')
+  check(full.spans[0].state === null && full.spans[0].unknown === 'before-log' && tl.spanText(full.spans[0]) === "before g1_ctrl's first log line", 'before the first log line: says so')
+  check(noFrame.spans[noFrame.spans.length - 1].unknown === 'not-played' && tl.spanText(noFrame.spans[noFrame.spans.length - 1]) === 'not played yet', 'a recording not played that far: "not played yet"')
+  const squat = tl.buildTimeline(live({ fsm: { ...live().fsm, state: 'squat', events: [chg(110, 'Passive', 'squat')] } }), [], [], { first: 150, last: 200 })
+  check(squat.spans.every((s) => s.state !== null && s.unknown === undefined) && tl.spanText(squat.spans[squat.spans.length - 1]) === 'squat', 'a state ROCO has no colour for (squat) is a known state, not unknown')
+  check(m.spans.every((s) => s.unknown === undefined), 'live with a log: no unknown spans')
+
+  // the time axis: at most 8 labels, all different, whatever the span, width and text size
+  const spans = [['10 s', 10], ['90 s', 90], ['10 min', 600], ['59 min', 3540], ['3 h', 10800], ['25 h', 90000], ['14,215 min', 14215 * 60]]
+  for (const replay of [true, false]) {
+    for (const [name, secs] of spans) {
+      const t0 = replay ? 1000 : 1700000000.3
+      const model = { t0, t1: t0 + secs, replay }
+      let worst = 0
+      let lowest = 99
+      let distinct = true
+      let inside = true
+      for (const sc of [1, 1.15, 1.3]) {
+        for (let w = 200; w <= 4000; w += 100) {
+          const ticks = tl.axisTicks(model, w, sc)
+          worst = Math.max(worst, ticks.length)
+          lowest = Math.min(lowest, ticks.length)
+          const labels = ticks.map((t) => tl.tickLabel(t, model, fmtMod.formatDataTime(t, live(replay ? { replay: { ...rp, t0, t1: t0 + secs } } : {}))))
+          if (new Set(labels).size !== labels.length) distinct = false
+          if (ticks.some((t) => t < model.t0 - 1e-6 || t > model.t1 + 1e-6)) inside = false
+        }
+      }
+      check(worst <= 8, `${replay ? 'replay' : 'live'} axis, ${name}: at most 8 ticks (saw ${worst})`)
+      check(lowest >= 1 && inside, `${replay ? 'replay' : 'live'} axis, ${name}: ticks inside the span, at least one (saw ${lowest})`)
+      check(distinct, `${replay ? 'replay' : 'live'} axis, ${name}: no two ticks share a label`)
+    }
+  }
+  {
+    const r = (secs) => ({ t0: 1000, t1: 1000 + secs, replay: true })
+    const lab = (secs, at) => tl.tickLabel(1000 + at, r(secs), '')
+    check(lab(10, 5) === '5 s' && lab(119, 0) === '0 s', 'recording under two minutes: seconds')
+    check(lab(600, 90) === '1:30' && lab(3600, 0) === '0:00', 'recording of two minutes to an hour: m:ss')
+    check(lab(10800, 5400) === '1:30 h' && lab(10800, 0) === '0:00 h', 'recording over an hour: h:mm h, not 5400.0 s')
+    check(tl.tickLabel(0, { t0: 0, t1: 600, replay: false }, '14:03:09.250') === '14:03:09', 'live data up to an hour: hh:mm:ss')
+    check(tl.tickLabel(0, { t0: 0, t1: 10800, replay: false }, '14:03:00.000') === '14:03', 'live data over an hour: hh:mm')
+    const day = tl.axisTicks({ t0: 0, t1: 14215 * 60, replay: false }, 1200, 1)
+    check(day.length >= 2 && day.every((t, i) => i === 0 || t > day[i - 1]), 'the 14,215 minute span of the audit gets a few round ticks')
+  }
   check(Math.abs(tl.timeAtX({ t0: 0, t1: 10 }, 150, 50, 100) - 10) < 1e-9 && tl.timeAtX({ t0: 0, t1: 10 }, -20, 50, 100) === 0 && tl.timeAtX({ t0: 0, t1: 10 }, 900, 50, 100) === 10, 'x to time clamps to the band')
   check(Math.abs(tl.xAtTime({ t0: 0, t1: 10 }, 5, 50, 100) - 100) < 1e-9, 'time to x')
 }

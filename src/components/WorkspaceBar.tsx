@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { CircleHelp, Command, Settings, SunMoon } from 'lucide-react'
 import { WORKSPACES, type Workspace } from '../services/uiPrefs'
 import { cn } from '../utils/cn'
@@ -11,13 +11,15 @@ interface WorkspaceBarProps {
   onOpenHelp: () => void
   onOpenDisplay: () => void
   onOpenSettings: () => void
+  /** Tone, voice and battery: shown before the buttons. */
+  tools?: ReactNode
 }
 
 const iconButton =
-  'w-11 h-11 rounded-lg flex items-center justify-center bg-surface/80 border border-line-strong hover:border-line-hot text-ink-soft hover:text-ink transition-colors'
+  'w-11 h-11 max-md:w-10 max-md:h-10 rounded-lg flex items-center justify-center bg-surface/80 border border-line-strong hover:border-line-hot text-ink-soft hover:text-ink transition-colors'
 
 /** The workspace tabs (keys 1, 2, 3) and the buttons that open the palette, help and settings. */
-export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp, onOpenDisplay, onOpenSettings }: WorkspaceBarProps) {
+export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp, onOpenDisplay, onOpenSettings, tools }: WorkspaceBarProps) {
   const tabs = useRef<(HTMLButtonElement | null)[]>([])
 
   const onKeyDown = (e: React.KeyboardEvent, index: number) => {
@@ -54,11 +56,11 @@ export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp
                 onClick={() => onWorkspace(w.id)}
                 onKeyDown={(e) => onKeyDown(e, i)}
                 className={cn(
-                  'min-h-11 px-4 rounded-lg border text-base font-semibold flex items-center gap-2 transition-colors',
+                  'min-h-11 px-2.5 md:px-3 lg:px-4 rounded-lg border text-base font-semibold flex items-center gap-2 transition-colors',
                   on ? 'bg-accent-solid border-accent text-on-accent' : 'bg-surface/80 border-line-strong text-ink hover:border-line-hot hover:bg-raised'
                 )}
               >
-                <kbd className={cn('hidden sm:inline px-1.5 rounded border font-mono text-xs', on ? 'border-on-accent/60' : 'border-line-bold text-ink-soft')}>{w.key}</kbd>
+                <kbd className={cn('hidden lg:inline px-1.5 rounded border font-mono text-xs', on ? 'border-on-accent/60' : 'border-line-bold text-ink-soft')}>{w.key}</kbd>
                 {w.label}
               </button>
             )
@@ -67,9 +69,10 @@ export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp
       ) : null}
 
       <div className="ml-auto flex items-center gap-1.5">
-        <button type="button" onClick={onOpenPalette} className={cn(iconButton, 'w-auto px-3 gap-2 text-sm')} aria-label="Ctrl+K command palette" title="Command palette (Ctrl+K)" aria-haspopup="dialog">
+        {tools}
+        <button type="button" onClick={onOpenPalette} className={cn(iconButton, 'w-auto px-3 max-md:px-2.5 gap-2 text-sm')} aria-label="Ctrl+K command palette" title="Command palette (Ctrl+K)" aria-haspopup="dialog">
           <Command className="w-4 h-4" aria-hidden="true" />
-          <span className="hidden md:inline">Ctrl+K</span>
+          <span className="hidden xl:inline">Ctrl+K</span>
         </button>
         <button type="button" onClick={onOpenHelp} className={iconButton} aria-label="Keyboard shortcuts (press ?)" title="Keyboard shortcuts (?)" aria-haspopup="dialog">
           <CircleHelp className="w-5 h-5" aria-hidden="true" />

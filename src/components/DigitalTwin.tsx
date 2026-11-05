@@ -849,7 +849,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         ref={mountRef}
         role="img"
         aria-label={!enabled ? '3D view is off' : `3D view of the Unitree G1 robot ${posAria}, heading ${Math.round((hudPose.yaw * 180) / Math.PI)} degrees`}
-        className="w-full flex-1 cursor-grab active:cursor-grabbing"
+        className="w-full flex-1 min-h-0 cursor-grab active:cursor-grabbing"
       />
 
       {webglSupported && !enabled && (
@@ -984,38 +984,34 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         </div>
       </div>
 
-      {/* Bottom Overlay Info HUD */}
-      <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2 flex-wrap pointer-events-none text-xs text-ink-soft">
-        <div className="bg-surface/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-line-strong flex items-center gap-2 pointer-events-auto">
-          <Eye className="w-4 h-4 text-ink" aria-hidden="true" />
-          <span>Camera: {followHeading ? 'Chase' : 'Free orbit'}</span>
-        </div>
-
-        {cursor && monitorNow.replay && (
-          <div role="status" className="bg-accent-soft/90 px-2.5 py-1.5 rounded-lg border border-accent-line text-ink pointer-events-auto tabular-nums">
+      {/* Status strip under the canvas: a fixed height, so a longer text never resizes the 3D view. */}
+      <div className="shrink-0 h-9 border-t border-line/80 bg-surface/90 px-3 flex items-center gap-3 text-xs text-ink-soft tabular-nums">
+        {cursor && monitorNow.replay ? (
+          <div role="status" className="min-w-0 flex-1 truncate text-ink" title={`Joint angles and tilt at ${formatDataTime(cursor.t, monitorNow)} (time cursor).${posNow.recorded ? ' Position is current.' : ''}`}>
             Joint angles and tilt at {formatDataTime(cursor.t, monitorNow)} (time cursor).{posNow.recorded ? ' Position is current.' : ''}
           </div>
-        )}
-
-        {enabled && (
-          <div className="bg-surface/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-line-strong pointer-events-auto text-ink-soft tabular-nums">
-            {quality === 'low' ? `Reduced 3D, up to ${QUALITY.low.fps} fps` : '3D'}
-            {draw.state === 'running' && ` · ${draw.fps.toFixed(0)} fps, ${draw.avgMs.toFixed(1)} ms a frame`}
+        ) : (
+          <div
+            className="min-w-0 flex-1 truncate flex items-center gap-2"
+            title={enabled && draw.state === 'running' ? `${draw.fps.toFixed(0)} fps, ${draw.avgMs.toFixed(1)} ms a frame` : undefined}
+          >
+            <Eye className="w-4 h-4 text-ink shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              {followHeading ? 'Chase camera' : 'Free orbit'}
+              {enabled && (quality === 'low' ? ` · Reduced 3D · ${QUALITY.low.fps} fps` : ' · 3D')}
+              {enabled && quality !== 'low' && draw.state === 'running' && ` · ${draw.fps.toFixed(0)} fps`}
+            </span>
           </div>
         )}
-
-        <div className="bg-surface/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-line-strong pointer-events-auto flex items-center gap-3 text-ink tabular-nums">
-          <div className="flex items-center gap-1 text-accent-ink">
-            <Compass className="w-4 h-4" aria-hidden="true" />
-            <span>Position</span>
-          </div>
+        <div className="shrink-0 flex items-center gap-3 text-ink">
+          <Compass className="w-4 h-4 text-accent-ink" aria-hidden="true" />
           {posNow.recorded ? (
             <>
               <span>x {posNow.x} m</span>
               <span>y {posNow.y} m</span>
             </>
           ) : (
-            <span>— not recorded</span>
+            <span>position not recorded</span>
           )}
           <span>heading {((hudPose.yaw * 180) / Math.PI).toFixed(0)}°</span>
         </div>

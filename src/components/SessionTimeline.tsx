@@ -8,7 +8,7 @@ import { telemetryService } from '../services/telemetryStream'
 import { remScale, themeVar, useUiPrefs } from '../services/uiPrefs'
 import { useViewState, viewStore } from '../services/viewStore'
 import { alertTitle, formatDataTime, formatDuration } from '../utils/monitorFormat'
-import { levelWord, timeAtX, timelineRows, xAtTime, type TimelineAlert, type TimelineModel } from '../utils/timelineModel'
+import { axisTicks, levelWord, spanText, tickLabel, timeAtX, timelineRows, xAtTime, type TimelineAlert, type TimelineModel } from '../utils/timelineModel'
 import { cn } from '../utils/cn'
 
 /**
@@ -32,7 +32,7 @@ function stateColors(name: string | null): { fill: string; edge: string; hatch: 
     case null:
       return { fill: themeVar('--c-sunken'), edge: themeVar('--c-line-bold'), hatch: true }
     default:
-      return { fill: themeVar('--c-high'), edge: themeVar('--c-line-hot'), hatch: true }
+      return { fill: themeVar('--c-high'), edge: themeVar('--c-line-hot'), hatch: false }
   }
 }
 
@@ -50,21 +50,10 @@ function hatchPattern(ctx: CanvasRenderingContext2D, color: string, sc: number):
   return ctx.createPattern(c, 'repeat') ?? color
 }
 
-/** Nice axis steps (seconds) for a span, about one label per 90 px. */
-function axisTicks(model: TimelineModel, width: number, sc: number): number[] {
-  const span = model.t1 - model.t0
-  const want = Math.max(2, Math.floor(width / (90 * sc)))
-  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200]
-  const step = steps.find((s) => span / s <= want) ?? 7200
-  const out: number[] = []
-  // a recording counts from its start; live data falls on whole clock minutes and seconds
-  const origin = model.replay ? model.t0 : 0
-  for (let t = Math.ceil((model.t0 - origin) / step) * step + origin; t <= model.t1 + 1e-6; t += step) out.push(t)
-  return out
-}
-
 interface Hit {
   state: string | null
+  /** The state, or why there is none. */
+  what: string
   from: number
   to: number
   alert: TimelineAlert | null
@@ -75,7 +64,7 @@ function hitAt(model: TimelineModel, t: number, tolS: number): Hit {
   const span = model.spans.find((s) => t >= s.t0 && t <= s.t1) ?? model.spans[model.spans.length - 1]
   const alert = model.alerts.filter((a) => Math.abs(a.t - t) <= tolS).sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t))[0] ?? null
   const mi = model.marks.findIndex((m) => Math.abs(m.t - t) <= tolS)
-  return { state: span?.state ?? null, from: span?.t0 ?? model.t0, to: span?.t1 ?? model.t1, alert, mark: mi >= 0 ? { mark: model.marks[mi], n: mi + 1 } : null }
+  return { state: span?.state ?? null, what: span ? spanText(span) : 'state not known', from: span?.t0 ?? model.t0, to: span?.t1 ?? model.t1, alert, mark: mi >= 0 ? { mark: model.marks[mi], n: mi + 1 } : null }
 }
 
 function draw(cv: HTMLCanvasElement, model: TimelineModel, state: MonitorState, cursorT: number | null, frozenT: number | null, sc: number): void {
@@ -125,7 +114,7 @@ function draw(cv: HTMLCanvasElement, model: TimelineModel, state: MonitorState, 
     ctx.strokeStyle = c.edge
     ctx.lineWidth = 1
     ctx.strokeRect(x0 + 0.5, yState + 0.5, Math.max(1, x1 - x0) - 1, hState - 1)
-    const label = sp.state ?? (model.replay ? 'not played yet' : 'unknown')
+    const label = spanText(sp)
     if (x1 - x0 > ctx.measureText(label).width + 10 * sc) {
       ctx.fillStyle = ink
       ctx.textAlign = 'left'
@@ -201,7 +190,7 @@ function draw(cv: HTMLCanvasElement, model: TimelineModel, state: MonitorState, 
     ctx.lineTo(x, yAxis + 4 * sc)
     ctx.stroke()
     ctx.fillStyle = soft
-    const label = formatDataTime(t, state).replace(/\.\d+$/, '')
+    const label = tickLabel(t, model, formatDataTime(t, state))
     ctx.fillText(label, Math.min(Math.max(x, left + 24 * sc), left + width - 24 * sc), yAxis + 5 * sc)
   }
 
@@ -226,16 +215,14 @@ interface SessionTimelineProps {
   profile: RobotProfile
   model: TimelineModel
   scope: MarkScope
-  /** Run: the band only. Review: the table opens by default. */
-  defaultTable?: boolean
 }
 
-export function SessionTimeline({ state, profile, model, scope, defaultTable = false }: SessionTimelineProps) {
+export function SessionTimeline({ state, profile, model, scope }: SessionTimelineProps) {
   const cv = useRef<HTMLCanvasElement | null>(null)
   const wrap = useRef<HTMLDivElement | null>(null)
   const noteInput = useRef<HTMLInputElement | null>(null)
   const returnFocus = useRef<Element | null>(null)
-  const [showTable, setShowTable] = useState(defaultTable)
+  const [showTable, setShowTable] = useState(false)
   const [hoverX, setHoverX] = useState<number | null>(null)
   const [status, setStatus] = useState('')
   const [size, setSize] = useState(0)
@@ -324,15 +311,18 @@ export function SessionTimeline({ state, profile, model, scope, defaultTable = f
     } else return
     e.preventDefault()
     viewStore.setCursor(t)
+    // the tooltip follows the keyboard cursor too
+    setHoverX(t !== null && size ? xAtTime(model, t, PAD * sc, size - 2 * PAD * sc) : null)
     if (t !== null) {
       const h = hitAt(model, t, tolS)
-      setStatus(`${formatDataTime(t, state)}: ${h.state ?? 'state not known'}${h.alert ? `, ${levelWord(h.alert.level)} ${title(h.alert)}` : ''}${h.mark ? `, mark ${h.mark.n}` : ''}`)
+      setStatus(`${formatDataTime(t, state)}: ${h.what}${h.alert ? `, ${levelWord(h.alert.level)} ${title(h.alert)}` : ''}${h.mark ? `, mark ${h.mark.n}` : ''}`)
     }
   }
 
   const hover = hoverX !== null && view.cursorT !== null ? hitAt(model, view.cursorT, tolS) : null
   const tipLeft = hoverX !== null && size ? Math.min(Math.max(hoverX, 100), Math.max(100, size - 100)) : 0
 
+  const lineText = editedMark ? `${editedN ? `Mark ${editedN}` : 'Mark'} added at ${formatDataTime(editedMark.t, state)}.` : status
   const alertCount = model.alerts.filter((a) => a.level !== 'info').length
   const canvasH = (2 + H.state + H.gap + H.alerts + H.gap + H.marks + H.gap + H.axis + 8) * sc
 
@@ -347,6 +337,20 @@ export function SessionTimeline({ state, profile, model, scope, defaultTable = f
           <span className="text-xs text-ink-soft tabular-nums">
             {formatDuration(model.t1 - model.t0)} · {alertCount} {alertCount === 1 ? 'alert' : 'alerts'} · {model.marks.length} {model.marks.length === 1 ? 'mark' : 'marks'}
           </span>
+        </div>
+        {/* The key to the drawing, or the line that says what the keys did while that has text: one slot, so the section keeps its height. */}
+        <div className="order-last w-full min-w-0 xl:order-none xl:w-auto xl:flex-1 text-xs text-ink-soft">
+          <ul className={cn('flex items-center gap-x-4 gap-y-1 flex-wrap xl:flex-nowrap xl:overflow-hidden xl:whitespace-nowrap', lineText && 'hidden')} aria-label="Key to the timeline">
+            <li>Hatched: state not known</li>
+            <li>◆ critical</li>
+            <li>▲ warning</li>
+            <li>● info</li>
+            <li>⚑ mark</li>
+            <li className="xl:truncate">{model.replay ? 'Click: jump the recording there' : 'Click: freeze the plots at that moment'}</li>
+          </ul>
+          <p role="status" className={cn('xl:truncate', !lineText && 'sr-only')} title={lineText || undefined}>
+            {lineText}
+          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {frozenT !== null && (
@@ -386,7 +390,10 @@ export function SessionTimeline({ state, profile, model, scope, defaultTable = f
         aria-label={`Session timeline, ${formatDuration(model.t1 - model.t0)}. Left and right arrow keys move the cursor, Shift moves ten times as far, Enter ${model.replay ? 'jumps the recording there' : 'freezes the plots there'}, Escape clears.`}
         onKeyDown={onKey}
         onBlur={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) viewStore.setCursor(null)
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            viewStore.setCursor(null)
+            setHoverX(null)
+          }
         }}
       >
         <canvas
@@ -411,7 +418,7 @@ export function SessionTimeline({ state, profile, model, scope, defaultTable = f
           >
             <div className="text-ink font-medium">{formatDataTime(view.cursorT, state)}</div>
             <div className="text-ink-soft">
-              {hover.state ?? (model.replay ? 'not played yet' : 'state not known')}, {formatDuration(hover.to - hover.from)}
+              {hover.what}: {formatDataTime(hover.from, state)} to {formatDataTime(hover.to, state)} ({formatDuration(hover.to - hover.from)})
             </div>
             {hover.alert && (
               <div className="text-ink">
@@ -427,15 +434,6 @@ export function SessionTimeline({ state, profile, model, scope, defaultTable = f
           </div>
         )}
       </div>
-
-      <ul className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs text-ink-soft" aria-label="Key to the timeline">
-        <li>Top: g1_ctrl state (hatched: not known{model.replay ? ' or not played yet' : ''})</li>
-        <li>◆ critical alert</li>
-        <li>▲ warning</li>
-        <li>● info</li>
-        <li>⚑ mark</li>
-        {model.replay ? <li>Click: jump the recording there</li> : <li>Click: freeze the plots at that moment</li>}
-      </ul>
 
       {editedMark && (
         <form
@@ -471,12 +469,8 @@ export function SessionTimeline({ state, profile, model, scope, defaultTable = f
         </form>
       )}
 
-      <p role="status" className={cn('text-xs text-ink-soft min-h-4', !(editedMark || status) && 'sr-only')}>
-        {editedMark ? `${editedN ? `Mark ${editedN}` : 'Mark'} added at ${formatDataTime(editedMark.t, state)}.` : status}
-      </p>
-
       {showTable && (
-        <div className="max-h-64 overflow-auto rounded-lg border border-line" tabIndex={0} aria-label="Session timeline events, scrolls">
+        <div className="max-h-64 xl:max-h-[22dvh] overflow-auto rounded-lg border border-line" tabIndex={0} aria-label="Session timeline events, scrolls">
           <table className="w-full text-xs text-left tabular-nums">
             <caption className="sr-only">
               Everything on the session timeline in time order: state changes, alerts and marks. The last column jumps to that moment.

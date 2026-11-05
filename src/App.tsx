@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ConnectScreen } from './components/ConnectScreen'
-import { StatusBar } from './components/StatusBar'
+import { HeaderTools, StatusBar } from './components/StatusBar'
 import { WorkspaceBar } from './components/WorkspaceBar'
 import { Cockpit } from './components/Cockpit'
 import { AppearanceDialog } from './components/AppearanceDialog'
@@ -579,17 +579,9 @@ export function App() {
         isMonitor={isMonitor}
         profile={activeProfile}
         pingLatency={telemetry ? telemetry.pingLatency : null}
-        batteryVoltage={isMonitor ? monitor.aux?.battery?.motorVoltage ?? null : telemetry ? telemetry.batteryVoltage : null}
-        batteryPercentage={isMonitor ? monitor.aux?.battery?.soc ?? null : telemetry ? telemetry.batteryPercentage : null}
         view={alertView}
         abortTrips={abortTrips}
         stageStops={stageStops}
-        sound={ui.sound}
-        speech={ui.speech}
-        audioRunning={audioRunning}
-        speechAvailable={speechSupported()}
-        onToggleSound={handleToggleSound}
-        onToggleSpeech={handleToggleSpeech}
         onShowAlerts={handleShowAlerts}
         onOpenRobotSettings={handleOpenSettings}
       />
@@ -602,6 +594,19 @@ export function App() {
         onOpenHelp={handleOpenHelp}
         onOpenDisplay={() => setIsAppearanceOpen(true)}
         onOpenSettings={handleOpenSettings}
+        tools={
+          <HeaderTools
+            isMonitor={isMonitor}
+            sound={ui.sound}
+            speech={ui.speech}
+            audioRunning={audioRunning}
+            speechAvailable={speechSupported()}
+            onToggleSound={handleToggleSound}
+            onToggleSpeech={handleToggleSpeech}
+            batteryVoltage={isMonitor ? monitor.aux?.battery?.motorVoltage ?? null : telemetry ? telemetry.batteryVoltage : null}
+            batteryPercentage={isMonitor ? monitor.aux?.battery?.soc ?? null : telemetry ? telemetry.batteryPercentage : null}
+          />
+        }
       />
 
       {/* Safety Alert Banner (steady, not animated: constant motion competes with reading) */}
@@ -695,7 +700,7 @@ export function App() {
               names={names}
             />
           </div>
-          {isMonitor && <SessionTimeline state={monitor} profile={activeProfile} model={timeline} scope={marksScope} defaultTable={workspace === 'review'} />}
+          {isMonitor && <SessionTimeline state={monitor} profile={activeProfile} model={timeline} scope={marksScope} />}
         </main>
       )}
 

@@ -33,21 +33,12 @@ interface StatusBarProps {
   profile: RobotProfile
   /** Drive mode only: null until the first packet. */
   pingLatency: number | null
-  batteryVoltage: number | null
-  batteryPercentage: number | null
   /** First-out, grouping and severity rules already applied (see utils/alertModel). */
   view: AlertView
   /** Manual §3 abort checks that have tripped. They count as critical here. */
   abortTrips: number
   /** Stop limits of the guided checks crossed in this g1_ctrl run, in any stage. They count as critical. */
   stageStops: number
-  sound: boolean
-  speech: boolean
-  /** The browser has allowed sound (it needs a click first). */
-  audioRunning: boolean
-  speechAvailable: boolean
-  onToggleSound: () => void
-  onToggleSpeech: () => void
   onShowAlerts: () => void
   onOpenRobotSettings: () => void
 }
@@ -64,7 +55,7 @@ const TONE: Record<Tone, string> = {
   accent: 'border-accent bg-accent-solid text-on-accent',
 }
 
-const chip = 'inline-flex items-center gap-2 rounded-lg border px-3 min-h-9 text-sm whitespace-nowrap'
+const chip = 'inline-flex items-center gap-2 rounded-lg border px-3 max-md:px-2 min-h-9 text-sm whitespace-nowrap'
 
 /** Where the data comes from. The four sources must never be mistaken for each other, so each has its own icon, word and colour. */
 function sourceChip(status: ConnectionStatus, monitor: MonitorState, isMonitor: boolean): { Icon: LucideIcon; word: string; detail: string; tone: Tone } {
@@ -81,7 +72,7 @@ function sourceChip(status: ConnectionStatus, monitor: MonitorState, isMonitor: 
   return { Icon: Radio, word: 'LIVE', detail: 'robot bridge', tone: 'ok' }
 }
 
-function BatteryChip({ percent, volts, monitor }: { percent: number | null; volts: number | null; monitor: boolean }) {
+export function BatteryChip({ percent, volts, monitor }: { percent: number | null; volts: number | null; monitor: boolean }) {
   // The pack voltage thresholds are for the demo/drive bridge's pack; a read-only session trusts the BMS charge only.
   const level = monitor ? percent : null
   const Icon =
@@ -109,17 +100,9 @@ export function StatusBar({
   isMonitor,
   profile,
   pingLatency,
-  batteryVoltage,
-  batteryPercentage,
   view,
   abortTrips,
   stageStops,
-  sound,
-  speech,
-  audioRunning,
-  speechAvailable,
-  onToggleSound,
-  onToggleSpeech,
   onShowAlerts,
   onOpenRobotSettings,
 }: StatusBarProps) {
@@ -148,27 +131,27 @@ export function StatusBar({
   const SrcIcon = src.Icon
 
   return (
-    <header data-tour="bar" className="border-b border-line/80 bg-sunken/80 backdrop-blur-md px-3 lg:px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-2 z-20 shrink-0">
-      <h1 className="font-mono text-lg font-black tracking-wider text-ink flex items-center gap-2 mr-1">
+    <header data-tour="bar" className="border-b border-line/80 bg-sunken/80 backdrop-blur-md px-3 lg:px-4 py-2 flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-2 z-20 shrink-0">
+      <h1 className="font-mono text-lg font-black tracking-wider text-ink flex items-center gap-2 mr-1 shrink-0">
         <span className="w-8 h-8 rounded-lg bg-gradient-to-tr from-accent-solid to-info flex items-center justify-center shrink-0" aria-hidden="true">
           <Bot className="w-5 h-5 text-on-accent" />
         </span>
         ROCO
       </h1>
 
-      <div role="status" aria-live="polite" className={cn(chip, TONE[src.tone], 'font-mono font-bold')}>
+      <div role="status" aria-live="polite" title={src.detail ? `${src.word} ${src.detail}` : undefined} className={cn(chip, TONE[src.tone], 'font-mono font-bold min-w-0')}>
         <SrcIcon className={cn('w-4 h-4 shrink-0', status === 'CONNECTING' && 'motion-safe:animate-spin')} aria-hidden="true" />
-        <span>{src.word}</span>
-        {src.detail && <span className="font-normal opacity-90 hidden md:inline">{src.detail}</span>}
+        <span className="shrink-0">{src.word}</span>
+        {src.detail && <span className="font-normal opacity-90 hidden lg:inline min-w-0 truncate">{src.detail}</span>}
       </div>
 
       {isMonitor ? (
         <>
           {/* Frame round the two things to read first: the state and the abort status. */}
-          <div role="group" aria-label="Robot state and alert status" className="flex flex-wrap items-center gap-2 rounded-xl border-2 border-accent p-1">
-          <div className={cn(chip, TONE.neutral, 'gap-3')}>
-            <span className="text-xs text-ink-muted">g1_ctrl state</span>
-            <span className="text-lg font-semibold leading-tight">
+          <div role="group" aria-label="Robot state and alert status" className="flex items-center gap-2 rounded-xl border-2 border-accent p-1 min-w-0">
+          <div className={cn(chip, TONE.neutral, 'gap-3 shrink-0')}>
+            <span className="text-xs text-ink-muted max-lg:sr-only">g1_ctrl state</span>
+            <span className="text-lg font-semibold leading-tight truncate max-w-[12rem]" title={fsm.state ?? undefined}>
               {fsm.state ?? 'Unknown'}
             </span>
             {inState !== null && <span className="font-mono tabular-nums text-ink-soft">{formatDuration(inState)}</span>}
@@ -178,31 +161,20 @@ export function StatusBar({
           <button
             type="button"
             onClick={onShowAlerts}
-            className={cn(chip, 'cursor-pointer hover:border-line-hot font-semibold', crit ? TONE.crit : warn ? TONE.warn : TONE.neutral)}
+            title={`${alertsText}${firstTitle && parts.length ? `, first: ${firstTitle}` : ''}${extra.length ? ` (${extra.join(', ')})` : ''}`}
+            className={cn(chip, 'cursor-pointer hover:border-line-hot font-semibold min-w-0', crit ? TONE.crit : warn ? TONE.warn : TONE.neutral)}
             aria-label={`${alertsText}${firstTitle && parts.length ? ` first: ${firstTitle}` : ''}${extra.length ? ` (${extra.join(', ')})` : ''}, ${stageStops && !counts.critical && !counts.warn && !abortTrips ? 'show guided checks' : 'show alerts'}`}
           >
-            {crit ? <AlertOctagon className="w-4 h-4" aria-hidden="true" /> : warn ? <AlertTriangle className="w-4 h-4" aria-hidden="true" /> : <CheckCircle2 className={cn('w-4 h-4', aux ? 'text-ok' : 'text-ink-muted')} aria-hidden="true" />}
-            <span aria-hidden="true">{alertsText}</span>
-            {firstTitle && parts.length > 0 && (
-              <>
-                {' '}
-                <span className="font-normal hidden lg:inline max-w-[16rem] truncate" aria-hidden="true">
-                  first: {firstTitle}
-                </span>
-              </>
-            )}
-            {extra.length > 0 && (
-              <>
-                {' '}
-                <span className="font-normal hidden md:inline" aria-hidden="true">
-                  ({extra.join(', ')})
-                </span>
-              </>
-            )}
+            {crit ? <AlertOctagon className="w-4 h-4 shrink-0" aria-hidden="true" /> : warn ? <AlertTriangle className="w-4 h-4" aria-hidden="true" /> : <CheckCircle2 className={cn('w-4 h-4', aux ? 'text-ok' : 'text-ink-muted')} aria-hidden="true" />}
+            <span className="min-w-0 truncate" aria-hidden="true">
+              {alertsText}
+              {firstTitle && parts.length > 0 && <span className="font-normal hidden lg:inline"> first: {firstTitle}</span>}
+              {extra.length > 0 && <span className="font-normal hidden xl:inline"> ({extra.join(', ')})</span>}
+            </span>
           </button>
           </div>
 
-          <div className={cn(chip, stateLost ? TONE.crit : TONE.neutral, 'font-mono tabular-nums')} role="group" aria-label={link ? (replayIdle ? 'Rates not shown while the replay is not playing' : `Robot state ${link.lowstateHz.toFixed(0)} hertz, commands ${link.lowcmdHz.toFixed(0)} hertz${stateLost ? ', state lost' : ''}`) : 'Link: no data'}>
+          <div className={cn(chip, stateLost ? TONE.crit : TONE.neutral, 'font-mono tabular-nums shrink-0', !stateLost && 'max-lg:hidden')} role="group" aria-label={link ? (replayIdle ? 'Rates not shown while the replay is not playing' : `Robot state ${link.lowstateHz.toFixed(0)} hertz, commands ${link.lowcmdHz.toFixed(0)} hertz${stateLost ? ', state lost' : ''}`) : 'Link: no data'}>
             <Radio className="w-4 h-4" aria-hidden="true" />
             <span aria-hidden="true">
               {link ? (replayIdle ? 'state — Hz · cmd — Hz' : `state ${link.lowstateHz.toFixed(0)} Hz · cmd ${link.lowcmdHz.toFixed(0)} Hz`) : 'no link data'}
@@ -228,41 +200,74 @@ export function StatusBar({
           </div>
         </>
       )}
-
-      <div className="ml-auto flex flex-wrap items-center gap-2">
-        {isMonitor && (
-          <>
-            <button
-              type="button"
-              onClick={onToggleSound}
-              aria-pressed={sound}
-              title={sound ? 'A tone sounds for a new critical alert. Click to turn off.' : 'Click to turn on a tone for a new critical alert.'}
-              className={cn(chip, 'cursor-pointer hover:border-line-hot', sound ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
-            >
-              {sound ? <Volume2 className="w-4 h-4" aria-hidden="true" /> : <VolumeX className="w-4 h-4 text-ink-muted" aria-hidden="true" />}
-              <span>Tone {sound ? (audioRunning ? 'on' : 'on, click the page') : 'off'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onToggleSpeech}
-              aria-pressed={speech}
-              disabled={!speechAvailable}
-              title={
-                !speechAvailable
-                  ? 'This browser has no speech.'
-                  : speech
-                  ? 'State changes and new critical alerts are spoken. Click to turn off.'
-                  : 'Click to speak state changes and new critical alerts.'
-              }
-              className={cn(chip, 'cursor-pointer hover:border-line-hot disabled:cursor-default disabled:opacity-60', speech ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
-            >
-              <Speech className={cn('w-4 h-4', !speech && 'text-ink-muted')} aria-hidden="true" />
-              <span>Voice {!speechAvailable ? 'n/a' : speech ? 'on' : 'off'}</span>
-            </button>
-          </>
-        )}
-        <BatteryChip percent={batteryPercentage} volts={batteryVoltage} monitor={isMonitor} />
-      </div>
     </header>
+  )
+}
+
+/**
+ * The tone and voice switches and the battery. They sit in the workspace bar, so the status line above has the same height whatever
+ * they say. Below xl the switches are icons; the name and state stay in the label for screen readers and in the tooltip.
+ */
+export function HeaderTools({
+  isMonitor,
+  sound,
+  speech,
+  audioRunning,
+  speechAvailable,
+  onToggleSound,
+  onToggleSpeech,
+  batteryVoltage,
+  batteryPercentage,
+}: {
+  isMonitor: boolean
+  sound: boolean
+  speech: boolean
+  /** The browser has allowed sound (it needs a click first). */
+  audioRunning: boolean
+  speechAvailable: boolean
+  onToggleSound: () => void
+  onToggleSpeech: () => void
+  batteryVoltage: number | null
+  batteryPercentage: number | null
+}) {
+  const toneText = `Tone ${sound ? (audioRunning ? 'on' : 'on, click the page') : 'off'}`
+  const voiceText = `Voice ${!speechAvailable ? 'n/a' : speech ? 'on' : 'off'}`
+  return (
+    <>
+      {isMonitor && (
+        <>
+          <button
+            type="button"
+            onClick={onToggleSound}
+            aria-pressed={sound}
+            aria-label={toneText}
+            title={sound ? 'A tone sounds for a new critical alert. Click to turn off.' : 'Click to turn on a tone for a new critical alert.'}
+            className={cn(chip, 'cursor-pointer hover:border-line-hot', sound ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
+          >
+            {sound ? <Volume2 className="w-4 h-4" aria-hidden="true" /> : <VolumeX className="w-4 h-4 text-ink-muted" aria-hidden="true" />}
+            <span className="hidden xl:inline" aria-hidden="true">{toneText}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleSpeech}
+            aria-pressed={speech}
+            aria-label={voiceText}
+            disabled={!speechAvailable}
+            title={
+              !speechAvailable
+                ? 'This browser has no speech.'
+                : speech
+                ? 'State changes and new critical alerts are spoken. Click to turn off.'
+                : 'Click to speak state changes and new critical alerts.'
+            }
+            className={cn(chip, 'cursor-pointer hover:border-line-hot disabled:cursor-default disabled:opacity-60', speech ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
+          >
+            <Speech className={cn('w-4 h-4', !speech && 'text-ink-muted')} aria-hidden="true" />
+            <span className="hidden xl:inline" aria-hidden="true">{voiceText}</span>
+          </button>
+        </>
+      )}
+      <BatteryChip percent={batteryPercentage} volts={batteryVoltage} monitor={isMonitor} />
+    </>
   )
 }

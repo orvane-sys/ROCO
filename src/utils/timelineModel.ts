@@ -89,11 +89,24 @@ export function mergeTimelineAlerts(prev: TimelineAlert[], view: AlertView, seek
   return changed ? [...byKey.values()].sort((x, y) => x.t - y.t || (x.key < y.key ? -1 : 1)) : prev
 }
 
+/** Why a span has no state: before g1_ctrl's first log line, a recording not played that far yet, or no log at all. */
+export type UnknownWhy = 'before-log' | 'not-played' | 'no-log'
+
 export interface TimelineSpan {
   /** g1_ctrl state, or null where it is not known (before the log starts, or a recording not played that far yet). */
   state: string | null
   t0: number
   t1: number
+  /** Set exactly when `state` is null. */
+  unknown?: UnknownWhy
+}
+
+/** What to call a span: its state, or the reason it has none. */
+export function spanText(span: Pick<TimelineSpan, 'state' | 'unknown'>): string {
+  if (span.state !== null) return span.state
+  if (span.unknown === 'before-log') return "before g1_ctrl's first log line"
+  if (span.unknown === 'not-played') return 'not played yet'
+  return 'state not known'
 }
 
 export interface TimelineModel {
@@ -139,17 +152,20 @@ export function buildTimeline(state: MonitorState, alerts: TimelineAlert[], mark
   const knownTo = replay && !frame ? Math.min(Math.max(playedTo ?? t0, t0), t1) : t1
 
   const spans: TimelineSpan[] = []
+  const span = (s: string | null, from: number, to: number, why: UnknownWhy): TimelineSpan =>
+    s === null ? { state: null, t0: from, t1: to, unknown: why } : { state: s, t0: from, t1: to }
+  const noState: UnknownWhy = changes.length > 0 ? 'before-log' : 'no-log'
   let cur: string | null = stateAt(t0, changes, state.fsm.state)
   let at = t0
   for (const c of changes) {
     if (c.t <= t0) continue
     if (c.t >= knownTo) break
-    spans.push({ state: cur, t0: at, t1: c.t })
+    spans.push(span(cur, at, c.t, noState))
     cur = c.to
     at = c.t
   }
-  spans.push({ state: cur, t0: at, t1: knownTo })
-  if (knownTo < t1) spans.push({ state: null, t0: knownTo, t1 })
+  spans.push(span(cur, at, knownTo, noState))
+  if (knownTo < t1) spans.push({ state: null, t0: knownTo, t1, unknown: 'not-played' })
 
   return {
     t0,
@@ -207,3 +223,48 @@ export const timeAtX = (model: Pick<TimelineModel, 't0' | 't1'>, x: number, left
   model.t0 + Math.min(Math.max((x - left) / width, 0), 1) * (model.t1 - model.t0)
 export const xAtTime = (model: Pick<TimelineModel, 't0' | 't1'>, t: number, left: number, width: number): number =>
   left + ((t - model.t0) / (model.t1 - model.t0)) * width
+
+const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400]
+const MAX_TICKS = 8
+const DAY_S = 86400
+
+/**
+ * Tick times for the time axis: about one per 90 px (`sc` scales that with the text size), never more than 8, on round steps.
+ * A recording counts from its start; live data falls on whole clock minutes and seconds.
+ */
+export function axisTicks(model: Pick<TimelineModel, 't0' | 't1' | 'replay'>, width: number, sc: number): number[] {
+  const want = Math.min(MAX_TICKS, Math.max(2, Math.floor(width / (90 * sc))))
+  const origin = model.replay ? model.t0 : 0
+  const first = (s: number) => Math.ceil((model.t0 - origin) / s - 1e-9)
+  const count = (s: number) => Math.floor((model.t1 - origin) / s + 1e-9) - first(s) + 1
+  let step = TICK_STEPS.find((s) => count(s) <= want)
+  if (step === undefined) {
+    step = TICK_STEPS[TICK_STEPS.length - 1]
+    while (count(step) > want) step += DAY_S
+  }
+  const out: number[] = []
+  for (let n = first(step); origin + n * step <= model.t1 + 1e-6; n++) out.push(origin + n * step)
+  return out
+}
+
+/**
+ * The axis label for tick `t`. `clock` is the page's clock text for live data ("14:03:09.250"). A recording reads "10 s" under two
+ * minutes, "m:ss" up to an hour and "h:mm h" beyond; live data drops the seconds beyond an hour and adds the date beyond a day.
+ */
+export function tickLabel(t: number, model: Pick<TimelineModel, 't0' | 't1' | 'replay'>, clock: string): string {
+  const span = model.t1 - model.t0
+  if (!model.replay) {
+    const hms = clock.replace(/\.\d+$/, '')
+    if (span > DAY_S) {
+      // over a day the clock repeats, so the day goes in front
+      const d = new Date(t * 1000)
+      return `${d.getMonth() + 1}/${d.getDate()} ${hms.slice(0, 5)}`
+    }
+    return span > 3600 ? hms.replace(/:\d\d$/, '') : hms
+  }
+  const rel = Math.max(0, Math.round(t - model.t0))
+  const two = (n: number) => String(n).padStart(2, '0')
+  if (span < 120) return `${rel} s`
+  if (span <= 3600) return `${Math.floor(rel / 60)}:${two(rel % 60)}`
+  return `${Math.floor(rel / 3600)}:${two(Math.floor((rel % 3600) / 60))} h`
+}
