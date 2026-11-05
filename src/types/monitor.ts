@@ -54,6 +54,8 @@ export interface BridgeHello {
   manual?: { file: string; sha256: string; bytes: number } | null
   /** One id per bridge start: the same id on a reconnect means the bridge kept running. Absent on an older bridge. */
   session?: { id: string; startedAt: number }
+  /** Only in a sample recording: what it is, for the page to say so. */
+  demo?: { title: string; recorded: string }
 }
 
 export interface MonitorAlert {

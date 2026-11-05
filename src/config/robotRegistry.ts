@@ -506,14 +506,6 @@ export function unregisterRobotProfile(id: string): boolean {
   return registry.delete(id)
 }
 
-/**
- * True when the mock simulator has a hand-authored gait for this robot (the built-in G1 variants).
- * Imported robots only get base odometry; their joints hold the rest pose.
- */
-export function hasGaitModel(profile: RobotProfile): boolean {
-  return profile.modeMachine !== undefined
-}
-
 /** Wire `mode_machine` for a profile; 0 means "unspecified" (imported robots), which a bridge ignores. */
 export function getModeMachineForProfile(profile: RobotProfile): number {
   return profile.modeMachine ?? 0

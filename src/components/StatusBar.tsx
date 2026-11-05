@@ -68,12 +68,12 @@ const chip = 'inline-flex items-center gap-2 rounded-lg border px-3 min-h-9 text
 
 /** Where the data comes from. The four sources must never be mistaken for each other, so each has its own icon, word and colour. */
 function sourceChip(status: ConnectionStatus, monitor: MonitorState, isMonitor: boolean): { Icon: LucideIcon; word: string; detail: string; tone: Tone } {
-  if (status === 'MOCK') return { Icon: FlaskConical, word: 'DEMO DATA', detail: 'invented motion', tone: 'demo' }
   if (status === 'CONNECTING') return { Icon: Loader2, word: 'CONNECTING', detail: '', tone: 'warn' }
   if (status === 'DISCONNECTED') return { Icon: PlugZap, word: 'OFFLINE', detail: 'no bridge', tone: 'crit' }
   if (status === 'SAFETY_HALT') return { Icon: AlertOctagon, word: 'HALT', detail: 'no data', tone: 'crit' }
   const h = monitor.hello
   if (isMonitor && h) {
+    if (h.demo) return { Icon: FlaskConical, word: 'SAMPLE', detail: h.demo.title, tone: 'demo' }
     if (h.source === 'replay') return { Icon: Film, word: 'REPLAY', detail: monitor.replay?.file ?? h.replay?.file ?? '', tone: 'neutral' }
     if (h.source === 'robot') return { Icon: Bot, word: 'ROBOT', detail: `via DDS (${h.iface})`, tone: 'accent' }
     return { Icon: Cpu, word: 'SIM', detail: `via DDS (${h.iface})`, tone: 'info' }

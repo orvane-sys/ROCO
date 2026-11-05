@@ -7,7 +7,6 @@ import type {
   VelocityCommand,
 } from '../types/telemetry'
 import { G1_29DOF_JOINTS } from '../types/telemetry'
-import { NOMINAL_PELVIS_HEIGHT, synthesizeG1Gait } from './g1Gait'
 import {
   decodeLowState,
   encodeTeleopCmd,
@@ -34,6 +33,7 @@ import { PLOT_SLOTS, PlotRing } from './plotRing'
 import { matchMotorSlots } from '../utils/motorMatch'
 import { alertHistoryStore, alertScopeKey } from './alertHistoryStore'
 import { reduceAux, reduceFsm, reduceHello } from './monitorReducer'
+import { RecordedBridgeSocket } from './recordedBridge'
 import type { AlertPersist } from './monitorReducer'
 
 type TelemetryListener = (telemetry: RobotTelemetry) => void
@@ -48,7 +48,7 @@ const ODOM_FRESH_MS = 500
 
 // Dashboard URL options, set by the bridge's printed link:
 //   ?ws=<ws:// or wss:// url>  bridge address
-//   ?demo=1                    start on demo data without a bridge (never the default)
+//   ?demo=1                    play the sample recording, a real G1 run, without a bridge
 //   ?monitor=1                 read-only from the first frame (no teleop is ever sent)
 const URL_PARAMS =
   typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams()
@@ -69,6 +69,7 @@ const emptyMonitorState = (): MonitorState => ({
   aux: null,
   fsm: { state: null, since: null, events: [], segments: [], segment: null },
   replay: null,
+  timeline: null,
   alertLog: [],
 })
 
@@ -77,19 +78,22 @@ const MAX_VX = 0.8
 const MAX_VY = 0.4
 const MAX_WZ = 1.0
 
-const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
 const finiteOr = (v: unknown, fallback: number) =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback
+
+/** Built for a static host (VITE_HOSTED=1): nothing to connect to there, so the page opens on the sample recording. */
+export const HOSTED = import.meta.env.VITE_HOSTED === '1'
+const SAMPLE_URL = `${import.meta.env.BASE_URL}demo/g1-sample.rocodemo.gz`
 
 const DEFAULT_CONFIG: TelemetryConfig = {
   wsUrl: wsUrlFromQuery() ?? 'ws://localhost:8765',
   heartbeatTimeoutMs: 250,
-  mockFallbackDelayMs: 1200,
+  connectTimeoutMs: 1200,
 }
 
 export class TelemetryStreamService {
   private config: TelemetryConfig
-  private socket: WebSocket | null = null
+  private socket: WebSocket | RecordedBridgeSocket | null = null
   private status: ConnectionStatus = 'CONNECTING'
   private telemetryListeners: Set<TelemetryListener> = new Set()
   private statusListeners: Set<StatusListener> = new Set()
@@ -98,8 +102,8 @@ export class TelemetryStreamService {
   private noticeListeners: Set<NoticeListener> = new Set()
   private notice: string | null = null
   private lastUnknownModeMachine = 0
-  /** Set once the operator leaves demo data, so ?demo=1 does not pull them back into it. */
-  private demoDeclined = false
+  /** The sample recording plays in place of a bridge. Connecting to a bridge leaves it. */
+  private sample = URL_PARAMS.get('demo') === '1' || (HOSTED && !wsUrlFromQuery())
   private activeProfile: RobotProfile = G1_29DOF_PROFILE
 
   private readonly monitorFromUrl = URL_PARAMS.get('monitor') === '1'
@@ -113,28 +117,15 @@ export class TelemetryStreamService {
   private lastPacketTimestamp: number = 0
   private lastBinaryTimestamp: number = 0
   private watchdogTimer: ReturnType<typeof setInterval> | null = null
-  private mockIntervalTimer: ReturnType<typeof setInterval> | null = null
   private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-  private mockTime: number = 0
-  private walkPhase: number = 0
   private isEmergencyStopped: boolean = false
-  private prevJointPositions: Map<string, number> = new Map()
-  private jointTemperatures: Map<string, number> = new Map(
-    G1_29DOF_JOINTS.map((j, idx) => [j.id, 34 + (idx % 5) * 1.5])
-  )
-
-  // Inertial Velocity States (Target vs Actual Integrated Velocity)
-  private targetVelocity: { vx: number; vy: number; wz: number } = { vx: 0, vy: 0, wz: 0 }
-  private currentVelocity: { vx: number; vy: number; wz: number } = { vx: 0, vy: 0, wz: 0 }
-  private currentBatteryVoltage: number = 24.8
-
   // 6-DOF pelvis pose in the ROS odom frame (+X fwd, +Y left, +Z up)
   private basePose: BasePose = {
     x: 0,
     y: 0,
-    z: NOMINAL_PELVIS_HEIGHT,
+    z: G1_29DOF_PROFILE.nominalPelvisHeight,
     roll: 0,
     pitch: 0,
     yaw: 0,
@@ -163,7 +154,7 @@ export class TelemetryStreamService {
     basePose: {
       x: 0,
       y: 0,
-      z: NOMINAL_PELVIS_HEIGHT,
+      z: G1_29DOF_PROFILE.nominalPelvisHeight,
       roll: 0,
       pitch: 0,
       yaw: 0,
@@ -172,8 +163,6 @@ export class TelemetryStreamService {
     emergencyStopped: false,
   }
 
-  // Binary Loopback test: encode mock gait into 2092B Unitree LowState_ & decode at 50Hz
-  private binaryLoopbackEnabled: boolean = true
   private useBinaryCommands: boolean = true
   private pendingProfileSwitchUntil: number = 0
 
@@ -497,14 +486,6 @@ export class TelemetryStreamService {
     }
     this.snapshotBuffer.basePose = { ...this.basePose }
 
-    // Reset velocities
-    this.targetVelocity = { vx: 0, vy: 0, wz: 0 }
-    this.currentVelocity = { vx: 0, vy: 0, wz: 0 }
-
-    // Reset tracking maps
-    this.prevJointPositions.clear()
-    this.jointTemperatures = new Map(profile.joints.map((j, idx) => [j.id, 34 + (idx % 5) * 1.5]))
-
     this.latestSnapshot = { ...this.snapshotBuffer, joints: [...this.snapshotBuffer.joints] }
     this.emitTelemetry(this.latestSnapshot)
     this.profileListeners.forEach((l) => l(profile))
@@ -536,10 +517,6 @@ export class TelemetryStreamService {
 
   public connect(): void {
     this.cleanup()
-    if (URL_PARAMS.get('demo') === '1' && !this.demoDeclined) {
-      this.fallbackToMock()
-      return
-    }
     this.setStatus('CONNECTING')
     // a new bridge introduces itself again (or is not a read-only bridge at all)
     if (this.monitor.hello || this.monitor.aux || this.monitor.replay) this.setMonitor(emptyMonitorState())
@@ -547,24 +524,27 @@ export class TelemetryStreamService {
     this.lastBinaryTimestamp = 0
 
     try {
-      this.socket = new WebSocket(this.config.wsUrl)
+      this.socket = this.sample ? new RecordedBridgeSocket(SAMPLE_URL) : new WebSocket(this.config.wsUrl)
       this.socket.binaryType = 'arraybuffer'
 
-      this.connectTimeoutTimer = setTimeout(() => {
-        if (this.status === 'CONNECTING' && (!this.socket || this.socket.readyState !== WebSocket.OPEN)) {
-          this.connectFailed()
-        }
-      }, this.config.mockFallbackDelayMs)
+      // The sample comes over the network and may take a while; it reports its own failure.
+      if (!this.sample) {
+        this.connectTimeoutTimer = setTimeout(() => {
+          if (this.status === 'CONNECTING' && (!this.socket || this.socket.readyState !== WebSocket.OPEN)) {
+            this.connectFailed()
+          }
+        }, this.config.connectTimeoutMs)
+      }
 
       this.socket.onopen = () => {
         if (this.connectTimeoutTimer) {
           clearTimeout(this.connectTimeoutTimer)
           this.connectTimeoutTimer = null
         }
-        this.stopMockGenerator()
         this.setStatus('LIVE')
         this.lastPacketTimestamp = performance.now()
-        this.startWatchdog()
+        // A recording has no link to lose, and a hidden tab's slow timers must not look like one.
+        if (!this.sample) this.startWatchdog()
       }
 
       this.socket.onmessage = (event: MessageEvent) => {
@@ -669,7 +649,7 @@ export class TelemetryStreamService {
     }
   }
 
-  /** No bridge: stay offline and keep retrying. Demo data only starts when the operator asks for it. */
+  /** No bridge: stay offline and keep retrying. */
   private connectFailed(): void {
     this.cleanup()
     this.setStatus('DISCONNECTED')
@@ -677,7 +657,7 @@ export class TelemetryStreamService {
   }
 
   public reconnect(): void {
-    this.demoDeclined = true
+    this.sample = false
     this.cleanup()
     this.connect()
   }
@@ -709,219 +689,6 @@ export class TelemetryStreamService {
         }
       }
     }, 50)
-  }
-
-  private fallbackToMock(): void {
-    if (this.socket) {
-      this.socket.onopen = null
-      this.socket.onmessage = null
-      this.socket.onerror = null
-      this.socket.onclose = null
-      try {
-        this.socket.close()
-      } catch {
-        // Safe ignore
-      }
-      this.socket = null
-    }
-
-    if (this.watchdogTimer) {
-      clearInterval(this.watchdogTimer)
-      this.watchdogTimer = null
-    }
-
-    this.setStatus('MOCK')
-    this.startMockGenerator()
-  }
-
-  private startMockGenerator(): void {
-    if (this.mockIntervalTimer) clearInterval(this.mockIntervalTimer)
-
-    const dt = 0.02 // 50 Hz physics tick (20ms interval)
-
-    this.mockIntervalTimer = setInterval(() => {
-      this.mockTime += dt
-      const t = this.mockTime
-      const isHalt = this.isEmergencyStopped
-
-      // 1. Inertial Velocity Smoothing with Acceleration & Deceleration Ramping
-      if (isHalt) {
-        this.targetVelocity = { vx: 0, vy: 0, wz: 0 }
-      }
-
-      const rampVelocity = (
-        current: number,
-        target: number,
-        accelRate: number,
-        decelRate: number
-      ) => {
-        const isBraking =
-          Math.sign(current) !== Math.sign(target) ||
-          Math.abs(target) < Math.abs(current)
-        const rate = isBraking ? decelRate : accelRate
-        const step = rate * dt
-        if (Math.abs(target - current) <= step) return target
-        return current + Math.sign(target - current) * step
-      }
-
-      // Linear: ~2.5 m/s² accel, ~4.0 m/s² decel. Angular: ~4.0 rad/s² accel, ~6.0 rad/s² decel
-      this.currentVelocity.vx = rampVelocity(this.currentVelocity.vx, this.targetVelocity.vx, 2.5, 4.0)
-      this.currentVelocity.vy = rampVelocity(this.currentVelocity.vy, this.targetVelocity.vy, 2.5, 4.0)
-      this.currentVelocity.wz = rampVelocity(this.currentVelocity.wz, this.targetVelocity.wz, 4.0, 6.0)
-
-      const vx = this.currentVelocity.vx
-      const vy = this.currentVelocity.vy
-      const wz = this.currentVelocity.wz
-
-      // Gait engagement: any commanded DOF (including turning in place) makes the robot step.
-      const gaitBlend = Math.min(
-        1.0,
-        Math.max(Math.abs(vx) / MAX_VX, Math.abs(vy) / MAX_VY, (0.8 * Math.abs(wz)) / MAX_WZ)
-      )
-
-      // 2. Gait cadence: 1.0 Hz stride cycle when shuffling, 1.6 Hz at full speed.
-      const gaitPeriod = 1 / (1.0 + 0.6 * gaitBlend)
-      if (gaitBlend > 0.01) {
-        this.walkPhase = (this.walkPhase + ((2 * Math.PI) / gaitPeriod) * dt) % (2 * Math.PI)
-      }
-
-      // 3. Planar base odometry in the ROS frame (+X fwd, +Y left, yaw CCW about +Z)
-      const pose = this.basePose
-      if (this.activeProfile.category === 'fixed_manipulator') {
-        pose.x = 0
-        pose.y = 0
-        pose.yaw = 0
-        pose.pitch = 0
-        pose.roll = 0
-        pose.z = this.activeProfile.nominalPelvisHeight
-      } else {
-        pose.yaw = wrapAngle(pose.yaw + wz * dt)
-        const cosYaw = Math.cos(pose.yaw)
-        const sinYaw = Math.sin(pose.yaw)
-        pose.x += (vx * cosYaw - vy * sinYaw) * dt
-        pose.y += (vx * sinYaw + vy * cosYaw) * dt
-        pose.pitch = 0.06 * vx
-        pose.roll = -0.05 * vy - 0.05 * vx * wz
-      }
-
-      // 4. Kinematic leg/arm synthesis (IK keeps stance feet planted and flat)
-      const gait = synthesizeG1Gait({
-        phase: this.walkPhase,
-        period: gaitPeriod,
-        blend: gaitBlend,
-        vx,
-        vy,
-        wz,
-        basePitch: pose.pitch,
-        baseRoll: pose.roll,
-      }, this.activeProfile)
-      pose.z = gait.pelvisHeight
-
-      const idleRatio = Math.max(0, 1.0 - gaitBlend / 0.2)
-
-      const joints: JointState[] = this.activeProfile.joints.map((j, idx) => {
-        let position = gait.joints[j.id] ?? j.defaultPos
-
-        // Idle subtle breathing sway when stationary
-        if (idleRatio > 0 && !isHalt) {
-          if (j.group === 'waist') {
-            position += Math.sin(t * 0.8 + idx) * 0.012 * idleRatio
-          } else if (j.group === 'left_arm' || j.group === 'right_arm') {
-            position += Math.sin(t * 0.9 + idx) * 0.015 * idleRatio
-          }
-        }
-        position = Math.min(j.limitMax, Math.max(j.limitMin, position))
-
-        const prev = this.prevJointPositions.get(j.id) ?? position
-        this.prevJointPositions.set(j.id, position)
-        const velocity = (position - prev) / dt
-
-        // Load model: stance legs carry body weight, swing legs and arms mostly fight inertia.
-        let load = 0.08
-        if (j.group === 'left_leg' || j.group === 'right_leg') {
-          const stance = j.group === 'left_leg' ? gait.leftStance : gait.rightStance
-          const weightShare = gaitBlend > 0.01 ? (stance ? 1.0 : 0.25) : 0.5
-          load = (0.12 + 0.35 * gaitBlend) * weightShare + 0.15
-        } else if (j.group === 'waist') {
-          load = 0.15 + 0.15 * gaitBlend
-        } else {
-          load = 0.1 + 0.25 * gaitBlend
-        }
-        const torque = isHalt ? 0 : load * j.maxEffort + Math.sin(t * 1.5 + idx) * 0.02 * j.maxEffort
-
-        // First-order thermal model: I²R heating toward a load-dependent steady state.
-        const loadRatio = Math.abs(torque) / j.maxEffort
-        const steadyTemp = 34 + 45 * loadRatio * loadRatio + (idx % 5) * 1.5
-        const prevTemp = this.jointTemperatures.get(j.id) ?? steadyTemp
-        const temperature = prevTemp + (steadyTemp - prevTemp) * (dt / 60)
-        this.jointTemperatures.set(j.id, temperature)
-
-        return {
-          id: j.id,
-          name: j.name,
-          group: j.group,
-          position: Number(position.toFixed(4)),
-          velocity: Number(velocity.toFixed(3)),
-          torque: Number(torque.toFixed(1)),
-          temperature: Number(temperature.toFixed(1)),
-          limitMin: j.limitMin,
-          limitMax: j.limitMax,
-          maxEffort: j.maxEffort,
-        }
-      })
-
-      this.currentBatteryVoltage = Math.max(22.2, 25.1 - (t * 0.0008) % 2.9)
-      const batteryPercentage = Math.min(
-        100,
-        Math.max(0, Math.round(((this.currentBatteryVoltage - 21.6) / (25.2 - 21.6)) * 100))
-      )
-
-      const mockPing = 12 + Math.round(Math.sin(t * 2.5) * 4)
-
-      const telemetry: RobotTelemetry = {
-        timestamp: Date.now(),
-        joints,
-        batteryVoltage: Number(this.currentBatteryVoltage.toFixed(2)),
-        batteryPercentage,
-        pingLatency: mockPing,
-        linearVelocity: { x: Number(vx.toFixed(2)), y: Number(vy.toFixed(2)) },
-        angularVelocity: { z: Number(wz.toFixed(2)) },
-        basePose: { ...pose },
-        gaitBlend: Number(gaitBlend.toFixed(2)),
-        emergencyStopped: this.isEmergencyStopped,
-      }
-
-      if (this.binaryLoopbackEnabled) {
-        // Continuous 50Hz Loopback Test:
-        // 1. Pack synthetic state into authentic 2092B Unitree LowState_ buffer with CRC32
-        const binBuffer = createMockLowStateBuffer(telemetry, Math.floor(t * 50), this.activeProfile)
-        // 2. Decode back through the DataView parser (writes into the pre-allocated snapshot)
-        decodeLowState(binBuffer, this.snapshotBuffer, true, this.activeProfile)
-        this.snapshotBuffer.batteryVoltage = telemetry.batteryVoltage
-        this.snapshotBuffer.batteryPercentage = telemetry.batteryPercentage
-        this.snapshotBuffer.pingLatency = telemetry.pingLatency
-        this.snapshotBuffer.gaitBlend = telemetry.gaitBlend
-        this.snapshotBuffer.linearVelocity = telemetry.linearVelocity
-        this.snapshotBuffer.linearVelocityValid = true // the simulator knows its own velocity
-        this.snapshotBuffer.emergencyStopped = telemetry.emergencyStopped
-        // Preserve computed forward/lateral position
-        this.snapshotBuffer.basePose!.x = pose.x
-        this.snapshotBuffer.basePose!.y = pose.y
-        this.snapshotBuffer.basePose!.z = pose.z
-        this.latestSnapshot = this.snapshotBuffer
-        this.emitTelemetry(this.snapshotBuffer)
-      } else {
-        this.latestSnapshot = telemetry
-        this.emitTelemetry(telemetry)
-      }
-    }, 20)
-  }
-
-  private stopMockGenerator(): void {
-    if (this.mockIntervalTimer) {
-      clearInterval(this.mockIntervalTimer)
-      this.mockIntervalTimer = null
-    }
   }
 
   private normalizeTelemetry(raw: Record<string, unknown>): RobotTelemetry {
@@ -1004,8 +771,6 @@ export class TelemetryStreamService {
     const vy = clamp(command.vy, MAX_VY)
     const wz = clamp(command.vz, MAX_WZ)
 
-    this.targetVelocity = { vx, vy, wz }
-
     if (this.socket && this.canSendCommands()) {
       if (this.useBinaryCommands) {
         const binCmd = encodeTeleopCmd(vx, vy, wz, this.isEmergencyStopped, modeMachine)
@@ -1025,14 +790,6 @@ export class TelemetryStreamService {
 
   public setTeleopVelocity(vx: number, vy: number, wz: number): void {
     this.sendVelocityCommand({ vx, vy, vz: wz })
-  }
-
-  public isBinaryLoopbackEnabled(): boolean {
-    return this.binaryLoopbackEnabled
-  }
-
-  public setBinaryLoopback(enabled: boolean): void {
-    this.binaryLoopbackEnabled = enabled
   }
 
   public isUseBinaryCommands(): boolean {
@@ -1123,10 +880,6 @@ export class TelemetryStreamService {
   public setEmergencyStop(latched: boolean): void {
     // Read-only: a browser latch would stop nothing and suggest otherwise. Unlatching stays allowed.
     if (latched && this.isMonitorMode()) return
-    if (latched) {
-      this.targetVelocity = { vx: 0, vy: 0, wz: 0 }
-      this.currentVelocity = { vx: 0, vy: 0, wz: 0 }
-    }
     if (this.isEmergencyStopped !== latched) {
       this.isEmergencyStopped = latched
       this.eStopListeners.forEach((listener) => listener(latched))
@@ -1153,8 +906,15 @@ export class TelemetryStreamService {
     return this.isEmergencyStopped
   }
 
-  public switchToMock(): void {
-    this.fallbackToMock()
+  /** True while the sample recording plays, or is being fetched, in place of a bridge. */
+  public isSample(): boolean {
+    return this.sample
+  }
+
+  public playSample(): void {
+    this.sample = true
+    this.cleanup()
+    this.connect()
   }
 
   public cleanup(): void {
@@ -1170,8 +930,6 @@ export class TelemetryStreamService {
       clearInterval(this.watchdogTimer)
       this.watchdogTimer = null
     }
-    this.stopMockGenerator()
-
     if (this.socket) {
       this.socket.onopen = null
       this.socket.onmessage = null

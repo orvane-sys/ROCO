@@ -58,7 +58,6 @@ export interface ImuState {
 
 export type ConnectionStatus =
   | 'LIVE'
-  | 'MOCK'
   | 'SAFETY_HALT'
   | 'DISCONNECTED'
   | 'CONNECTING'
@@ -108,7 +107,7 @@ export interface VelocityCommand {
 export interface TelemetryConfig {
   wsUrl: string
   heartbeatTimeoutMs: number
-  mockFallbackDelayMs: number
+  connectTimeoutMs: number
 }
 
 export const G1_JOINT_GROUPS: { id: JointGroup; label: string; shortLabel: string; count: number }[] = [

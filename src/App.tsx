@@ -152,7 +152,7 @@ export function App() {
     const unsubStatus = telemetryService.subscribeStatus((newStatus) => {
       setStatus(newStatus)
       if (newStatus === 'DISCONNECTED') setSawDisconnect(true)
-      else if (newStatus === 'LIVE' || newStatus === 'MOCK') setSawDisconnect(false)
+      else if (newStatus === 'LIVE') setSawDisconnect(false)
     })
 
     const unsubProfile = telemetryService.subscribeRobotProfile((newProfile) => {
@@ -209,18 +209,25 @@ export function App() {
   const handleOpenHelp = useCallback(() => setIsHelpOpen(true), [])
   const handleCloseHelp = useCallback(() => setIsHelpOpen(false), [])
 
-  const handleUpdateConfig = useCallback((config: { wsUrl: string }) => {
-    setWsUrl(config.wsUrl)
-    telemetryService.updateConfig(config)
+  // The sample's last pose must not stay on screen as if a bridge had sent it.
+  const leaveSample = useCallback(() => {
+    if (telemetryService.isSample()) setTelemetry(null)
   }, [])
 
-  const handleSwitchToMock = useCallback(() => {
-    telemetryService.switchToMock()
+  const handleUpdateConfig = useCallback((config: { wsUrl: string }) => {
+    setWsUrl(config.wsUrl)
+    leaveSample()
+    telemetryService.updateConfig(config)
+  }, [leaveSample])
+
+  const handlePlaySample = useCallback(() => {
+    telemetryService.playSample()
   }, [])
 
   const handleReconnect = useCallback(() => {
+    leaveSample()
     telemetryService.reconnect()
-  }, [])
+  }, [leaveSample])
 
   // Read-only bridge: no drive panel and no browser E-stop (it could not stop anything).
   const isMonitor = monitor.hello?.readOnly === true || telemetryService.isMonitorMode()
@@ -642,12 +649,12 @@ export function App() {
         </div>
       )}
 
-      {status === 'MOCK' && (
+      {monitor.hello?.demo && (
         <div
           role="status"
           className="bg-demo-soft/70 text-demo-ink px-4 py-2 border-b border-demo/60 text-sm font-semibold"
         >
-          DEMO DATA. Invented motion, not from a robot or the simulator.
+          Sample recording · {monitor.hello.demo.title} · recorded {monitor.hello.demo.recorded} · not a live robot
         </div>
       )}
 
@@ -656,8 +663,9 @@ export function App() {
           monitor={monitor}
           wsUrl={wsUrl}
           connecting={status === 'CONNECTING'}
+          sample={telemetryService.isSample()}
           onRetry={handleReconnect}
-          onShowDemo={handleSwitchToMock}
+          onPlaySample={handlePlaySample}
         />
       )}
 
@@ -710,7 +718,8 @@ export function App() {
           wsUrl={wsUrl}
           onClose={() => setIsSettingsOpen(false)}
           onUpdateConfig={handleUpdateConfig}
-          onSwitchToMock={handleSwitchToMock}
+          sample={monitor.hello?.demo !== undefined}
+          onPlaySample={handlePlaySample}
           onReconnect={handleReconnect}
         />
       )}

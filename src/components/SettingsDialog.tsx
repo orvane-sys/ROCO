@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { AlertTriangle, Binary, Bot, CheckCircle2, Cpu, FolderUp, Radio, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Binary, Bot, CheckCircle2, FlaskConical, FolderUp, Radio, RefreshCw } from 'lucide-react'
 import type { ConnectionStatus } from '../types/telemetry'
 import { Dialog } from './Dialog'
 import { telemetryService } from '../services/telemetryStream'
@@ -18,7 +18,6 @@ function validateWsUrl(value: string): string | null {
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
   LIVE: 'Live robot bridge',
-  MOCK: 'Demo data, not a robot',
   SAFETY_HALT: 'Watchdog safety halt',
   CONNECTING: 'Connecting…',
   DISCONNECTED: 'Disconnected',
@@ -33,18 +32,19 @@ interface SettingsDialogProps {
   wsUrl: string
   onClose: () => void
   onUpdateConfig: (config: { wsUrl: string }) => void
-  onSwitchToMock: () => void
+  /** The sample recording is playing. */
+  sample: boolean
+  onPlaySample: () => void
   onReconnect: () => void
 }
 
 /** Mounted only while open, so the input always starts from the saved address. */
-export function SettingsDialog({ profile, onSelectProfile, onImport, status, wsUrl, onClose, onUpdateConfig, onSwitchToMock, onReconnect }: SettingsDialogProps) {
+export function SettingsDialog({ profile, onSelectProfile, onImport, status, wsUrl, onClose, onUpdateConfig, sample, onPlaySample, onReconnect }: SettingsDialogProps) {
   const inputId = useId()
   const robotId = useId()
   const errorId = useId()
   const [inputUrl, setInputUrl] = useState(wsUrl)
   const [error, setError] = useState<string | null>(null)
-  const [binaryLoopback, setBinaryLoopback] = useState(telemetryService.isBinaryLoopbackEnabled())
   const [codecTestResult, setCodecTestResult] = useState<{ success: boolean; roundtripMaxJointDiff: number } | null>(null)
 
   const handleSave = (e: React.FormEvent) => {
@@ -141,25 +141,11 @@ export function SettingsDialog({ profile, onSelectProfile, onImport, status, wsU
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Binary className="w-4 h-4 text-accent" />
-              <span className="text-xs font-semibold text-ink">Binary LowState_ Loopback (2092B)</span>
+              <span className="text-xs font-semibold text-ink">Binary LowState_ codec (2092B)</span>
             </div>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                aria-label="Binary LowState loopback"
-                checked={binaryLoopback}
-                onChange={(e) => {
-                  const val = e.target.checked
-                  setBinaryLoopback(val)
-                  telemetryService.setBinaryLoopback(val)
-                }}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-high peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-ink after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-ink after:border-line-hot after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-solid"></div>
-            </label>
           </div>
           <p className="text-xs text-ink-muted">
-            Encodes 50Hz biomechanical telemetry into Unitree G1 binary LowState_ frames and decodes them with a DataView into a reused snapshot.
+            Encodes a test posture into a Unitree G1 binary LowState_ frame and decodes it with a DataView into a reused snapshot.
           </p>
           <div className="flex items-center justify-between pt-1">
             <button
@@ -194,20 +180,20 @@ export function SettingsDialog({ profile, onSelectProfile, onImport, status, wsU
 
         <div className="bg-sunken/60 p-3 rounded-lg border border-line flex items-center justify-between text-sm">
           <span className="text-ink-soft">Current mode</span>
-          <span className="text-accent-ink font-semibold">{STATUS_LABEL[status] ?? status}</span>
+          <span className="text-accent-ink font-semibold">{sample ? 'Sample recording, not a robot' : (STATUS_LABEL[status] ?? status)}</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <button
             type="button"
             onClick={() => {
-              onSwitchToMock()
+              onPlaySample()
               onClose()
             }}
             className={secondaryButton}
           >
-            <Cpu className="w-4 h-4 text-accent" aria-hidden="true" />
-            <span>Show demo data</span>
+            <FlaskConical className="w-4 h-4 text-accent" aria-hidden="true" />
+            <span>Play a sample recording</span>
           </button>
           <button
             type="button"

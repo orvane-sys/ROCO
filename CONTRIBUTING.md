@@ -18,7 +18,7 @@ Thanks for helping. ROCO is used next to real robot tests, so a few rules matter
 
 ```bash
 npm ci                     # Node 20 or newer
-npm run dev                # the page on http://localhost:5173 (open ?demo=1 to see it without a robot)
+npm run dev                # the page on http://localhost:5173 (open ?demo=1 to play the sample recording without a robot)
 pip install numpy pyyaml   # the bridge; unitree_sdk2py and CycloneDDS only for live data
 ```
 

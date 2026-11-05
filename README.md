@@ -91,7 +91,7 @@ page says "since X s". Once it has, a jump shows the same numbers as playing fro
 2 s of recording in memory and writes nothing to disk. `--no-checkpoints` turns it off.
 
 The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
-**Demo data** is only shown if you press the button (or open `?demo=1`) and is labelled DEMO everywhere.
+**The sample recording** is 60 s of a real G1 squat test, played in the page. It only starts if you press the button (or open `?demo=1`) and is labelled SAMPLE everywhere.
 
 Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure and timeline checks),
 `python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,

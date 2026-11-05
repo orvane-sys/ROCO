@@ -9,7 +9,7 @@ import { cursorSample, useCursorSample } from '../services/viewStore'
 import { formatDataTime, positionText, replayBadge } from '../utils/monitorFormat'
 import { setScene3d, themeVar, useUiPrefs } from '../services/uiPrefs'
 import { recordFrame, setRenderState, useRenderStats } from '../services/renderStats'
-import { hasGaitModel, type RobotProfile } from '../config/robotRegistry'
+import type { RobotProfile } from '../config/robotRegistry'
 import {
   Eye,
   RotateCcw,
@@ -801,8 +801,6 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     replayBadge(monitorNow) ??
     (status === 'LIVE'
       ? 'Live'
-      : status === 'MOCK'
-      ? 'Demo data'
       : status === 'SAFETY_HALT'
       ? 'Halted'
       : status === 'CONNECTING'
@@ -932,8 +930,6 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
             className={`w-2 h-2 rounded-full ${
               status === 'LIVE'
                 ? 'bg-ok'
-                : status === 'MOCK'
-                ? 'bg-demo'
                 : status === 'SAFETY_HALT'
                 ? 'bg-crit'
                 : 'bg-warn'
@@ -1005,17 +1001,6 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
           <div className="bg-surface/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-line-strong pointer-events-auto text-ink-soft tabular-nums">
             {quality === 'low' ? `Reduced 3D, up to ${QUALITY.low.fps} fps` : '3D'}
             {draw.state === 'running' && ` · ${draw.fps.toFixed(0)} fps, ${draw.avgMs.toFixed(1)} ms a frame`}
-          </div>
-        )}
-
-        {!hasGaitModel(profile) && (
-          <div
-            role="note"
-            className="bg-warn-soft/90 px-2.5 py-1.5 rounded-lg border border-warn-line/70 text-warn-ink pointer-events-auto"
-          >
-            {profile.category === 'fixed_manipulator'
-              ? 'Fixed base: joints hold the rest pose'
-              : 'Base motion only: no gait model for this robot'}
           </div>
         )}
 

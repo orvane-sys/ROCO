@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // GitHub Pages serves the page from /<repo>/
+  base: process.env.ROCO_BASE ?? '/',
   plugins: [
     tailwindcss(),
     react(),

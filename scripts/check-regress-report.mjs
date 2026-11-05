@@ -8,7 +8,9 @@
 // The two reports must be equal, apart from these named differences:
 //   * the time the report was made: not in the text here (the same fixed date is given to both);
 //   * seconds into the recording of an alert's start or end: the bridge stamps alert rows in batches of its 500 Hz samples and a jump
-//     restarts that batching, so such a time may differ by up to ALERT_TIME_TOL_S.
+//     restarts that batching, so such a time may differ by up to ALERT_TIME_TOL_S;
+//   * a segment's durations: the bridge works them out from its latest median sample time when it sends them, so a page that jumped has
+//     them from a later median than one that played past the segment's end. They may differ by SEGMENT_TIME_TOL.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { rolldown } from 'rolldown'
@@ -16,6 +18,7 @@ import { rolldown } from 'rolldown'
 const root = new URL('..', import.meta.url)
 const path = (p) => fileURLToPath(new URL(p, root))
 const ALERT_TIME_TOL_S = 0.3
+const SEGMENT_TIME_TOL = 0.002
 
 const load = async (file) => {
   const b = await rolldown({ input: path(file), logLevel: 'silent' })
@@ -79,13 +82,18 @@ const lines = (s) => s.text.split('\n')
 const a = lines(play)
 const b = lines(seek)
 
-// "12.3 s" tokens, the times of the recording
-const TIME = /(-?\d+(?:\.\d+)?) s\b/g
-const times = (s) => [...s.matchAll(TIME)].map((m) => Number(m[1]))
+// "12.3 s" tokens and the time column of a table row, the times of the recording
+const TIME = /(-?\d+(?:\.\d+)?) s\b|^\| (-?\d+(?:\.\d+)?)(?= \|)/g
+const times = (s) => [...s.matchAll(TIME)].map((m) => Number(m[1] ?? m[2]))
 const shape = (s) => s.replace(TIME, '# s')
+// a table row's "12.3 s", "3235 ms" and the "(3229)" of the longest run
+const DURATION = /(\d+(?:\.\d+)?)(?= m?s\b|\))/g
+const durations = (s) => [...s.matchAll(DURATION)].map((m) => Number(m[1]))
+const segmentShape = (s) => s.replace(DURATION, '#')
 
 const problems = []
 let tolerated = 0
+let segmentRows = 0
 for (let i = 0; i < Math.max(a.length, b.length); i++) {
   const x = a[i] ?? '(missing)'
   const y = b[i] ?? '(missing)'
@@ -98,6 +106,12 @@ for (let i = 0; i < Math.max(a.length, b.length); i++) {
     tolerated++
     continue
   }
+  const dx = durations(x)
+  const dy = durations(y)
+  if (x.startsWith('|') && segmentShape(x) === segmentShape(y) && dx.every((v, k) => Math.abs(v - dy[k]) <= SEGMENT_TIME_TOL * Math.max(v, dy[k]))) {
+    segmentRows++
+    continue
+  }
   problems.push(`line ${i + 1}:\n    played: ${x}\n    jumped: ${y}`)
 }
 if (play.t === undefined || Math.abs(play.t - seek.t) > 0.05) problems.unshift(`the two pages are not at the same moment (${play.t} / ${seek.t})`)
@@ -107,4 +121,4 @@ if (problems.length) {
   for (const p of problems.slice(0, 8)) console.error('  ' + p)
   process.exit(1)
 }
-console.log(`reports equal: ${a.length} lines at ${(play.t - play.t0).toFixed(1)} s${tolerated ? `, ${tolerated} alert time(s) within ${ALERT_TIME_TOL_S} s` : ''}`)
+console.log(`reports equal: ${a.length} lines at ${(play.t - play.t0).toFixed(1)} s${tolerated ? `, ${tolerated} alert time(s) within ${ALERT_TIME_TOL_S} s` : ''}${segmentRows ? `, ${segmentRows} segment row(s) within ${SEGMENT_TIME_TOL * 100} %` : ''}`)

@@ -37,6 +37,14 @@ const png = touch && existsSync(join(root, 'public', touch)) ? readFileSync(join
 check(png && png.readUInt32BE(12) === 0x49484452 && png.readUInt32BE(16) === 180 && png.readUInt32BE(20) === 180, 'the touch icon is a 180x180 PNG')
 check(!read('public/favicon.svg').includes('#863bff'), 'the favicon is ROCO\'s, not the Vite template\'s')
 
+// a shared link's preview: a crawler needs a full address, and the picture is 1200x630
+const og = (name) => html.match(new RegExp(`<meta property="og:${name}" content="([^"]*)"`))?.[1]
+check(og('title') === title && og('description') === desc, 'og:title and og:description equal the title and the description')
+check(og('image') === 'https://orvane-sys.github.io/ROCO/og.png', `og:image is the full address of public/og.png (${og('image')})`)
+check(meta('twitter:card') === 'summary_large_image', 'twitter:card shows the large picture')
+const ogPng = existsSync(join(root, 'public/og.png')) ? readFileSync(join(root, 'public/og.png')) : null
+check(ogPng && ogPng.readUInt32BE(12) === 0x49484452 && ogPng.readUInt32BE(16) === 1200 && ogPng.readUInt32BE(20) === 630, 'public/og.png is a 1200x630 PNG')
+
 // before the app runs the bar takes the dark theme's header colour; uiPrefs.ts then reads the token itself
 const tokens = read('src/styles/tokens.css')
 const darkSunken = tokens.match(/:root\s*\{[^}]*--c-sunken:\s*([^;]+);/)?.[1].trim()
@@ -56,7 +64,7 @@ walk('src')
 const used = [html, ...sources].join('\n')
 for (const f of readdirSync(join(root, 'public'))) {
   if (f === 'models') continue
-  check(used.includes(f), `public/${f} is used by index.html or the page`)
+  check(f === 'demo' ? used.includes('demo/g1-sample.rocodemo.gz') : used.includes(f), `public/${f} is used by index.html or the page`)
 }
 if (existsSync(join(root, 'src/assets'))) {
   for (const f of readdirSync(join(root, 'src/assets'))) check(used.includes(`assets/${f}`), `src/assets/${f} is imported`)

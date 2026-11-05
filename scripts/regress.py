@@ -685,6 +685,28 @@ def r6_launcher(tmp: str, rec: str, res: Results) -> None:
         child.stop()
 
 
+def r7_sample_recording(tmp: str, rec: str, res: Results) -> None:
+    case = "R7 a captured sample recording passes the page's own player: no path of this PC in it, a jump equals playing"
+    node = shutil.which("node")
+    if not node:
+        res.say(case, "SKIP", "node is not installed")
+        return
+    out = os.path.join(tmp, "sample.rocodemo.gz")
+    deploy = os.path.join(tmp, "deploy")
+    os.makedirs(deploy, exist_ok=True)
+    cap = subprocess.run([sys.executable, os.path.join(HERE, "capture_demo.py"), rec, "--log", os.path.join(os.path.dirname(rec), "log.txt"),
+                          "--deploy-dir", deploy, "--from", "5", "--seconds", "25", "--title", "regress", "--out", out],
+                         capture_output=True, text=True, timeout=180)
+    if cap.returncode != 0:
+        res.say(case, "FAIL", f"capture_demo.py exited {cap.returncode}: {(cap.stdout + cap.stderr)[-400:]}")
+        return
+    chk = subprocess.run([node, os.path.join(HERE, "check-demo.mjs"), out, "--times", "8,15,22"], capture_output=True, text=True, timeout=120)
+    if chk.returncode != 0:
+        res.say(case, "FAIL", (chk.stdout + chk.stderr)[-600:])
+        return
+    res.say(case, "PASS", f"{os.path.getsize(out) / 1e6:.2f} MB, {chk.stdout.strip()}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="ROCO bridge regression tests against real processes")
     ap.add_argument("--live", action="store_true", help="also the cases that need DDS (domain 42): R3 and R5")
@@ -705,7 +727,8 @@ def main() -> int:
         rec = os.path.join(rec_dir, "rec")
         print(f"[regress] recording written in {time.time() - t0:.1f} s", flush=True)
         cases = [("R1", lambda: r1_stuck_client(tmp, rec, res)), ("R2", lambda: r2_cut_recordings(tmp, rec_dir, res)),
-                 ("R4", lambda: r4_report_after_jump(tmp, rec, res)), ("R6", lambda: r6_launcher(tmp, rec, res))]
+                 ("R4", lambda: r4_report_after_jump(tmp, rec, res)), ("R6", lambda: r6_launcher(tmp, rec, res)),
+                 ("R7", lambda: r7_sample_recording(tmp, rec, res))]
         if args.live:
             cases += [("R3", lambda: r3_old_log(tmp, res)), ("R5", lambda: r5_bridge_restart(tmp, res))]
         for name, run in cases:

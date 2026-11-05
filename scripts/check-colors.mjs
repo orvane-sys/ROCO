@@ -9,7 +9,7 @@ const ARBITRARY = /(?<![\w-])(?:bg|text|border|ring|shadow|from|to|via|fill|stro
 const HEX = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|0x[0-9a-fA-F]{6}\b/g
 // importer/codec parsers carry numbers that merely look like hex; the token file is the one place for colours
 const SKIP = new Set(['styles/tokens.css', 'assets'])
-const ALLOW_HEX = /^(utils\/|services\/(telemetryStream|g1Gait|plotRing))/
+const ALLOW_HEX = /^(utils\/|services\/(telemetryStream|plotRing))/
 
 const bad = []
 function walk(dir) {
