@@ -684,6 +684,37 @@ def r6_launcher(tmp: str, rec: str, res: Results) -> None:
                 pass
         child.stop()
 
+    # Ctrl-C, the way an operator stops it: a clean exit with nothing frightening on the screen
+    case = "R6 Ctrl-C on the launcher stops the bridge cleanly"
+    port, web_port = free_port(), free_port()
+    child = Child([LAUNCHER, "replay", rec, "--port", str(port), "--web-port", str(web_port), "--deploy-dir", deploy], tmp, "r6c")
+    tree = []
+    try:
+        t_end = time.time() + 20
+        while time.time() < t_end and child.alive() and "[roco] open " not in child.stdout():
+            time.sleep(0.05)
+        bridge = children(child.pid)
+        tree = bridge + [g for b in bridge for g in children(b)]
+        if not bridge:
+            res.say(case, "FAIL", f"no bridge to stop\n{child.stdout()}{child.stderr()}")
+            return
+        os.kill(child.pid, signal.SIGINT)
+        code = child.proc.wait(8)
+        time.sleep(0.2)     # the launcher waits for the bridge, the worker follows the bridge
+        left = [p for p in tree if running(p)]
+        text = child.stdout() + child.stderr()
+        bad = "Fatal Python error" in text or "Traceback" in text
+        res.say(case, "FAIL" if code or left or bad else "PASS",
+                f"launcher exit code {code}, {len(left)} of {len(tree)} still running, an error printed: {bad}\n{text}" if code or left or bad else
+                f"launcher exit code 0, {len(tree)} processes gone, no error printed")
+    finally:
+        for p in [p for p in tree if running(p)]:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        child.stop()
+
 
 def r7_sample_recording(tmp: str, rec: str, res: Results) -> None:
     case = "R7 a captured sample recording passes the page's own player: no path of this PC in it, a jump equals playing"

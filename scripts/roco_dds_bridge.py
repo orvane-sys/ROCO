@@ -2845,9 +2845,11 @@ def run_self_test() -> bool:
 # Main
 # ==============================================================================
 def _exit_when_stdin_closes() -> None:
-    """Blocks on stdin; end of file means the launcher is gone (even after kill -9), so stop as on Ctrl-C."""
+    """Blocks on stdin; end of file means the launcher is gone (even after kill -9), so stop as on Ctrl-C.
+    Reads the descriptor, not sys.stdin: a daemon thread blocked in the buffered reader holds its lock, and Python then dies with
+    a fatal error at exit."""
     try:
-        while sys.stdin.buffer.read(4096):
+        while os.read(0, 4096):
             pass
     except (OSError, ValueError):
         pass
