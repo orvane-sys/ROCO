@@ -27,6 +27,7 @@ import type { RobotProfile } from '../config/robotRegistry'
 import type { AlertView } from '../utils/alertModel'
 import { alertTitle, formatDuration } from '../utils/monitorFormat'
 import { cn } from '../utils/cn'
+import { RocoMark, RocoWordmark } from './RocoLogo'
 
 interface StatusBarProps {
   status: ConnectionStatus
@@ -150,11 +151,10 @@ export function StatusBar({
 
   return (
     <header data-tour="bar" className="border-b border-line/80 bg-sunken/80 backdrop-blur-md px-3 lg:px-4 py-2 flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-2 z-20 shrink-0">
-      <h1 className="font-mono text-lg font-black tracking-wider text-ink flex items-center gap-2 mr-1 shrink-0">
-        <span className="w-8 h-8 rounded-lg bg-gradient-to-tr from-accent-solid to-info flex items-center justify-center shrink-0" aria-hidden="true">
-          <Bot className="w-5 h-5 text-on-accent" />
-        </span>
-        ROCO
+      <h1 className="text-ink flex items-center gap-2 mr-1 shrink-0">
+        <RocoMark className="w-8 h-8 shrink-0" />
+        <RocoWordmark className="w-16 h-3.5 shrink-0" />
+        <span className="sr-only">ROCO</span>
       </h1>
 
       <div role="status" aria-live="polite" title={src.detail ? `${src.word} ${src.detail}` : undefined} className={cn(chip, TONE[src.tone], 'font-mono font-bold min-w-0')}>

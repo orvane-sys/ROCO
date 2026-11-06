@@ -1,15 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-  <!-- The header badge: Lucide "bot" on the accent gradient (dark theme tokens accent-solid to info, on-accent) -->
-  <defs>
-    <linearGradient id="g" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#06b6d4"/>
-      <stop offset="1" stop-color="#38bdf8"/>
-    </linearGradient>
-  </defs>
-  <rect width="32" height="32" rx="7" fill="url(#g)"/>
-  <g transform="translate(4 4)" fill="none" stroke="#020617" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 8V4H8"/>
-    <rect width="16" height="12" x="4" y="8" rx="2"/>
-    <path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>
-  </g>
+  <!-- The ROCO mark, small drawing: 24 px and under. src/components/RocoLogo.tsx has the full drawing. -->
+  <style>
+    path { fill: #0f172a }
+    .arc { fill: #0e7490 }
+    @media (prefers-color-scheme: dark) {
+      path { fill: #f1f5f9 }
+      .arc { fill: #22d3ee }
+    }
+  </style>
+  <path d="M13.2 1H18.8Q19.6 1 20 1.7L21 3.4Q21.4 4.1 20.9 4.8L18.6 7.8Q18.2 8.2 17.7 8.2H14.3Q13.8 8.2 13.4 7.8L11.1 4.8Q10.6 4.1 11 3.4L12 1.7Q12.4 1 13.2 1Z"/>
+  <path d="M12.5 10L15 11.5V17L12.8 17.4L8.4 13.8V11.8Z"/>
+  <path d="M19.5 10L17 11.5V16.8L19.2 16.4L23.6 13.6V11.8Z"/>
+  <path d="M13.6 24.6L18.8 23.8L16.6 31.6Z"/>
+  <path d="M11 7.4C5 9 .4 12.6 .4 16.6C.4 20.8 5.6 23 11 23C18.6 23 28 19.4 31.2 13.8H26.8C24 17 17.4 19.6 12.2 19.6C7.4 19.6 4.4 18 4.4 15.6C4.4 12.8 7.4 9.6 11 7.4Z"/>
+  <path class="arc" d="M22.6 4.8C27 4.9 30.6 6.4 31.4 9Q31.8 10.4 31.6 12.2H27.4C27.2 9.6 25.2 7.2 22.6 6.4Z"/>
 </svg>

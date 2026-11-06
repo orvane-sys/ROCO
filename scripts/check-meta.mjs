@@ -37,6 +37,16 @@ const png = touch && existsSync(join(root, 'public', touch)) ? readFileSync(join
 check(png && png.readUInt32BE(12) === 0x49484452 && png.readUInt32BE(16) === 180 && png.readUInt32BE(20) === 180, 'the touch icon is a 180x180 PNG')
 check(!read('public/favicon.svg').includes('#863bff'), 'the favicon is ROCO\'s, not the Vite template\'s')
 
+// the logo: the README's two pictures hold the page's drawing, and the favicon is readable on a dark tab bar too
+const pathsOf = (text) => [...text.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]).sort()
+const pagePaths = pathsOf(read('src/components/RocoLogo.tsx'))
+check(pagePaths.length === 10, `RocoLogo.tsx draws the mark and the letters (${pagePaths.length} paths)`)
+for (const f of ['docs/brand/roco-logo-light.svg', 'docs/brand/roco-logo-dark.svg']) {
+  check(existsSync(join(root, f)) && JSON.stringify(pathsOf(read(f))) === JSON.stringify(pagePaths), `${f} is the same drawing as RocoLogo.tsx`)
+  check(read('README.md').includes(f), `the README shows ${f}`)
+}
+check(/prefers-color-scheme: dark/.test(read('public/favicon.svg')), 'the favicon has colours for a dark browser')
+
 // a shared link's preview: a crawler needs a full address, and the picture is 1200x630
 const og = (name) => html.match(new RegExp(`<meta property="og:${name}" content="([^"]*)"`))?.[1]
 check(og('title') === title && og('description') === desc, 'og:title and og:description equal the title and the description')

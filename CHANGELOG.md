@@ -22,6 +22,7 @@ Unitree G1 over DDS. It is not a safety system and comes with no warranty.
 - A Python wheel on each GitHub release with the built page inside, giving the commands `roco` and `roco-dds-bridge`. The extra
   `roco[dds]` adds CycloneDDS; `unitree_sdk2py` is still installed from a clone. CI builds the wheel and tries it in a clean
   environment on every push.
+- The ROCO logo: an upright figure inside a ring that stays open. It is in the page header, the browser tab and the README.
 - Community files: CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, issue and pull request templates.
 - CI on every push: type check, lint and page checks, build, layout and accessibility in Chrome, Python lint, the bridge,
   launcher and simulator self-tests, regression tests against real bridge processes, and a clone-size guard (25 MB).

@@ -1,4 +1,9 @@
-# ROCO
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/roco-logo-dark.svg">
+    <img src="docs/brand/roco-logo-light.svg" alt="ROCO" height="80">
+  </picture>
+</h1>
 
 [![CI](https://github.com/orvane-sys/ROCO/actions/workflows/ci.yml/badge.svg)](https://github.com/orvane-sys/ROCO/actions/workflows/ci.yml)
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
