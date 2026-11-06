@@ -1,10 +1,33 @@
 # ROCO
 
+[![CI](https://github.com/orvane-sys/ROCO/actions/workflows/ci.yml/badge.svg)](https://github.com/orvane-sys/ROCO/actions/workflows/ci.yml)
+[![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-informational.svg)
+[![Live demo](https://img.shields.io/badge/live%20demo-orvane--sys.github.io%2FROCO-2ea44f.svg)](https://orvane-sys.github.io/ROCO/)
+
 A read-only monitor for a Unitree G1 (29-DoF EDU, type 6, waist roll and pitch locked) running Unitree's `g1_ctrl`
 deploy controller, in the MuJoCo simulator or on the robot. It shows what the robot is doing, warns when a limit from
 the controller's own config is approached, and replays recordings. It never commands anything.
 
-React 19, Vite, Tailwind v4 and three.js in the browser; a Python bridge reads DDS.
+React 19, Vite, Tailwind v4 and three.js in the browser; a Python bridge reads DDS. ROS 2 support is planned; ROCO v0.1.0
+monitors Unitree G1 over DDS.
+
+**Not a safety system. No warranty.** ROCO only watches. It cannot see the rope, the spotter or the room, and "no alert"
+never means "safe". Keep your E-stop in reach and follow your own test manual.
+
+## Try it without a robot
+
+Open the [live demo](https://orvane-sys.github.io/ROCO/). It plays 60 s of a real G1 squat test, recorded from a real run
+and labelled SAMPLE everywhere, in your browser: no robot, no install, no account, and no data leaves the page. Press
+Play, drag the timeline, open Analyze and Review. It works on a phone too.
+
+![A 10 second replay of the sample: the squat starts, a guided-check limit is crossed, and the alert appears on the timeline](docs/img/demo.gif)
+
+| Run: what to watch during a test | Analyze: plots and the joint table | Review: numbers per state and the recording |
+|---|---|---|
+| ![Run workspace](docs/img/run.png) | ![Analyze workspace](docs/img/analyze.png) | ![Review workspace](docs/img/review.png) |
+
+The images are the page replaying the sample, drawn in software (no GPU), so the 3D view is the reduced one.
 
 ## What it shows
 
@@ -47,9 +70,28 @@ Values were checked against `g1_record` CSVs from live simulator runs (differenc
 ## Run it
 
 Needs Node 20+ for the page, and Python 3.10 with `unitree_sdk2py` and CycloneDDS for the bridge. The page needs no
-internet at run time (no external fonts, scripts or models).
+internet at run time (no external fonts, scripts or models). Replaying a recording needs only Python, numpy and PyYAML.
 
-The quickest start is the launcher (Python only, no Node on the test PC). Build the page once with `npm run build`, then:
+Install `unitree_sdk2py` from a clone, the way Unitree describes it (`git clone`, then `pip install -e .`). A plain
+`pip install git+https://…` build leaves out `unitree_sdk2py/b2`, which has no `__init__.py`, and the import then fails.
+
+The quickest install is the wheel on the [latest release](https://github.com/orvane-sys/ROCO/releases/latest): it has the
+built page inside, so the test PC needs Python only, no Node. It gives the commands `roco` and `roco-dds-bridge`.
+
+```bash
+pipx install https://github.com/orvane-sys/ROCO/releases/download/v0.1.0/roco-0.1.0-py3-none-any.whl
+roco replay <folder-or-zip>           # replay needs nothing more
+
+# live data also needs DDS, in the same environment
+pipx inject roco cyclonedds==0.10.2
+pipx runpip roco install -e <your clone of unitree_sdk2_python>
+roco robot enp2s0
+```
+
+An install from the source (`pipx install git+https://github.com/orvane-sys/ROCO`) has the commands but no page, because the
+page is built by Node and is not in git. Use the wheel, or a clone.
+
+From a clone, the launcher does the same (Python only on the test PC). Build the page once with `npm run build`, then:
 
 ```bash
 ./scripts/roco sim                      # simulator on this PC
@@ -93,8 +135,9 @@ page says "since X s". Once it has, a jump shows the same numbers as playing fro
 The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
 **The sample recording** is 60 s of a real G1 squat test, played in the page. It only starts if you press the button (or open `?demo=1`) and is labelled SAMPLE everywhere.
 
-Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure and timeline checks),
-`python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,
+Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure, timeline, preference, demo
+and mesh checks), `npm run check:layout` and `npm run check:a11y` (both drive Chrome on the built page: no layout jumps at any
+width, axe in three themes, reflow at 200 % and 400 % zoom, and a keyboard walk), `python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,
 `python3 tools/sim-drive/mujoco_roco_bridge.py --self-test`. CI (`.github/workflows/ci.yml`) runs all of them, `regress.py`
 and a check that a full clone stays under 25 MB. See `CONTRIBUTING.md`.
 
@@ -104,6 +147,18 @@ that recordings cut off mid-write open and play to the end, and that the session
 run. `--live` adds an old run's log (state stays unknown) and a bridge restart (new session, its own alert history); these use a
 synthetic LowState_ on DDS domain 42, so a simulator or robot on domain 0 never sees it. It prints PASS / FAIL / SKIP per case and
 exits 1 on a failure. It is not part of `npm run lint`.
+
+Performance tools, run by hand: `npm run perf:load` prints a cold-load report of the built page (requests, bytes, time to the
+robot), and `npm run soak -- --minutes 120` plays the sample over and over and checks that the page's heap stays flat and its
+frame rate holds. The robot's meshes ship as compressed GLB files (`public/models/g1_description/meshes_glb/`, made from
+Unitree's STL files by `node scripts/pack-meshes.mjs`; the STL files stay as the source).
+
+## Accessibility
+
+The page is built to WCAG 2.2 AA: every control works from the keyboard, state is never shown by colour alone (alerts have
+their own shapes), live alerts are announced once and rate limited, and the layout holds at 320 px wide and at 400 % zoom.
+`npm run check:a11y` runs axe and a keyboard walk in CI. A listening pass with a screen reader is described in
+[docs/screen-reader-test.md](docs/screen-reader-test.md); it is done by a person, not by CI.
 
 ## Safety
 
@@ -117,6 +172,7 @@ exits 1 on a failure. It is not part of `npm run lint`.
 
 ## Layout
 
+- `docs/` the screen reader test script and the operator test sheets. `scripts/check-*.mjs` the page's own checks.
 - `src/` the page. `src/services/telemetryStream.ts` is the WebSocket client; `src/types/monitor.ts` the bridge frames.
 - `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/roco_common.py` the wire format,
   robot profiles and WebSocket server both bridges share.

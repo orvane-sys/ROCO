@@ -36,3 +36,8 @@ __pycache__/
 
 # output of npm run soak
 soak*.csv
+
+# the wheel, and the built page copied here only while it is built (scripts/check_wheel.py)
+dist-py/
+scripts/roco_page/*
+!scripts/roco_page/__init__.py

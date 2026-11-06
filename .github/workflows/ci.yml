@@ -35,7 +35,7 @@ jobs:
         # unitree_sdk2py at the commit ROCO was checked against, used from its source folder as on the dev PC: a pip build
         # leaves out unitree_sdk2py/b2 (no __init__.py), which the package's own __init__ imports.
         run: |
-          python -m pip install numpy pyyaml pyflakes cyclonedds==0.10.2
+          python -m pip install numpy pyyaml pyflakes build cyclonedds==0.10.2
           git clone --quiet https://github.com/unitreerobotics/unitree_sdk2_python.git "$RUNNER_TEMP/unitree_sdk2_python"
           git -C "$RUNNER_TEMP/unitree_sdk2_python" checkout --quiet a035adeaa6f8ea171bef9a43e8477abb87a0b35e
           echo "PYTHONPATH=$RUNNER_TEMP/unitree_sdk2_python" >> "$GITHUB_ENV"
@@ -70,6 +70,9 @@ jobs:
 
       - name: Regression tests (real bridge processes)
         run: python scripts/regress.py
+
+      - name: Wheel builds and works in a clean environment
+        run: python scripts/check_wheel.py
 
       - name: Clone size under 25 MB
         run: |

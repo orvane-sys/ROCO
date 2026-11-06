@@ -1,0 +1,56 @@
+# Packaging for the bridge and the launcher: `pipx install <the wheel on the GitHub release>` gives the commands `roco` and
+# `roco-dds-bridge`. The wheel from the release has the built page inside (scripts/roco_page/); an install from the source
+# (`pipx install git+https://github.com/orvane-sys/ROCO`) has no page, so build it with `npm run build` in a clone, or use the wheel.
+# The page itself is not a Python package: it is built by Vite from src/ and is not published to npm (package.json is private).
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roco"
+version = "0.1.0" # keep equal to package.json; scripts/check-release.mjs (in npm run lint) fails when they differ
+description = "Read-only browser-based test monitor for the Unitree G1: live 3D view, limit alerts and session replay."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["unitree", "unitree-g1", "humanoid", "robotics", "telemetry", "dds", "cyclonedds", "digital-twin"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering",
+]
+# Replay needs only these two. Live monitoring also needs DDS: see the extra below.
+dependencies = ["numpy", "pyyaml"]
+
+[project.optional-dependencies]
+# CycloneDDS only. unitree_sdk2py is NOT listed on purpose: a pip build of it leaves out unitree_sdk2py/b2 (no __init__.py), so the
+# import fails. Install it from a clone, as Unitree describes: git clone https://github.com/unitreerobotics/unitree_sdk2_python,
+# then pip install -e . inside it.
+# unitree_sdk2py itself requires exactly this version, so it is pinned here and in ci.yml (check-release.mjs compares them).
+dds = ["cyclonedds==0.10.2"]
+
+[project.scripts]
+roco = "roco_launcher:main"
+roco-dds-bridge = "roco_dds_bridge:main"
+
+[project.urls]
+Homepage = "https://orvane-sys.github.io/ROCO/"
+Repository = "https://github.com/orvane-sys/ROCO"
+Issues = "https://github.com/orvane-sys/ROCO/issues"
+Changelog = "https://github.com/orvane-sys/ROCO/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = { "" = "scripts" }
+py-modules = ["roco_common", "roco_dds_bridge", "roco_launcher"]
+
+# The page folder and the folders inside it (assets/, models/ ...) are found as packages, so setuptools does not warn about them.
+[tool.setuptools.packages.find]
+where = ["scripts"]
+include = ["roco_page*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+roco_page = ["**/*"]

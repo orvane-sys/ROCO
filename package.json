@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/prune-models.mjs",
-    "lint": "oxlint && node scripts/check-meta.mjs && node scripts/check-colors.mjs && node scripts/check-contrast.mjs && node scripts/check-alerts.mjs && node scripts/check-alert-history.mjs && node scripts/check-profiles.mjs && node scripts/check-procedures.mjs && node scripts/check-timeline.mjs && node scripts/check-prefs.mjs && node scripts/check-demo.mjs && node scripts/pack-meshes.mjs --check && node scripts/summarize-operator-test.mjs --self-test",
+    "lint": "oxlint && node scripts/check-meta.mjs && node scripts/check-colors.mjs && node scripts/check-contrast.mjs && node scripts/check-alerts.mjs && node scripts/check-alert-history.mjs && node scripts/check-profiles.mjs && node scripts/check-procedures.mjs && node scripts/check-timeline.mjs && node scripts/check-prefs.mjs && node scripts/check-demo.mjs && node scripts/pack-meshes.mjs --check && node scripts/check-release.mjs && node scripts/summarize-operator-test.mjs --self-test",
     "check:layout": "node scripts/check-layout.mjs",
     "check:a11y": "node scripts/check-a11y.mjs",
     "perf:load": "node scripts/perf-load.mjs",
