@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Long run, started by hand, not in CI: plays the sample recording over and over in Chrome and writes down what the page costs,
 // so a slow leak or a slowing 3D view shows up as a trend instead of as a complaint after a long test.
-//   npm run build && node scripts/soak.mjs [--minutes 120] [--every 5] [--out soak.csv]
+//   npm run build && node scripts/soak.mjs [--minutes 120] [--every 5] [--out soak.csv] [--size 960x540]
+// The 3D view is drawn in software here (headless Chrome has no GPU), which costs a lot of CPU in proportion to its pixels. The small
+// default size keeps a laptop cool; to keep it quieter still, run it as: nice -n 19 taskset -c 0,1 npm run soak
 // Every --every minutes it reports the JS heap after a forced garbage collection, the 3D view's frames a second (the number the page
 // shows itself), the number of elements in the page, and the timeline's own count of alerts and marks.
 // Pass: after the first 10 minutes the heap stays within +-20 % of its middle value and the frame rate of the last quarter is not
@@ -16,11 +18,12 @@ const arg = (name, fallback) => {
 const minutes = Number(arg('minutes', 120))
 const everyMin = Number(arg('every', 5))
 const out = arg('out', 'soak.csv')
+const [width, height] = arg('size', '960x540').split('x').map(Number)
 const everyMs = everyMin * 60_000
 const warmupMin = Math.min(10, minutes / 4)
 
 const { url, browser, close } = await startBrowser('soak')
-const context = await browser.newContext({ viewport: { width: 1600, height: 900 } })
+const context = await browser.newContext({ viewport: { width, height } })
 await context.addInitScript(() => {
   try {
     localStorage.setItem('roco.tour.v1', '1')

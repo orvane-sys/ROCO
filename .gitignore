@@ -33,3 +33,6 @@ __pycache__/
 *.tsbuildinfo
 .env
 .env.*
+
+# output of npm run soak
+soak*.csv
