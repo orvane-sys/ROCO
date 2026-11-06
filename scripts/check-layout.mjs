@@ -3,7 +3,7 @@
 // workspace's note shows once. It uses the Chrome or Chromium on this PC (playwright-core downloads no browser).
 //
 //   npm run build && npm run check:layout        (CHROME_PATH=/path/to/chrome to choose a browser)
-import { startBrowser, tally } from './lib-browser.mjs'
+import { PAGE_READY_MS, startBrowser, tally } from './lib-browser.mjs'
 
 const { url, browser, close } = await startBrowser('check-layout')
 const { check, finish } = tally()
@@ -24,7 +24,7 @@ async function open(width, height, prefs = SEEN_ALL) {
     [prefs]
   )
   await page.goto(url)
-  await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: 15000 })
+  await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
   await page.waitForTimeout(600)
   page.errors = errors
   return page
@@ -219,7 +219,7 @@ try {
     check((await noteText()) === null, 'dismissed: the note is gone')
     check((await page.evaluate(() => document.activeElement?.id)) === 'workspace-panel', 'dismissed: focus goes to the workspace')
     await page.reload()
-    await page.waitForSelector('section[aria-labelledby=replay-heading]')
+    await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
     check((await noteText()) === null, 'after a reload the Run note stays gone')
     await tab(page, 'Analyze')
     check((await noteText())?.includes('Plots and the full joint table'), 'first visit to Analyze: its own note shows')
@@ -231,7 +231,7 @@ try {
     const bad = await open(1366, 768, null)
     await bad.evaluate(() => localStorage.setItem('roco.ui.v1', '{not json'))
     await bad.reload()
-    await bad.waitForSelector('section[aria-labelledby=replay-heading]')
+    await bad.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
     check((await bad.locator('[role=note]:has(button[aria-label^="Dismiss the note about"])').count()) === 1, 'a damaged saved value: the note shows again and the page works')
     await bad.close()
   }

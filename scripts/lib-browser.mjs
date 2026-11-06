@@ -6,6 +6,12 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
 
+/**
+ * How long a check waits for the page to show the replay section. Chrome draws the 3D view in software here, so a first load takes
+ * about 15 s on one core: a slower CI runner passed 15 s while the page was fine. This limit is for a page that never comes up.
+ */
+export const PAGE_READY_MS = 60000
+
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.gz': 'application/gzip' }
 
 /** Serves dist/ on a free local port and starts Chrome. Exits with a message when there is no dist/ or no browser. */

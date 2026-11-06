@@ -6,7 +6,7 @@
 //
 //   npm run build && npm run check:a11y
 import { readFileSync } from 'node:fs'
-import { startBrowser, tally } from './lib-browser.mjs'
+import { PAGE_READY_MS, startBrowser, tally } from './lib-browser.mjs'
 
 const axeSource = readFileSync(new URL('../node_modules/axe-core/axe.min.js', import.meta.url), 'utf8')
 const { url, browser, close } = await startBrowser('check-a11y')
@@ -26,7 +26,7 @@ async function open(width, height, theme = 'dark') {
     [theme]
   )
   await page.goto(url)
-  await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: 15000 })
+  await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
   page.errors = errors
   return page
 }
