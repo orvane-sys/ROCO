@@ -2,7 +2,7 @@
 // Post-build step: keep only the robot model files the app can actually request.
 //
 // `public/models` is copied verbatim into `dist/`, but the dashboard only fetches the URDFs listed in
-// src/config/robotRegistry.ts and the meshes those URDFs reference. Variant URDFs, MJCF files (used by
+// src/config/robotRegistry.ts and the meshes those URDFs reference (for an STL, its packed GLB twin). Variant URDFs, MJCF files (used by
 // tools/sim-drive/mujoco_roco_bridge.py straight from public/), hand models, images and notebooks are not needed
 // in the shipped bundle. Source files in public/ are never touched.
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
@@ -38,8 +38,11 @@ for (const urdf of urdfs) {
   for (const m of text.matchAll(/filename\s*=\s*["']([^"']+)["']/g)) {
     const ref = m[1].replace(/^package:\/\/[^/]+\//, '').replace(/^\.\//, '')
     const mesh = resolve(modelDir, ref)
-    if (existsSync(mesh)) keep.add(mesh)
-    else missing.push(`${urdf} -> ${ref}`)
+    // The page loads the packed twin of a built-in STL (scripts/pack-meshes.mjs); only that ships. The STL stays in public/.
+    const packed = /^meshes\/([^/]+)\.stl$/i.exec(ref)
+    const file = packed ? resolve(modelDir, 'meshes_glb', `${packed[1]}.glb`) : mesh
+    if (existsSync(file)) keep.add(file)
+    else missing.push(`${urdf} -> ${packed ? 'meshes_glb/' + packed[1] + '.glb (run node scripts/pack-meshes.mjs)' : ref}`)
   }
 }
 if (missing.length > 0) {

@@ -167,6 +167,11 @@ const col = (name) => row0[head.findIndex((h) => h.includes(name))]
 check(Math.abs(Number(col('left_ankle_pitch_joint.tau_nm')) - (6.5 + 100 * 0.01)) < 1e-3, 'CSV torque equals the plotted torque')
 check(col('left_ankle_pitch_joint.q_deg') === '30' || Math.abs(Number(col('left_ankle_pitch_joint.q_deg')) - 30) < 1e-4, 'CSV angle is in degrees')
 check(csv.split('\n').every((l) => !/NaN|undefined/.test(l)), 'no NaN text in the CSV: missing values are empty cells')
+{
+  const hz = pm.plotSampleRate(R, 1000 + 2, 1000 + 4)
+  check(hz !== null && Math.abs(hz - 50) < 0.5, 'the sample rate of the window is read from the samples (' + hz + ' Hz)')
+  check(pm.plotSampleRate(R, 5000, 5001) === null, 'a window with no samples has no rate')
+}
 check(lines.slice(1).every((l) => l.split(',').length === head.length), 'every CSV row has every column')
 
 // -- plot preferences (saved sets) ------------------------------------------------------------------------------------------

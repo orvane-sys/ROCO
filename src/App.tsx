@@ -11,6 +11,9 @@ import { CommandPalette, type PaletteCommand } from './components/CommandPalette
 const DigitalTwin = lazy(() =>
   import('./components/DigitalTwin').then((m) => ({ default: m.DigitalTwin }))
 )
+// The plot (its sets, drawing and CSV export) is only used in Analyze, so it loads when that workspace opens. The samples it shows are
+// kept by services/plotRing whether it is on screen or not, so nothing is missed meanwhile.
+const JointPlot = lazy(() => import('./components/JointPlot').then((m) => ({ default: m.JointPlot })))
 // The importer pulls in the mesh loaders and parsers, so it loads only when the dialog is opened.
 const ImportRobotDialog = lazy(() =>
   import('./components/ImportRobotDialog').then((m) => ({ default: m.ImportRobotDialog }))
@@ -36,7 +39,6 @@ import { AlertAnnouncer } from './components/AlertAnnouncer'
 import { LinkHealth } from './components/LinkHealth'
 import { SegmentTable } from './components/SegmentTable'
 import { ReplayControls, ReplayNotes } from './components/ReplayControls'
-import { JointPlot } from './components/JointPlot'
 import { telemetryService } from './services/telemetryStream'
 import { acknowledge, getAlertControls, resetAlertControls, unshelveAll, useAlertControls } from './services/alertControls'
 import { playTestTone, prepareAudio, soundSupported, speak, speechSupported, useAudioRunning } from './services/alertCues'
@@ -546,7 +548,17 @@ export function App() {
   } else if (workspace === 'analyze') {
     left = (
       <>
-        <JointPlot profile={activeProfile} state={monitor} selectedJointId={selectedJointId} onSelectJoint={setSelectedJointId} />
+        <ErrorBoundary label="The plot">
+          <Suspense
+            fallback={
+              <div role="status" className="min-h-48 flex items-center justify-center bg-surface/80 border border-line/90 rounded-xl text-sm text-ink-soft">
+                Loading the plot…
+              </div>
+            }
+          >
+            <JointPlot profile={activeProfile} state={monitor} selectedJointId={selectedJointId} onSelectJoint={setSelectedJointId} />
+          </Suspense>
+        </ErrorBoundary>
         <LinkHealth state={monitor} telemetry={telemetry} />
       </>
     )

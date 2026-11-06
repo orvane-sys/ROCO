@@ -54,6 +54,12 @@ const QUALITY = {
 // Fallback package root for resolving mesh relative paths ("meshes/*.STL")
 const URDF_ROOT = `${import.meta.env.BASE_URL}models/g1_description/`
 
+/** The built-in G1's STL meshes have a packed twin in meshes_glb/ (scripts/pack-meshes.mjs). */
+function packedMeshUrl(stlUrl: string): string | null {
+  const at = stlUrl.indexOf(`${URDF_ROOT}meshes/`)
+  return at < 0 ? null : stlUrl.replace(/\/meshes\/([^/]+)\.stl$/i, '/meshes_glb/$1.glb')
+}
+
 // Chase camera: look-at height and default offset (three.js space) — behind-right of the robot.
 const CAMERA_TARGET_HEIGHT = 0.75
 const CAMERA_OFFSET = new THREE.Vector3(-2.4, 0.75, 1.6)
@@ -412,7 +418,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     } else {
       loader.packages = profile.packages || { g1_description: URDF_ROOT, '': URDF_ROOT }
     }
-    configureMultiFormatMeshLoader(loader, manager)
+    configureMultiFormatMeshLoader(loader, manager, importedResolver ? undefined : packedMeshUrl)
 
     // Preprocess model files (supporting .urdf, .xacro, and MuJoCo .xml)
     fetch(profile.urdfPath)

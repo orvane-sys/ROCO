@@ -19,7 +19,7 @@ import subprocess
 import sys
 import threading
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -87,14 +87,25 @@ def wait_listening(proc: subprocess.Popen, port: int, note_after_s: float = 15.0
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
-    """Serves dist/ and nothing else. No request logging, and no caching, so a rebuilt page shows up at once."""
+    """Serves dist/ and nothing else. No request logging. A rebuilt page shows up at once: index.html is never stored, the hashed
+    files under /assets/ never change so they are kept a year, and everything else (robot models, the sample) is asked about again
+    each time and answered 304 when it is unchanged, which the Last-Modified header of the base class allows."""
 
     def log_message(self, *_args):
         pass
 
     def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_policy(self.path))
         super().end_headers()
+
+
+def cache_policy(url_path: str) -> str:
+    path = urlsplit(url_path).path
+    if path in ("/", "/index.html"):
+        return "no-store"
+    if path.startswith("/assets/"):
+        return "public, max-age=31536000, immutable"
+    return "no-cache"
 
 
 def make_server(directory: str, port: int) -> http.server.ThreadingHTTPServer:
@@ -206,6 +217,22 @@ def self_test() -> bool:
                 outside = False
             check(not outside, "does not serve files outside dist/")
             check(urllib.request.urlopen(f"http://{LOOPBACK}:{port}/index.html", timeout=3).headers.get("Cache-Control") == "no-store", "a rebuilt page is not cached")
+            os.makedirs(os.path.join(d, "assets"))
+            os.makedirs(os.path.join(d, "models"))
+            for name in ("assets/app-abc123.js", "models/pelvis.glb"):
+                with open(os.path.join(d, name), "wb") as f:
+                    f.write(b"x")
+            asset = urllib.request.urlopen(f"http://{LOOPBACK}:{port}/assets/app-abc123.js", timeout=3)
+            check(asset.headers.get("Cache-Control") == "public, max-age=31536000, immutable", "a hashed file is kept for a year")
+            model = urllib.request.urlopen(f"http://{LOOPBACK}:{port}/models/pelvis.glb", timeout=3)
+            check(model.headers.get("Cache-Control") == "no-cache", "a model is asked about again each time")
+            again = urllib.request.Request(f"http://{LOOPBACK}:{port}/models/pelvis.glb", headers={"If-Modified-Since": model.headers.get("Last-Modified", "")})
+            try:
+                urllib.request.urlopen(again, timeout=3)
+                status = 200
+            except urllib.error.HTTPError as e:
+                status = e.code
+            check(status == 304, "an unchanged model is answered 304, not sent again")
         finally:
             srv.shutdown()
             srv.server_close()

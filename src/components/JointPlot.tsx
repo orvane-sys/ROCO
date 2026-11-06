@@ -10,6 +10,7 @@ import { useViewState, viewStore } from '../services/viewStore'
 import { remScale, themeVar, useUiPrefs } from '../services/uiPrefs'
 import {
   buildPlotCsv,
+  plotSampleRate,
   demandPeak,
   followsSelection,
   mirrorOf,
@@ -498,7 +499,9 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
   const exportCsv = () => {
     if (!pv) return
     const csv = buildPlotCsv(ring, resolved.panels, pv.tStart, pv.tEnd, replayT0 ?? pv.tEnd)
-    downloadText(`roco_plots_${set.id}_${fileStamp()}.csv`, csv, 'text/csv')
+    // the file name says how many samples a second it holds: these are the page's samples, not the recording's full rate
+    const hz = plotSampleRate(ring, pv.tStart, pv.tEnd)
+    downloadText(`roco_plots_${set.id}_${hz === null ? '' : Math.round(hz) + 'hz_'}${fileStamp()}.csv`, csv, 'text/csv')
   }
 
   const tableRows: number[] = []
@@ -561,7 +564,7 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
             {frozen ? <Play className="w-4 h-4" aria-hidden="true" /> : <Pause className="w-4 h-4" aria-hidden="true" />}
             {frozen ? 'Resume' : 'Freeze'}
           </button>
-          <button type="button" onClick={exportCsv} disabled={!pv} className={btn} title="The lines in view, one row per sample. PlotJuggler opens it directly.">
+          <button type="button" onClick={exportCsv} disabled={!pv} className={btn} title="The lines in view, one row per sample the page holds (about 50 a second, the file name says). The recording's own CSV has every sample. PlotJuggler opens it directly.">
             <Download className="w-4 h-4" aria-hidden="true" />
             CSV
           </button>

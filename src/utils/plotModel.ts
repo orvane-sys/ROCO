@@ -216,6 +216,24 @@ export const csvName = (series: PlotSeries): string => {
 }
 
 /**
+ * How many samples a second the stored samples in [tStart, tEnd] are, from their median spacing, or null with fewer than two. The page
+ * keeps what the bridge sends for the dashboard (about 50 a second); the recording and the robot's own log have far more.
+ */
+export function plotSampleRate(r: PlotRing, tStart: number, tEnd: number): number | null {
+  const gaps: number[] = []
+  let prev = NaN
+  for (let k = r.lowerBound(tStart); k < r.count; k++) {
+    const t = r.t[r.index(k)]
+    if (t > tEnd + 1e-9) break
+    if (Number.isFinite(prev) && t > prev) gaps.push(t - prev)
+    prev = t
+  }
+  if (gaps.length === 0) return null
+  gaps.sort((a, b) => a - b)
+  return 1 / gaps[Math.floor(gaps.length / 2)]
+}
+
+/**
  * One row per stored sample in [tStart, tEnd], one column per line of the plots (joint angle in degrees, torque in Nm), with
  * the PD demand peak beside each PD demand. The first column is the unix time in seconds, as PlotJuggler expects; `t_rel_s`
  * counts from `relativeTo` (the start of the recording, or the end of the window live). Empty cells are values with no data.
