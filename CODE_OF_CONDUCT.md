@@ -7,6 +7,6 @@ pull requests, discussions and any other place you speak for it.
 
 ## Reporting
 
-Report anything that breaks this code to the maintainers at **CONTACT_EMAIL**. Reports are read by the maintainers only
+Report anything that breaks this code to the maintainers at **rocomaintainers@gmail.com**. Reports are read by the maintainers only
 and kept private. The maintainers decide on the response as described in the Covenant's enforcement guidelines: a
 correction, a warning, a temporary ban or a permanent ban.
