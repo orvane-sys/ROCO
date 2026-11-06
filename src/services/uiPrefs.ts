@@ -46,6 +46,8 @@ export interface UiPrefs {
   speech: boolean
   /** Column widths in percent, per workspace (and `drive`), in the order the visible columns appear. */
   split: Record<string, number[]>
+  /** Workspaces whose one-line note has been dismissed or passed by. */
+  intros: Workspace[]
 }
 
 export interface UiState extends UiPrefs {
@@ -54,7 +56,7 @@ export interface UiState extends UiPrefs {
 }
 
 export const STORAGE_KEY = 'roco.ui.v1'
-const DEFAULTS: UiPrefs = { theme: 'auto', textScale: 100, workspace: 'run', scene3d: 'auto', sound: false, speech: false, split: {} }
+const DEFAULTS: UiPrefs = { theme: 'auto', textScale: 100, workspace: 'run', scene3d: 'auto', sound: false, speech: false, split: {}, intros: [] }
 
 const isThemePref = (v: unknown): v is ThemePref => v === 'auto' || v === 'dark' || v === 'light' || v === 'contrast'
 const isTextScale = (v: unknown): v is TextScale => (TEXT_SCALES as readonly unknown[]).includes(v)
@@ -72,6 +74,12 @@ function loadSplit(v: unknown): Record<string, number[]> {
   return out
 }
 
+/** The workspaces in a saved list, once each. A damaged value gives what is valid, so the note shows again rather than never. */
+export function loadIntros(v: unknown): Workspace[] {
+  if (!Array.isArray(v)) return []
+  return WORKSPACES.map((w) => w.id).filter((id) => v.includes(id))
+}
+
 function load(): UiPrefs {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -87,6 +95,7 @@ function load(): UiPrefs {
       sound: o.sound === true,
       speech: o.speech === true,
       split: loadSplit(o.split),
+      intros: loadIntros(o.intros),
     }
   } catch {
     return { ...DEFAULTS }
@@ -133,7 +142,8 @@ function refresh(): void {
     next.scene3d === state.scene3d &&
     next.sound === state.sound &&
     next.speech === state.speech &&
-    next.split === state.split
+    next.split === state.split &&
+    next.intros === state.intros
   )
     return
   state = next
@@ -187,6 +197,14 @@ export function setSound(sound: boolean): void {
 
 export function setSpeech(speech: boolean): void {
   prefs = { ...prefs, speech }
+  save(prefs)
+  refresh()
+}
+
+/** The note above a workspace is not shown again. */
+export function markIntroSeen(w: Workspace): void {
+  if (prefs.intros.includes(w)) return
+  prefs = { ...prefs, intros: loadIntros([...prefs.intros, w]) }
   save(prefs)
   refresh()
 }

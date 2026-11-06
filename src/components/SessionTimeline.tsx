@@ -327,7 +327,7 @@ export function SessionTimeline({ state, profile, model, scope }: SessionTimelin
   const canvasH = (2 + H.state + H.gap + H.alerts + H.gap + H.marks + H.gap + H.axis + 8) * sc
 
   return (
-    <section aria-labelledby="timeline-heading" data-tour="timeline" className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2 shrink-0">
+    <section aria-labelledby="timeline-heading" data-tour="timeline" className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2 shrink-0 xl:relative xl:z-10 xl:bg-transparent xl:border-0 xl:rounded-none xl:p-0">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           <History className="w-5 h-5 text-accent shrink-0" aria-hidden="true" />

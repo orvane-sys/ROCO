@@ -204,7 +204,7 @@ export function GuidedChecks({
         </p>
       )}
 
-      <nav aria-label="Stages" className="flex flex-wrap gap-1.5">
+      <nav aria-label="Stages" className="flex flex-wrap gap-1.5 xl:sticky xl:top-0 xl:bottom-0 z-10 bg-surface">
         {result.stages.map((s) => {
           const here = s.stage.id === selected.stage.id
           const word = s.counts.stop > 0 ? 'stop limit crossed' : s.done ? 'marked done' : s.matchesState ? 'robot is in this state' : ''

@@ -107,7 +107,7 @@ export function Cockpit({
 
   // A column that can scroll must be reachable by keyboard, even when it holds nothing focusable.
   const column =
-    'min-w-0 min-h-0 flex flex-col gap-4 xl:overflow-y-auto xl:pr-1 outline-none focus-visible:outline-2 focus-visible:outline-focus'
+    'min-w-0 min-h-0 flex flex-col gap-4 xl:overflow-y-auto xl:pr-1 xl:scroll-py-28 outline-none focus-visible:outline-2 focus-visible:outline-focus'
   const region = (label: string) => ({ role: 'region' as const, 'aria-label': `${label} column`, tabIndex: 0 })
 
   return (

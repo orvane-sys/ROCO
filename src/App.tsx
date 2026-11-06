@@ -35,7 +35,7 @@ import { connectionChecks } from './utils/connectionChecks'
 import { AlertAnnouncer } from './components/AlertAnnouncer'
 import { LinkHealth } from './components/LinkHealth'
 import { SegmentTable } from './components/SegmentTable'
-import { ReplayControls } from './components/ReplayControls'
+import { ReplayControls, ReplayNotes } from './components/ReplayControls'
 import { JointPlot } from './components/JointPlot'
 import { telemetryService } from './services/telemetryStream'
 import { acknowledge, getAlertControls, resetAlertControls, unshelveAll, useAlertControls } from './services/alertControls'
@@ -65,6 +65,7 @@ import {
   setSplit,
   setTextScale,
   setTheme,
+  markIntroSeen,
   setWorkspace,
   useUiPrefs,
   type Workspace,
@@ -77,7 +78,7 @@ import type {
   RobotTelemetry,
   VelocityCommand,
 } from './types/telemetry'
-import { AlertTriangle, ShieldAlert } from 'lucide-react'
+import { AlertTriangle, CircleHelp, ShieldAlert, X } from 'lucide-react'
 
 /** Column widths (percent) when a layout has no saved ones, for the columns that are visible. */
 const DEFAULT_WIDTHS: Record<Workspace | 'drive', number[]> = {
@@ -245,6 +246,13 @@ export function App() {
   useEffect(() => {
     if (focusRequest) document.getElementById(focusRequest.id)?.focus()
   }, [focusRequest])
+
+  // a workspace's note is done with once the operator moves on from it
+  const lastWorkspace = useRef(workspace)
+  useEffect(() => {
+    if (lastWorkspace.current && lastWorkspace.current !== workspace) markIntroSeen(lastWorkspace.current)
+    lastWorkspace.current = workspace
+  }, [workspace])
 
   // a new bridge session or replay file: what was seen and shelved belongs to the old one
   useEffect(() => {
@@ -546,6 +554,7 @@ export function App() {
   } else {
     left = (
       <>
+        <ReplayNotes state={monitor} />
         <SegmentTable state={monitor} />
         {alerts}
         {checks}
@@ -674,16 +683,34 @@ export function App() {
         />
       )}
 
-      {/* Stacked and scrolling on small screens. From xl the columns sit side by side and scroll on their own; on a short screen the page scrolls to the timeline instead of squeezing the columns. */}
+      {/* From xl the page does not scroll: the workspace fills what is left, each column scrolls on its own, and the replay row and the
+          timeline sit under it in a dock that is always on screen. Below xl everything is stacked in one scroll and the replay row sticks
+          to the bottom edge. The order here is the order seen, so the keyboard goes cockpit, replay, timeline. */}
       {!showConnectScreen && (
-        <main className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 flex flex-col gap-4">
-          {isMonitor && replay && <ReplayControls state={monitor} compact={workspace !== 'review'} />}
+        <main className="flex-1 min-h-0 overflow-y-auto scroll-pb-24 xl:scroll-pb-0 p-3 flex flex-col gap-3">
+          {workspace && !ui.intros.includes(workspace) && (
+            <p role="note" className="shrink-0 flex items-center gap-2 rounded-lg border border-line bg-sunken/50 pl-3 pr-1 text-sm text-ink-soft">
+              <CircleHelp className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1 py-1.5">{WORKSPACES.find((w) => w.id === workspace)?.hint}</span>
+              <button
+                type="button"
+                aria-label={`Dismiss the note about ${WORKSPACES.find((w) => w.id === workspace)?.label}`}
+                onClick={() => {
+                  markIntroSeen(workspace)
+                  setFocusRequest({ id: 'workspace-panel' })
+                }}
+                className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center hover:bg-raised text-ink-soft hover:text-ink"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </p>
+          )}
           <div
             id="workspace-panel"
             role={workspace ? 'tabpanel' : undefined}
             aria-labelledby={workspace ? `tab-${workspace}` : undefined}
             tabIndex={-1}
-            className="outline-none xl:flex-1 xl:min-h-[22rem]"
+            className="outline-none xl:flex-1 xl:min-h-48"
           >
             <Cockpit
               layoutKey={layoutKey}
@@ -700,7 +727,12 @@ export function App() {
               names={names}
             />
           </div>
-          {isMonitor && <SessionTimeline state={monitor} profile={activeProfile} model={timeline} scope={marksScope} />}
+          {isMonitor && (
+            <div className="contents xl:flex xl:flex-col xl:shrink-0 xl:gap-2 xl:bg-surface/80 xl:border xl:border-line/90 xl:rounded-xl xl:p-3">
+              {replay && <ReplayControls state={monitor} />}
+              <SessionTimeline state={monitor} profile={activeProfile} model={timeline} scope={marksScope} />
+            </div>
+          )}
         </main>
       )}
 

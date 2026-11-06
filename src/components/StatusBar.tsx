@@ -88,7 +88,18 @@ export function BatteryChip({ percent, volts, monitor }: { percent: number | nul
   return (
     <div className={cn(chip, TONE.neutral, 'font-mono tabular-nums')} role="group" aria-label={label}>
       <Icon className={cn('w-4 h-4', color)} aria-hidden="true" />
-      <span aria-hidden="true">{text}</span>
+      {volts !== null && percent !== null ? (
+        <>
+          <span aria-hidden="true" className="max-md:hidden">
+            {text}
+          </span>
+          <span aria-hidden="true" className="md:hidden">
+            {percent}%
+          </span>
+        </>
+      ) : (
+        <span aria-hidden="true">{text}</span>
+      )}
     </div>
   )
 }

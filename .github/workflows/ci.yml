@@ -50,6 +50,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Page layout in Chrome
+        run: npm run check:layout
+
       - name: Python lint
         run: python -m pyflakes scripts tools
 
