@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertOctagon,
   AlertTriangle,
@@ -8,6 +9,7 @@ import {
   Bot,
   CheckCircle2,
   Cpu,
+  Ellipsis,
   FlaskConical,
   Film,
   Loader2,
@@ -72,8 +74,8 @@ function sourceChip(status: ConnectionStatus, monitor: MonitorState, isMonitor: 
   return { Icon: Radio, word: 'LIVE', detail: 'robot bridge', tone: 'ok' }
 }
 
-export function BatteryChip({ percent, volts, monitor }: { percent: number | null; volts: number | null; monitor: boolean }) {
-  // The pack voltage thresholds are for the demo/drive bridge's pack; a read-only session trusts the BMS charge only.
+/** What the battery chip says and how it looks. The pack voltage thresholds are for the demo/drive bridge's pack; a read-only session trusts the BMS charge only. */
+function batteryView(percent: number | null, volts: number | null, monitor: boolean) {
   const level = monitor ? percent : null
   const Icon =
     monitor
@@ -85,6 +87,11 @@ export function BatteryChip({ percent, volts, monitor }: { percent: number | nul
       : volts === null ? 'text-ink-muted' : volts >= 23.5 ? 'text-ok' : volts >= 22.2 ? 'text-warn' : 'text-crit'
   const text = volts !== null ? `${volts.toFixed(1)} V${percent !== null ? ` (${percent}%)` : ''}` : percent !== null ? `${percent}%` : '—'
   const label = volts !== null ? `Battery ${volts.toFixed(1)} volts${percent !== null ? `, ${percent} percent` : ''}` : percent !== null ? `Battery ${percent} percent` : 'Battery: no data'
+  return { Icon, color, text, label }
+}
+
+export function BatteryChip({ percent, volts, monitor }: { percent: number | null; volts: number | null; monitor: boolean }) {
+  const { Icon, color, text, label } = batteryView(percent, volts, monitor)
   return (
     <div className={cn(chip, TONE.neutral, 'font-mono tabular-nums')} role="group" aria-label={label}>
       <Icon className={cn('w-4 h-4', color)} aria-hidden="true" />
@@ -243,42 +250,119 @@ export function HeaderTools({
 }) {
   const toneText = `Tone ${sound ? (audioRunning ? 'on' : 'on, click the page') : 'off'}`
   const voiceText = `Voice ${!speechAvailable ? 'n/a' : speech ? 'on' : 'off'}`
+  const toneButton = (words: boolean) => (
+    <button
+      type="button"
+      onClick={onToggleSound}
+      aria-pressed={sound}
+      aria-label={toneText}
+      title={sound ? 'A tone sounds for a new critical alert. Click to turn off.' : 'Click to turn on a tone for a new critical alert.'}
+      className={cn(chip, 'cursor-pointer hover:border-line-hot', sound ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
+    >
+      {sound ? <Volume2 className="w-4 h-4" aria-hidden="true" /> : <VolumeX className="w-4 h-4 text-ink-muted" aria-hidden="true" />}
+      <span className={words ? undefined : 'hidden xl:inline'} aria-hidden="true">{toneText}</span>
+    </button>
+  )
+  const voiceButton = (words: boolean) => (
+    <button
+      type="button"
+      onClick={onToggleSpeech}
+      aria-pressed={speech}
+      aria-label={voiceText}
+      disabled={!speechAvailable}
+      title={
+        !speechAvailable
+          ? 'This browser has no speech.'
+          : speech
+          ? 'State changes and new critical alerts are spoken. Click to turn off.'
+          : 'Click to speak state changes and new critical alerts.'
+      }
+      className={cn(chip, 'cursor-pointer hover:border-line-hot disabled:cursor-default disabled:opacity-60', speech ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
+    >
+      <Speech className={cn('w-4 h-4', !speech && 'text-ink-muted')} aria-hidden="true" />
+      <span className={words ? undefined : 'hidden xl:inline'} aria-hidden="true">{voiceText}</span>
+    </button>
+  )
   return (
     <>
-      {isMonitor && (
-        <>
-          <button
-            type="button"
-            onClick={onToggleSound}
-            aria-pressed={sound}
-            aria-label={toneText}
-            title={sound ? 'A tone sounds for a new critical alert. Click to turn off.' : 'Click to turn on a tone for a new critical alert.'}
-            className={cn(chip, 'cursor-pointer hover:border-line-hot', sound ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
-          >
-            {sound ? <Volume2 className="w-4 h-4" aria-hidden="true" /> : <VolumeX className="w-4 h-4 text-ink-muted" aria-hidden="true" />}
-            <span className="hidden xl:inline" aria-hidden="true">{toneText}</span>
-          </button>
-          <button
-            type="button"
-            onClick={onToggleSpeech}
-            aria-pressed={speech}
-            aria-label={voiceText}
-            disabled={!speechAvailable}
-            title={
-              !speechAvailable
-                ? 'This browser has no speech.'
-                : speech
-                ? 'State changes and new critical alerts are spoken. Click to turn off.'
-                : 'Click to speak state changes and new critical alerts.'
-            }
-            className={cn(chip, 'cursor-pointer hover:border-line-hot disabled:cursor-default disabled:opacity-60', speech ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
-          >
-            <Speech className={cn('w-4 h-4', !speech && 'text-ink-muted')} aria-hidden="true" />
-            <span className="hidden xl:inline" aria-hidden="true">{voiceText}</span>
-          </button>
-        </>
-      )}
-      <BatteryChip percent={batteryPercentage} volts={batteryVoltage} monitor={isMonitor} />
+      {/* From 640 px the switches and the battery sit in the row; below it they fold into one menu so the row of buttons never overflows. */}
+      <span className="hidden sm:contents">
+        {isMonitor && (
+          <>
+            {toneButton(false)}
+            {voiceButton(false)}
+          </>
+        )}
+        <BatteryChip percent={batteryPercentage} volts={batteryVoltage} monitor={isMonitor} />
+      </span>
+      <ToolsMenu batteryPercent={batteryPercentage} batteryVolts={batteryVoltage} monitor={isMonitor}>
+        {isMonitor && (
+          <>
+            {toneButton(true)}
+            {voiceButton(true)}
+          </>
+        )}
+        <BatteryChip percent={batteryPercentage} volts={batteryVoltage} monitor={isMonitor} />
+      </ToolsMenu>
     </>
+  )
+}
+
+/**
+ * Below 640 px: one button that opens a small panel with the tone and voice switches and the battery. The button shows the battery's own
+ * icon and colour, so a low pack is still seen with the panel shut. Escape, a click outside or Tab out closes it.
+ */
+function ToolsMenu({ batteryPercent, batteryVolts, monitor, children }: { batteryPercent: number | null; batteryVolts: number | null; monitor: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const { Icon, color, label } = batteryView(batteryPercent, batteryVolts, monitor)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointer = (e: PointerEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      setOpen(false)
+      trigger.current?.focus()
+    }
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [open])
+
+  return (
+    <div
+      ref={root}
+      className="relative sm:hidden"
+      onBlur={(e) => {
+        if (open && !root.current?.contains(e.relatedTarget as Node | null)) setOpen(false)
+      }}
+    >
+      <button
+        ref={trigger}
+        type="button"
+        aria-expanded={open}
+        aria-controls="tools-menu"
+        aria-label={`Tone, voice and battery. ${label}`}
+        title={`Tone, voice and battery. ${label}`}
+        onClick={() => setOpen((o) => !o)}
+        className="h-10 px-2 rounded-lg flex items-center gap-1 bg-surface/80 border border-line-strong hover:border-line-hot text-ink-soft hover:text-ink transition-colors"
+      >
+        <Icon className={cn('w-5 h-5', color)} aria-hidden="true" />
+        <Ellipsis className="w-4 h-4" aria-hidden="true" />
+      </button>
+      {open && (
+        <div id="tools-menu" role="group" aria-label="Tone, voice and battery" className="absolute left-0 top-full mt-1.5 z-30 flex flex-col items-stretch gap-1.5 rounded-xl border border-line-strong bg-surface p-2 shadow-lg">
+          {children}
+        </div>
+      )}
+    </div>
   )
 }

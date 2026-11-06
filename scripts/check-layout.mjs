@@ -3,54 +3,12 @@
 // workspace's note shows once. It uses the Chrome or Chromium on this PC (playwright-core downloads no browser).
 //
 //   npm run build && npm run check:layout        (CHROME_PATH=/path/to/chrome to choose a browser)
-import { createServer } from 'node:http'
-import { existsSync, readFileSync, statSync } from 'node:fs'
-import { extname, join, normalize } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { chromium } from 'playwright-core'
+import { startBrowser, tally } from './lib-browser.mjs'
 
-const dist = fileURLToPath(new URL('../dist/', import.meta.url))
-if (!existsSync(join(dist, 'index.html'))) {
-  console.error('check-layout: no dist/, run npm run build first')
-  process.exit(1)
-}
-const chromePath = [process.env.CHROME_PATH, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-  (p) => p && existsSync(p)
-)
-if (!chromePath) {
-  console.error('check-layout: no Chrome or Chromium found; set CHROME_PATH')
-  process.exit(1)
-}
-
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.gz': 'application/gzip' }
-const server = createServer((req, res) => {
-  const file = normalize(join(dist, decodeURIComponent((req.url ?? '/').split('?')[0]).replace(/\/$/, '/index.html')))
-  if (!file.startsWith(dist) || !existsSync(file) || !statSync(file).isFile()) {
-    res.writeHead(404).end()
-    return
-  }
-  res.writeHead(200, { 'Content-Type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file))
-})
-await new Promise((r) => server.listen(0, '127.0.0.1', r))
-const url = `http://127.0.0.1:${server.address().port}/?demo=1`
-
-let failed = 0
-let passed = 0
-function check(ok, what) {
-  if (ok) passed++
-  else {
-    failed++
-    console.error('FAIL: ' + what)
-  }
-}
+const { url, browser, close } = await startBrowser('check-layout')
+const { check, finish } = tally()
 
 const SEEN_ALL = { intros: ['run', 'analyze', 'review'] }
-const browser = await chromium.launch({
-  executablePath: chromePath,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'],
-})
-
 /** A page at a size with the tour seen and, unless `prefs` is given, every workspace note dismissed. */
 async function open(width, height, prefs = SEEN_ALL) {
   const page = await browser.newPage({ viewport: { width, height } })
@@ -278,6 +236,52 @@ try {
     await bad.close()
   }
 
+  // 7a. Phones: every button in the bar is on screen (none cut off at the edge), the header is short, and the tone, voice and battery
+  // menu works: opens, switches, closes on Escape (focus back on its button), on a click outside, and when Tab leaves it.
+  for (const [w, h] of [
+    [320, 700],
+    [390, 844],
+  ]) {
+    const page = await open(w, h)
+    const at = `${w}x${h}`
+    const buttons = await page.evaluate(() =>
+      [...document.querySelectorAll('nav[aria-label="Workspaces and settings"] button')]
+        .filter((b) => b.getClientRects().length > 0)
+        .map((b) => {
+          const r = b.getBoundingClientRect()
+          return { name: b.getAttribute('aria-label') ?? b.textContent, left: r.left, right: r.right }
+        })
+    )
+    check(buttons.length >= 7, `${at}: the bar shows its buttons (${buttons.length})`)
+    for (const b of buttons) check(b.left >= 0 && b.right <= w + 0.5, `${at}: "${b.name}" is on screen (${Math.round(b.left)} to ${Math.round(b.right)} of ${w})`)
+    const m = await measure(page)
+    check(m.header.height <= 120, `${at}: the header is at most 120 px (${Math.round(m.header.height)})`)
+
+    const trigger = page.getByRole('button', { name: /^Tone, voice and battery/ })
+    check((await trigger.count()) === 1, `${at}: one menu button for tone, voice and battery`)
+    check((await page.getByRole('button', { name: /^Tone (on|off)/ }).count()) === 0, `${at}: the switches are not in the bar while the menu is shut`)
+    await trigger.click()
+    check((await trigger.getAttribute('aria-expanded')) === 'true', `${at}: the menu opens`)
+    const tone = page.getByRole('button', { name: /^Tone (on|off)/ })
+    check((await tone.count()) === 1 && (await page.getByRole('button', { name: /^Voice / }).count()) === 1, `${at}: Tone and Voice are in the menu`)
+    check((await page.locator('#tools-menu [aria-label^="Battery"]').count()) === 1, `${at}: the battery is in the menu`)
+    const box = await page.locator('#tools-menu').boundingBox()
+    check(box !== null && box.x >= 0 && box.x + box.width <= w + 0.5, `${at}: the menu is on screen`)
+    const before = await tone.getAttribute('aria-pressed')
+    await tone.click()
+    check((await page.getByRole('button', { name: /^Tone (on|off)/ }).getAttribute('aria-pressed')) !== before, `${at}: Tone switches from the menu`)
+    await page.keyboard.press('Escape')
+    check((await trigger.getAttribute('aria-expanded')) === 'false', `${at}: Escape closes the menu`)
+    check(await trigger.evaluate((el) => el === document.activeElement), `${at}: Escape puts focus back on the menu button`)
+    await trigger.click()
+    await page.mouse.click(w / 2, h / 2)
+    check((await trigger.getAttribute('aria-expanded')) === 'false', `${at}: a click outside closes the menu`)
+    await trigger.click()
+    for (let i = 0; i < 6; i++) await page.keyboard.press('Tab')
+    check((await trigger.getAttribute('aria-expanded')) === 'false', `${at}: Tab out of the menu closes it`)
+    await page.close()
+  }
+
   // 7. Larger text (reported, not a pass mark: the page may scroll here, that is its safety net).
   {
     const page = await open(1366, 768, { ...SEEN_ALL, textScale: 130 })
@@ -287,12 +291,7 @@ try {
     await page.close()
   }
 } finally {
-  await browser.close()
-  server.close()
+  await close()
 }
 
-console.log(`check-layout: ${passed} checks passed`)
-if (failed > 0) {
-  console.error(`check-layout: ${failed} FAILED`)
-  process.exit(1)
-}
+finish('check-layout')

@@ -53,6 +53,9 @@ jobs:
       - name: Page layout in Chrome
         run: npm run check:layout
 
+      - name: Accessibility in Chrome
+        run: npm run check:a11y
+
       - name: Python lint
         run: python -m pyflakes scripts tools
 

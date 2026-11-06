@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { RobotProfile } from '../config/robotRegistry'
 import type { MonitorState } from '../types/monitor'
-import type { AlertGroup, AlertView } from '../utils/alertModel'
+import { announcementText, type AlertGroup, type AlertView } from '../utils/alertModel'
 import { alertTitle } from '../utils/monitorFormat'
 import { armAudioUnlock, playCriticalTone, speak, stopSpeaking } from '../services/alertCues'
 
@@ -111,7 +111,7 @@ export function AlertAnnouncer({ state, view, profile, sound, speech, limits }: 
       if (messages.length === 0) return
       queue.current = []
       lastAssertive.current = performance.now()
-      const text = messages.length === 1 ? messages[0] : `${messages.length} new critical messages. First: ${messages[0]}`
+      const text = announcementText(messages)
       write(assertiveEl.current, text, writeTimers.current)
       if (prefs.current.sound) playCriticalTone()
       if (prefs.current.speech) speak(text)

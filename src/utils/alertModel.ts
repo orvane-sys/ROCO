@@ -156,6 +156,15 @@ export const occurrenceKey = (a: { id: string; since: number }): string => `${a.
 
 const RANK: Record<EffectiveLevel, number> = { info: 0, warn: 1, critical: 2 }
 
+/** A shape for each level, so a level never depends on its colour alone. The timeline draws the same shapes, and its key uses these. */
+const LEVEL_GLYPH: Record<EffectiveLevel, string> = { critical: '◆', warn: '▲', info: '●' }
+export const levelGlyph = (l: EffectiveLevel): string => LEVEL_GLYPH[l]
+
+/** What the assertive live region says when messages came together: one message, the count first, then the first one in full. */
+export function announcementText(messages: string[]): string {
+  return messages.length <= 1 ? (messages[0] ?? '') : `${messages.length} new critical messages. First: ${messages[0]}`
+}
+
 function applyRules(
   raw: AlertLevel,
   a: MonitorAlert,

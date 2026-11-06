@@ -7,6 +7,7 @@ import { MAX_MARK_NOTE, marksStore, startMarkNote, useMarkNoteEditing, useMarks,
 import { telemetryService } from '../services/telemetryStream'
 import { remScale, themeVar, useUiPrefs } from '../services/uiPrefs'
 import { useViewState, viewStore } from '../services/viewStore'
+import { levelGlyph } from '../utils/alertModel'
 import { alertTitle, formatDataTime, formatDuration } from '../utils/monitorFormat'
 import { axisTicks, levelWord, spanText, tickLabel, timeAtX, timelineRows, xAtTime, type TimelineAlert, type TimelineModel } from '../utils/timelineModel'
 import { cn } from '../utils/cn'
@@ -342,10 +343,14 @@ export function SessionTimeline({ state, profile, model, scope }: SessionTimelin
         <div className="order-last w-full min-w-0 xl:order-none xl:w-auto xl:flex-1 text-xs text-ink-soft">
           <ul className={cn('flex items-center gap-x-4 gap-y-1 flex-wrap xl:flex-nowrap xl:overflow-hidden xl:whitespace-nowrap', lineText && 'hidden')} aria-label="Key to the timeline">
             <li>Hatched: state not known</li>
-            <li>◆ critical</li>
-            <li>▲ warning</li>
-            <li>● info</li>
-            <li>⚑ mark</li>
+            {(['critical', 'warn', 'info'] as const).map((l) => (
+              <li key={l}>
+                <span aria-hidden="true">{levelGlyph(l)}</span> {l === 'warn' ? 'warning' : l}
+              </li>
+            ))}
+            <li>
+              <span aria-hidden="true">⚑</span> mark
+            </li>
             <li className="xl:truncate">{model.replay ? 'Click: jump the recording there' : 'Click: freeze the plots at that moment'}</li>
           </ul>
           <p role="status" className={cn('xl:truncate', !lineText && 'sr-only')} title={lineText || undefined}>
@@ -422,6 +427,7 @@ export function SessionTimeline({ state, profile, model, scope }: SessionTimelin
             </div>
             {hover.alert && (
               <div className="text-ink">
+                <span aria-hidden="true">{levelGlyph(hover.alert.level)} </span>
                 {levelWord(hover.alert.level)}: {title(hover.alert)}
               </div>
             )}

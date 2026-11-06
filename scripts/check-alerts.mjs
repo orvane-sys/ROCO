@@ -62,6 +62,22 @@ for (const [k, r] of Object.entries(policy.RESPONSES)) {
   check(r.warn.length > 10 && r.critical.length > 10 && r.ref.startsWith('§'), `response text for ${k} is filled in`)
 }
 
+// -- announcements and shapes ----------------------------------------------------------------------------------------------
+{
+  // ten critical alerts opened together are one burst, so the live region gets one message, not ten
+  const flood = Array.from({ length: 10 }, (_, i) => alert(`pd:${i}`, 'pd_demand', i, 100 + i * 0.01, 'critical'))
+  const v = model.buildAlertView(mk({ alerts: flood }))
+  check(v.groups.length === 1 && v.groups[0].level === 'critical', 'ten critical alerts at once are one group')
+  check(v.counts.critical === 10, 'the count still says ten')
+  const messages = Array.from({ length: 10 }, (_, i) => `Critical alert: number ${i}.`)
+  const text = model.announcementText(messages)
+  check(text === '10 new critical messages. First: Critical alert: number 0.', 'ten messages together read as one: the count, then the first in full')
+  check(model.announcementText(['Critical alert: only one.']) === 'Critical alert: only one.', 'a single message is read as it is')
+  check(model.announcementText([]) === '', 'nothing to say reads as nothing')
+  const glyphs = ['critical', 'warn', 'info'].map((l) => model.levelGlyph(l))
+  check(new Set(glyphs).size === 3 && glyphs.join('') === '◆▲●', 'each level has its own shape')
+}
+
 // -- state timeline ---------------------------------------------------------------------------------------------------
 const changes = model.stateChanges([change(10, 'Passive', 'FixStand'), change(20, 'FixStand', 'Velocity'), ev(30, 'Config: x', { session: true })])
 check(changes.length === 3 && changes[2].to === 'Passive' && changes[2].session, 'a Config line is a change to Passive')

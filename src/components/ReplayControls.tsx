@@ -93,7 +93,9 @@ export function ReplayNotes({ state }: { state: MonitorState }) {
     <section aria-labelledby="replay-notes-heading" className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2">
       <h2 id="replay-notes-heading" className="text-base font-semibold text-ink flex items-center gap-2">
         <Film className="w-5 h-5 text-accent shrink-0" aria-hidden="true" />
-        Recording <span className="font-mono text-sm text-ink-soft truncate">{state.replay.file}</span>
+        <span className="min-w-0 break-words">
+          Recording <span className="font-mono text-sm text-ink-soft break-all" title={state.replay.file}>{state.replay.file}</span>
+        </span>
       </h2>
       <ul className="text-xs text-ink-soft list-disc pl-4">
         {notes.map((n) => (
