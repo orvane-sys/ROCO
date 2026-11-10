@@ -20,6 +20,9 @@ monitors Unitree G1 over DDS.
 **Not a safety system. No warranty.** ROCO only watches. It cannot see the rope, the spotter or the room, and "no alert"
 never means "safe". Keep your E-stop in reach and follow your own test manual.
 
+ROCO is an independent project, not affiliated with or endorsed by Unitree Robotics. Unitree and G1 are named only to say which
+robot it works with.
+
 ## Try it without a robot
 
 Open the [live demo](https://orvane-sys.github.io/ROCO/). It plays 60 s of a real G1 squat test, recorded from a real run
@@ -47,7 +50,9 @@ The images are the page replaying the sample, drawn in software (no GPU), so the
 - Optional tone and spoken cues (off by default, switches in the status bar) and screen reader announcements for new
   critical alerts.
 - Guided checks for the test stages T0 to T9 and the sim rehearsal (`src/config/procedures/g1_type6.ts`, plain data, so
-  another robot can add its own). Each item says where it comes from in `TEST_MANUAL.md` and is one of: measured by ROCO,
+  another robot can add its own). They are written from `TEST_MANUAL.md`, the author's own G1 test manual, which is not
+  published, so the checks and their § numbers are an example and not a test plan for your robot. Write your own. Each
+  item says which section it comes from and is one of: measured by ROCO,
   a log line that must appear, or ticked by a person. A stage moves on only when you say so. A crossed stop limit cannot
   be hidden or marked "not applicable", and "Within limit" never means "safe to continue". Reference values are labelled
   sim or robot and a sim value is not shown as the robot's. The bridge sends a hash of `TEST_MANUAL.md` (read only); if it
@@ -82,6 +87,9 @@ Install `unitree_sdk2py` from a clone, the way Unitree describes it (`git clone`
 
 The quickest install is the wheel on the [latest release](https://github.com/orvane-sys/ROCO/releases/latest): it has the
 built page inside, so the test PC needs Python only, no Node. It gives the commands `roco` and `roco-dds-bridge`.
+
+Do not run `pip install roco`. That name on PyPI belongs to an unrelated package, so it installs something else. ROCO is
+installed from the links here.
 
 ```bash
 pipx install https://github.com/orvane-sys/ROCO/releases/download/v0.1.0/roco-0.1.0-py3-none-any.whl
@@ -140,8 +148,8 @@ page says "since X s". Once it has, a jump shows the same numbers as playing fro
 The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
 **The sample recording** is 60 s of a real G1 squat test, played in the page. It only starts if you press the button (or open `?demo=1`) and is labelled SAMPLE everywhere.
 
-Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure, timeline, preference, demo
-and mesh checks), `npm run check:layout` and `npm run check:a11y` (both drive Chrome on the built page: no layout jumps at any
+Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure, timeline, preference, demo,
+mesh and licence checks), `npm run check:layout` and `npm run check:a11y` (both drive Chrome on the built page: no layout jumps at any
 width, axe in three themes, reflow at 200 % and 400 % zoom, and a keyboard walk), `python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,
 `python3 tools/sim-drive/mujoco_roco_bridge.py --self-test`. CI (`.github/workflows/ci.yml`) runs all of them, `regress.py`
 and a check that a full clone stays under 25 MB. See `CONTRIBUTING.md`.
@@ -171,9 +179,8 @@ their own shapes), live alerts are announced once and rate limited, and the layo
   robot and does not trip `g1_ctrl`'s other-publisher check. Frames from the page are ignored except replay controls.
 - The bridge listens on loopback only. Another host needs `--host` with `--token`.
 - ROCO does not show a "safe to start". It cannot see the rope, the spotter or the room. Abort with `p` (keyboard) or
-  `LT+B` (remote) in `g1_ctrl`, as in `TEST_MANUAL.md`.
-- Values from the simulator are not expectations for the real robot. For example, a calm stand loads the ankle pitch
-  about 6 to 7.5 Nm in the sim and 1 to 2 Nm on the robot.
+  `LT+B` (remote) in `g1_ctrl`.
+- Values from the simulator are not expectations for the real robot, and ROCO does not show one as the other.
 
 ## Layout
 
@@ -182,10 +189,10 @@ their own shapes), live alerts are announced once and rate limited, and the layo
 - `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/roco_common.py` the wire format,
   robot profiles and WebSocket server both bridges share.
 - `tools/sim-drive/` an older MuJoCo simulator bridge that accepts drive commands. It is not part of the monitor; see its README.
-- Other robots are not supported yet.
 
 ## Licence
 
 ROCO is licensed under Apache-2.0 (see `LICENSE`). The robot model files in `public/models/g1_description/` are from
 Unitree's [unitree_ros](https://github.com/unitreerobotics/unitree_ros), BSD-3-Clause, © 2016-2022 Unitree Robotics;
-see the `LICENSE` file in that folder.
+see the `LICENSE` file in that folder. The built page carries `LICENSE` and `THIRD-PARTY-LICENSES.md`, the notices of the
+packages bundled into it; `npm run build` writes both and fails if a notice is missing.

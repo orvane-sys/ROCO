@@ -37,6 +37,13 @@ const png = touch && existsSync(join(root, 'public', touch)) ? readFileSync(join
 check(png && png.readUInt32BE(12) === 0x49484452 && png.readUInt32BE(16) === 180 && png.readUInt32BE(20) === 180, 'the touch icon is a 180x180 PNG')
 check(!read('public/favicon.svg').includes('#863bff'), 'the favicon is ROCO\'s, not the Vite template\'s')
 
+// the name and licence notes a stranger needs before installing
+const readme = read('README.md')
+check(/not affiliated with or endorsed by Unitree/.test(readme), 'the README says ROCO is not affiliated with Unitree')
+check(/not\s+published/.test(readme), 'the README says the test manual behind the checks is not published')
+check(/`pip install roco`/.test(readme) && /unrelated/.test(readme), 'the README warns that pip install roco is another project')
+check(/license:\s*\{\s*fileName:\s*'THIRD-PARTY-LICENSES\.md'/.test(read('vite.config.ts')) && readme.includes('THIRD-PARTY-LICENSES.md'), 'the build writes THIRD-PARTY-LICENSES.md and the README names it')
+
 // the logo: the README's two pictures hold the page's drawing, and the favicon is readable on a dark tab bar too
 const pathsOf = (text) => [...text.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]).sort()
 const pagePaths = pathsOf(read('src/components/RocoLogo.tsx'))

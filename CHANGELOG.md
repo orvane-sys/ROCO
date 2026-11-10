@@ -24,6 +24,8 @@ Unitree G1 over DDS. It is not a safety system and comes with no warranty.
   environment on every push.
 - The ROCO logo: an upright figure inside a ring that stays open. It is in the page header, the browser tab and the README.
 - Community files: CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, issue and pull request templates.
+- `THIRD-PARTY-LICENSES.md` and `LICENSE` ship with the built page, in the demo, the zip and the wheel. The build fails if a
+  bundled package has no notice.
 - CI on every push: type check, lint and page checks, build, layout and accessibility in Chrome, Python lint, the bridge,
   launcher and simulator self-tests, regression tests against real bridge processes, and a clone-size guard (25 MB).
 - Performance tools: `npm run perf:load` (cold-load report) and `npm run soak` (a long run that watches the heap and frame rate).
@@ -46,5 +48,7 @@ Unitree G1 over DDS. It is not a safety system and comes with no warranty.
 
 ### Known limits
 - Only Unitree G1 over DDS. Other robots are not supported yet.
+- Importing a URDF, xacro or MuJoCo file shows the model only. Live data needs Unitree LowState, the robot's height above the
+  floor is a default guess, and a model that is not Z-up comes in turned.
 - The page shows about 50 samples a second; the recording's own CSV has every sample.
 - The screen reader pass (`docs/screen-reader-test.md`) is done by a person and is not part of CI.

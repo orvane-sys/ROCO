@@ -13,6 +13,8 @@ export default defineConfig({
   build: {
     // three.js alone is ~700 kB; flag anything that grows well beyond that.
     chunkSizeWarningLimit: 800,
+    // Bundling strips the notices the packages' licences ask us to pass on, so they ship as one file next to the page.
+    license: { fileName: 'THIRD-PARTY-LICENSES.md' },
     rollupOptions: {
       output: {
         // Keep the 3D stack in its own cacheable chunk; app code changes far more often than three.js.

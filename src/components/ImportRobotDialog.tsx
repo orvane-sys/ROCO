@@ -59,9 +59,10 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess }: ImportRo
     <Dialog title="Import Custom Robot Model" onClose={onClose}>
       <div className="flex flex-col gap-4 text-ink">
         <p className="text-xs text-ink-soft leading-relaxed">
-          Upload any robot description (<strong>.urdf</strong>, <strong>.xacro</strong>, or MuJoCo{' '}
+          Upload a robot description (<strong>.urdf</strong>, <strong>.xacro</strong>, or MuJoCo{' '}
           <strong>.xml</strong>) along with its visual meshes (<strong>.stl</strong>, <strong>.dae</strong>,{' '}
-          <strong>.obj</strong>, <strong>.glb</strong>).
+          <strong>.obj</strong>, <strong>.glb</strong>) to see the model in 3D. Live data comes only from a ROCO bridge,
+          which reads Unitree LowState, so another robot shows its model with no data.
         </p>
 
         {/* Drop Zone */}

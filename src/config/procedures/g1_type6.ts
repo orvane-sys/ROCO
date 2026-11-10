@@ -5,9 +5,8 @@ import type { ProcItem, Procedure } from './types'
  * of section 6, and the section 5 simulator rehearsal. Every item says which section it comes from. Where the manual gives a
  * number, the number is the manual's; where it says "much more" or "about", ROCO's reading is in alertPolicy.ts.
  *
- * The manual records different values for the simulator and for the real robot (ankle torque standing: 6 to 7.5 Nm in the
- * simulator, 1 to 2 Nm on the robot). Each reference below is therefore labelled by where it came from, and the page shows
- * only the ones that match the data source.
+ * The manual records different values for the simulator and for the real robot. Each reference below is therefore labelled by
+ * where it came from, and the page shows only the ones that match the data source.
  *
  * To update after the manual changes: read the diff, edit the items below, then replace the hash. `npm run lint` fails while
  * the hash differs from the manual on this machine, so an outdated procedure cannot pass unnoticed.
@@ -210,14 +209,14 @@ export const G1_TYPE6: Procedure = {
           id: 't5-ankle', kind: 'auto', ref: '§6 T5', text: 'Ankle pitch torque in Velocity: 15 Nm at most.',
           stop: 'Above 15 Nm, or very different left and right.',
           note: 'ROCO shows one maximum over the whole Velocity visit (as real_log.py does), not the standing value per side.',
-          refs: { sim: 'About 6 to 7.5 Nm each side.', real: 'Left 1.0 to 1.2, right 1.5 to 2.0 Nm (2026-10-23, rope slack).' },
+          refs: { sim: 'About 6 to 7.5 Nm each side.' },
           auto: { type: 'segment', state: 'Velocity', field: 'tauAnkP', stop: 15 },
         },
         manual('t5-lr', '§6 T5', 'Ankle pitch torque similar on the left and right (from g1_record, or the 5 s window table in the test report).'),
         {
           id: 't5-knee', kind: 'auto', ref: '§6 T5', text: 'Knee torque in Velocity: 25 Nm at most.', stop: 'Above 25 Nm.',
           note: 'One maximum over the whole Velocity visit.',
-          refs: { sim: 'About 5 Nm (4.5 to 5.7).', real: 'Left about 10, right about 5 Nm (2026-10-23).' },
+          refs: { sim: 'About 5 Nm (4.5 to 5.7).' },
           auto: { type: 'segment', state: 'Velocity', field: 'tauKnee', stop: 25 },
         },
         manual('t5-sound', '§6 T5', 'Quiet: no buzzing or whining from a joint.', { stop: 'Buzzing or whining.' }),

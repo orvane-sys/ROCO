@@ -194,7 +194,7 @@ export function GuidedChecks({
       {manual.status === 'missing' && (
         <p role="note" className="flex items-start gap-2 rounded-lg border border-line bg-sunken/50 px-2.5 py-1.5 text-xs text-ink-soft">
           <CircleHelp className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
-          <span>The bridge cannot find {proc.manual.file} on this PC, so ROCO cannot tell whether these checks match your manual.</span>
+          <span>These checks are an example, written from the author’s own test manual, which is not published. Follow your own test plan for your robot.</span>
         </p>
       )}
       {manual.status === 'unknown' && (

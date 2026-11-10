@@ -240,11 +240,11 @@ const simOnly = referencesFor({ sim: 'about 6 to 7.5 Nm' }, 'robot')
 check(simOnly.length === 1 && !simOnly[0].text.includes('7.5'), 'robot with only a sim figure says there is no real reference and hides the figure')
 check(referencesFor({ real: 'x' }, 'sim').length === 0, 'sim with only a real figure shows nothing')
 check(referencesFor(undefined, 'sim').length === 0, 'no refs: nothing')
-// the manual's two ankle numbers must never end up in the same label
-const ankle = item('t5-ankle')
-check(Boolean(ankle.refs?.sim) && Boolean(ankle.refs?.real), 'T5 ankle carries both a sim and a real reference')
-check(!referencesFor(ankle.refs, 'robot').some((r) => /7\.5/.test(r.text)), 'T5 ankle on the robot does not show the simulator figure')
-check(!referencesFor(ankle.refs, 'sim').some((r) => /2026/.test(r.text)), 'T5 ankle in the sim does not show the real-robot figure')
+// the manual's two numbers for one check must never end up in the same label
+const refused = item('t4-n-refused')
+check(Boolean(refused.refs?.sim) && Boolean(refused.refs?.real), 'T4 refused squat carries both a sim and a real reference')
+check(!referencesFor(refused.refs, 'robot').some((r) => /L 0\.2/.test(r.text)), 'T4 refused squat on the robot does not show the simulator figure')
+check(!referencesFor(refused.refs, 'sim').some((r) => /2026/.test(r.text)), 'T4 refused squat in the sim does not show the real-robot figure')
 
 // -- the manual hash --------------------------------------------------------------------------------------------------------
 const hashOf = (m) => manualStatus(G1, mk({ manual: m })).status

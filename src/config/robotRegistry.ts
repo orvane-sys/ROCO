@@ -402,7 +402,6 @@ const G1_TYPE6_EFFORT: Record<string, number> = {
 /**
  * 29-DoF EDU with the waist roll and pitch locked (mode_machine 6). Same body, URDF and 29 motor
  * slots as the free-waist model; the two locked joints keep reporting but their readings are invalid.
- * Any end-effector payload is not modelled: wrist joints stay.
  */
 export const G1_29DOF_WAIST_LOCKED_PROFILE: RobotProfile = {
   ...G1_29DOF_PROFILE,
