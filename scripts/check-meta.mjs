@@ -53,6 +53,9 @@ for (const f of ['docs/brand/roco-logo-light.svg', 'docs/brand/roco-logo-dark.sv
   check(read('README.md').includes(f), `the README shows ${f}`)
 }
 check(/prefers-color-scheme: dark/.test(read('public/favicon.svg')), 'the favicon has colours for a dark browser')
+check(/name and logo are not covered by the Apache-2\.0 licence/.test(readme), 'the README says the name and logo are outside the code licence')
+const brandNote = existsSync(join(root, 'docs/brand/README.md')) ? read('docs/brand/README.md') : ''
+check(/AI image tool/.test(brandNote) && /redrawn by hand/.test(brandNote), 'docs/brand/README.md says how the logo was made')
 
 // a shared link's preview: a crawler needs a full address, and the picture is 1200x630
 const og = (name) => html.match(new RegExp(`<meta property="og:${name}" content="([^"]*)"`))?.[1]

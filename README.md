@@ -196,3 +196,5 @@ ROCO is licensed under Apache-2.0 (see `LICENSE`). The robot model files in `pub
 Unitree's [unitree_ros](https://github.com/unitreerobotics/unitree_ros), BSD-3-Clause, © 2016-2022 Unitree Robotics;
 see the `LICENSE` file in that folder. The built page carries `LICENSE` and `THIRD-PARTY-LICENSES.md`, the notices of the
 packages bundled into it; `npm run build` writes both and fails if a notice is missing.
+
+The ROCO name and logo are not covered by the Apache-2.0 licence; see [`docs/brand/`](docs/brand/README.md).
