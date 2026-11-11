@@ -81,9 +81,9 @@
   --plot-surface: #0f172a;
 
   --scene-bg: #070b12;
-  --scene-floor: #060913;
-  --scene-grid-main: #0ea5e9;
-  --scene-grid-sub: #1e293b;
+  --scene-floor: #172033;
+  --scene-grid-sub: #2b3b55;
+  --scene-shadow: #000000;
   --scene-mark: #38bdf8;
   --scene-emissive: #06b6d4;
 
@@ -155,10 +155,10 @@
   --plot-text: #1e293b;
   --plot-surface: #ffffff;
 
-  --scene-bg: #dbe4ee;
+  --scene-bg: #e2e9f1;
   --scene-floor: #c8d3df;
-  --scene-grid-main: #0369a1;
   --scene-grid-sub: #94a3b8;
+  --scene-shadow: #1e293b;
   --scene-mark: #0369a1;
   --scene-emissive: #0891b2;
 
@@ -230,9 +230,9 @@
   --plot-surface: #000000;
 
   --scene-bg: #000000;
-  --scene-floor: #0d0d0d;
-  --scene-grid-main: #7dd3fc;
+  --scene-floor: #1c1c1c;
   --scene-grid-sub: #5c5c5c;
+  --scene-shadow: #000000;
   --scene-mark: #7dd3fc;
   --scene-emissive: #5ee9ff;
 

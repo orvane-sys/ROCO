@@ -91,6 +91,10 @@ for (const [name, { level, v }] of Object.entries(themes)) {
   check('plot-muted', 'plot-surface', level)
   check('plot-text', 'plot-surface', level)
   check('plot-axis', 'plot-surface', name === 'contrast' ? 3 : 1.5, 'plot-axis on plot-surface')
+  // 3D view: the floor must read as ground against the sky, and its grid as lines on it, or the robot looks like it floats
+  check('scene-floor', 'scene-bg', 1.2, 'scene-floor on scene-bg')
+  check('scene-grid-sub', 'scene-floor', 1.3, 'scene-grid-sub on scene-floor')
+  get('scene-shadow')
   if (get('plot-surface').toLowerCase() !== get('c-surface').toLowerCase())
     failures.push(`${name}: --plot-surface must equal --c-surface, the plots sit on a panel`)
 }

@@ -87,6 +87,23 @@ const saved = () => JSON.parse(store.get(KEY) ?? 'null')
   check(s.theme === 'dark' && s.textScale === 130 && s.workspace === 'review' && s.sound === true, 'marking a note keeps the other saved choices')
 }
 
+// the 3D camera stays still unless the viewer turns heading-follow on, and the choice survives a reload
+{
+  reset()
+  let m = await load()
+  m.setTheme('dark')
+  check(saved().followHeading === false, 'followHeading: off on a first visit')
+  m.setFollowHeading(true)
+  check(saved().followHeading === true, 'setFollowHeading saves it')
+  m = await load()
+  m.setTheme('light')
+  check(saved().followHeading === true, 'followHeading: read back after a reload')
+  reset({ followHeading: 'yes', theme: 'light' })
+  m = await load()
+  m.setTextScale(115)
+  check(saved().followHeading === false && saved().theme === 'light', 'followHeading: a damaged value gives off, the rest is kept')
+}
+
 // damaged stores: the notes show again instead of never, and nothing throws
 for (const [what, value] of [
   ['bad JSON', '{not json'],

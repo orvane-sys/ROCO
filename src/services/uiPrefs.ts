@@ -44,6 +44,8 @@ export interface UiPrefs {
   sound: boolean
   /** Spoken state changes and new critical alerts (speechSynthesis). Off until the operator turns it on. */
   speech: boolean
+  /** The 3D camera turns with the robot's heading. Off by default: the view stays still and the robot turns in it. */
+  followHeading: boolean
   /** Column widths in percent, per workspace (and `drive`), in the order the visible columns appear. */
   split: Record<string, number[]>
   /** Workspaces whose one-line note has been dismissed or passed by. */
@@ -56,7 +58,7 @@ export interface UiState extends UiPrefs {
 }
 
 export const STORAGE_KEY = 'roco.ui.v1'
-const DEFAULTS: UiPrefs = { theme: 'auto', textScale: 100, workspace: 'run', scene3d: 'auto', sound: false, speech: false, split: {}, intros: [] }
+const DEFAULTS: UiPrefs = { theme: 'auto', textScale: 100, workspace: 'run', scene3d: 'auto', sound: false, speech: false, followHeading: false, split: {}, intros: [] }
 
 const isThemePref = (v: unknown): v is ThemePref => v === 'auto' || v === 'dark' || v === 'light' || v === 'contrast'
 const isTextScale = (v: unknown): v is TextScale => (TEXT_SCALES as readonly unknown[]).includes(v)
@@ -94,6 +96,7 @@ function load(): UiPrefs {
       scene3d: isScene3d(o.scene3d) ? o.scene3d : DEFAULTS.scene3d,
       sound: o.sound === true,
       speech: o.speech === true,
+      followHeading: o.followHeading === true,
       split: loadSplit(o.split),
       intros: loadIntros(o.intros),
     }
@@ -142,6 +145,7 @@ function refresh(): void {
     next.scene3d === state.scene3d &&
     next.sound === state.sound &&
     next.speech === state.speech &&
+    next.followHeading === state.followHeading &&
     next.split === state.split &&
     next.intros === state.intros
   )
@@ -191,6 +195,12 @@ export function setScene3d(scene3d: Scene3dPref): void {
 
 export function setSound(sound: boolean): void {
   prefs = { ...prefs, sound }
+  save(prefs)
+  refresh()
+}
+
+export function setFollowHeading(followHeading: boolean): void {
+  prefs = { ...prefs, followHeading }
   save(prefs)
   refresh()
 }

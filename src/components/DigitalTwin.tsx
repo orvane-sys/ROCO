@@ -7,7 +7,7 @@ import { telemetryService } from '../services/telemetryStream'
 import { PLOT_SLOTS } from '../services/plotRing'
 import { cursorSample, useCursorSample } from '../services/viewStore'
 import { formatDataTime, positionText, replayBadge } from '../utils/monitorFormat'
-import { setScene3d, themeVar, useUiPrefs } from '../services/uiPrefs'
+import { setFollowHeading, setScene3d, themeVar, useUiPrefs } from '../services/uiPrefs'
 import { recordFrame, setRenderState, useRenderStats } from '../services/renderStats'
 import type { RobotProfile } from '../config/robotRegistry'
 import {
@@ -108,7 +108,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
   const mountRef = useRef<HTMLDivElement | null>(null)
   // Recolours the scene (background, floor, grid, markers) from the --scene-* tokens; set while the scene exists.
   const sceneThemeRef = useRef<(() => void) | null>(null)
-  const { resolvedTheme } = useUiPrefs()
+  const { resolvedTheme, followHeading } = useUiPrefs()
   const enabled = quality !== 'off'
   const draw = useRenderStats()
   const qualityRef = useRef<keyof typeof QUALITY>(quality === 'low' ? 'low' : 'full')
@@ -124,7 +124,6 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
   // Probed once up front so a browser without WebGL shows a message instead of throwing in the effect.
   const [webglSupported] = useState<boolean>(supportsWebGL)
   const [wireframe, setWireframe] = useState<boolean>(false)
-  const [followHeading, setFollowHeading] = useState<boolean>(true)
   const [isLoading, setIsLoading] = useState<boolean>(true)
   const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number }>({ loaded: 0, total: 0 })
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -203,7 +202,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     controls.update()
     controlsRef.current = controls
 
-    // Lighting — key light (with its shadow frustum) and rim light follow the robot.
+    // Lighting: the key light (with its shadow frustum) follows the robot; the rim light sits behind it as seen from the camera.
     scene.add(new THREE.AmbientLight(0xffffff, 0.8)) // colour-ok: scene lighting, same in every theme
 
     const keyLight = new THREE.DirectionalLight(0xf0f9ff, 2.4) // colour-ok: scene lighting, same in every theme
@@ -234,18 +233,25 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     fillLight.position.set(-4, 3, -3)
     scene.add(fillLight)
 
-    const rimLight = new THREE.PointLight(0x06b6d4, 2.8, 10) // colour-ok: scene lighting, same in every theme
-    const rimLightOffset = new THREE.Vector3(0, 0.4, -1.5)
-    rimLight.position.copy(rimLightOffset)
+    // A directional light, not a point light: a point light near the floor made a pool of light under the robot.
+    const rimLight = new THREE.DirectionalLight(0x06b6d4, 1.0) // colour-ok: scene lighting, same in every theme
+    const rimDirection = new THREE.Vector3()
     scene.add(rimLight)
+    scene.add(rimLight.target)
 
-    // Infinite ground: grid snaps to 1 m cells under the robot, the uniform floor simply follows.
-    const makeGrid = () => {
-      const g = new THREE.GridHelper(50, 50, themeVar('--scene-grid-main'), themeVar('--scene-grid-sub'))
-      g.position.y = 0.001
-      return g
-    }
-    let gridHelper = makeGrid()
+    // Infinite ground: a 50 m grid of 1 m cells snaps to whole metres under the robot, the uniform floor simply follows.
+    // Every line has one colour, so the snap is invisible and no line stands out as an axis under the robot. Lines are cut
+    // into 1 m pieces: a software renderer (SwiftShader, used where there is no GPU) drops a line that passes behind the
+    // camera, which left the floor near the robot without a grid. 10k vertices, built once.
+    const GRID_HALF = 25
+    const gridPoints: number[] = []
+    for (let i = -GRID_HALF; i <= GRID_HALF; i++)
+      for (let j = -GRID_HALF; j < GRID_HALF; j++) gridPoints.push(i, 0, j, i, 0, j + 1, j, 0, i, j + 1, 0, i)
+    const gridGeometry = new THREE.BufferGeometry()
+    gridGeometry.setAttribute('position', new THREE.Float32BufferAttribute(gridPoints, 3))
+    const gridMaterial = new THREE.LineBasicMaterial()
+    const gridHelper = new THREE.LineSegments(gridGeometry, gridMaterial)
+    gridHelper.position.y = 0.001
     scene.add(gridHelper)
 
     const floorMaterial = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.15 })
@@ -265,20 +271,34 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     const attitudeEuler = new THREE.Euler(0, 0, 0, 'ZYX')
     const attitudeQuat = new THREE.Quaternion()
 
-    // Ground footprint ring + heading arrow in Three.js XZ plane (Y = 0)
+    // Under the robot, in the Three.js XZ plane (Y = 0): a soft contact shadow, so it stands on the floor even with shadows off,
+    // and a small heading arrow. The shadow is a radial gradient drawn once; its colour comes from --scene-shadow.
     const groundMarker = new THREE.Group()
     scene.add(groundMarker)
 
-    const footprintMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.3, side: THREE.DoubleSide })
-    const footprintRing = new THREE.Mesh(new THREE.RingGeometry(0.04, 0.38, 32), footprintMaterial)
-    footprintRing.rotation.x = -Math.PI / 2 // Flat in XZ plane
-    footprintRing.position.y = 0.002
-    groundMarker.add(footprintRing)
+    const shadowCanvas = document.createElement('canvas')
+    shadowCanvas.width = shadowCanvas.height = 64
+    const shadowPaint = shadowCanvas.getContext('2d')
+    if (shadowPaint) {
+      const gradient = shadowPaint.createRadialGradient(32, 32, 0, 32, 32, 32)
+      gradient.addColorStop(0, 'rgba(255,255,255,1)') // colour-ok: alpha mask, tinted by --scene-shadow
+      gradient.addColorStop(0.5, 'rgba(255,255,255,0.6)') // colour-ok: alpha mask
+      gradient.addColorStop(1, 'rgba(255,255,255,0)') // colour-ok: alpha mask
+      shadowPaint.fillStyle = gradient
+      shadowPaint.fillRect(0, 0, 64, 64)
+    }
+    const shadowTexture = new THREE.CanvasTexture(shadowCanvas)
+    const footprintMaterial = new THREE.MeshBasicMaterial({ map: shadowTexture, transparent: true, opacity: 0.6, depthWrite: false })
+    // Longer across the robot (local Z) than along it, as the feet stand side by side
+    const footprint = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.7), footprintMaterial)
+    footprint.rotation.x = -Math.PI / 2 // Flat in XZ plane
+    footprint.position.y = 0.002
+    groundMarker.add(footprint)
 
-    const headingMaterial = new THREE.MeshBasicMaterial()
-    const headingArrow = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 16), headingMaterial)
+    const headingMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.85 })
+    const headingArrow = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.14, 16), headingMaterial)
     headingArrow.rotation.z = -Math.PI / 2 // Apex points along +X (robot forward)
-    headingArrow.position.set(0.42, 0.003, 0)
+    headingArrow.position.set(0.36, 0.003, 0)
     groundMarker.add(headingArrow)
 
     const applySceneTheme = () => {
@@ -286,15 +306,8 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       ;(scene.background as THREE.Color).set(bg)
       ;(scene.fog as THREE.FogExp2).color.set(bg)
       floorMaterial.color.set(themeVar('--scene-floor'))
-      // GridHelper bakes its colours into the geometry, so it is rebuilt (keeping its snapped position)
-      const old = gridHelper
-      gridHelper = makeGrid()
-      gridHelper.position.copy(old.position)
-      scene.remove(old)
-      old.geometry.dispose()
-      ;(old.material as THREE.Material).dispose()
-      scene.add(gridHelper)
-      footprintMaterial.color.set(themeVar('--scene-grid-main'))
+      gridMaterial.color.set(themeVar('--scene-grid-sub'))
+      footprintMaterial.color.set(themeVar('--scene-shadow'))
       headingMaterial.color.set(themeVar('--scene-mark'))
     }
     applySceneTheme()
@@ -463,6 +476,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
 
     let animationFrameId = 0
     let lastTime = performance.now()
+    let snapNext = false
     let lastHudUpdateTime = 0
     let lastDrawTime = 0
 
@@ -484,8 +498,8 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       lastDrawTime = now
       const dt = Math.min(0.1, (now - lastTime) / 1000)
       lastTime = now
-      // Frame-rate independent exponential smoothing toward the latest 50 Hz sample.
-      const alpha = 1 - Math.exp(-SMOOTHING_RATE * dt)
+      // Frame-rate independent exponential smoothing toward the latest 50 Hz sample; after a pause the first frame jumps to it.
+      const alpha = snapNext ? 1 : 1 - Math.exp(-SMOOTHING_RATE * dt)
 
       const snapshot = telemetryService.getLatestSnapshot()
       const livePose = snapshot?.basePose
@@ -586,17 +600,19 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         robotAnchorRef.current.position.copy(robotPosition)
         robotAnchorRef.current.yaw = sp.yaw
 
-        // The key light stays fixed in world space (stable shadows); the rim light is carried around
-        // with the robot's heading so its glow stays behind it when it turns.
+        // The key light keeps its world direction (stable shadows); the rim light shines from behind the robot as the camera sees it,
+        // so it does not swing round when the robot turns.
         keyLight.position.copy(robotPosition).add(keyLightOffset)
         keyLight.target.position.copy(robotPosition)
-        rimLight.position
-          .copy(rimLightOffset)
-          .applyAxisAngle(WORLD_UP, sp.yaw)
-          .add(robotPosition)
+        rimDirection.subVectors(controls.target, camera.position).setY(0)
+        if (rimDirection.lengthSq() < 1e-6) rimDirection.set(1, 0, 0)
+        rimLight.position.copy(rimDirection.normalize().multiplyScalar(3)).add(robotPosition).setY(2.5)
+        rimLight.target.position.copy(robotPosition)
         floor.position.set(robotPosition.x, 0, robotPosition.z)
         gridHelper.position.x = Math.floor(robotPosition.x)
         gridHelper.position.z = Math.floor(robotPosition.z)
+
+        snapNext = false
 
         // Throttle HUD display text update to ~10 Hz
         if (now - lastHudUpdateTime >= 100) {
@@ -613,6 +629,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     const resume = () => {
       if (animationFrameId !== 0 || isPaused()) return
       lastTime = performance.now()
+      snapNext = true // the pose the loop smoothed before the pause is stale: start from the latest one
       setRenderState('running')
       animationFrameId = requestAnimationFrame(animate)
     }
@@ -647,6 +664,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       // handles robots whose meshes finish loading after this point.
       if (robot && !robot.parent) disposeObject(robot)
       disposeObject(scene)
+      shadowTexture.dispose()
       materialsRef.current = new Set()
 
       renderer.dispose()
@@ -953,11 +971,15 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
             type="button"
             onClick={() => setFollowHeading(!followHeading)}
             aria-pressed={followHeading}
-            aria-label="Camera follows robot heading"
-            title={followHeading ? 'Camera follows heading (click for free orbit)' : 'Free orbit (click to follow heading)'}
-            className={toolbarButton(followHeading)}
+            title={
+              followHeading
+                ? 'The camera turns with the robot. Click to keep it still.'
+                : 'The camera stays still and the robot turns in view. Click to turn the camera with the robot.'
+            }
+            className={`${toolbarButton(followHeading)} gap-1.5`}
           >
             <Navigation className="w-4 h-4" aria-hidden="true" />
+            <span className="sr-only lg:not-sr-only text-xs font-semibold">Follow heading</span>
           </button>
           <button
             type="button"
@@ -1003,7 +1025,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
           >
             <Eye className="w-4 h-4 text-ink shrink-0" aria-hidden="true" />
             <span className="truncate">
-              {followHeading ? 'Chase camera' : 'Free orbit'}
+              {followHeading ? 'Camera follows heading' : 'Camera still'}
               {enabled && (quality === 'low' ? ` · Reduced 3D · ${QUALITY.low.fps} fps` : ' · 3D')}
               {enabled && quality !== 'low' && draw.state === 'running' && ` · ${draw.fps.toFixed(0)} fps`}
             </span>
