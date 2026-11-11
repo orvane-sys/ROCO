@@ -32,7 +32,7 @@ const load = async (file) => {
   return import('data:text/javascript;base64,' + Buffer.from(output[0].code).toString('base64'))
 }
 const { alertHistoryStore: store, alertScopeKey, flush, MAX_STORED_EVENTS } = await load('src/services/alertHistoryStore.ts')
-const { reduceHello, reduceFsm, reduceAux, CARRY_WINDOW_S, MAX_ALERT_LOG } = await load('src/services/monitorReducer.ts')
+const { reduceHello, reduceFsm, reduceAux, auxNeedsDraw, CARRY_WINDOW_S, MAX_ALERT_LOG } = await load('src/services/monitorReducer.ts')
 const { buildAlertView } = await load('src/utils/alertModel.ts')
 
 let failed = 0
@@ -366,6 +366,16 @@ const close = (a, last, durationS) => ({ event: 'close', ...a, last, durationS }
 }
 
 store.reset()
+// an aux frame is drawn by itself only when no robot frame will draw it: a silent robot, or a paused or seeking replay
+{
+  const playing = { playing: true, busy: null }
+  check(!auxNeedsDraw(20, null), 'live with robot frames: the next robot frame draws the aux')
+  check(auxNeedsDraw(150, null), 'live with no robot frame for 150 ms: the aux is drawn')
+  check(!auxNeedsDraw(20, playing), 'a playing replay waits for the next robot frame')
+  check(auxNeedsDraw(5, { playing: false, busy: null }), 'a paused replay draws the aux at once (else the target stays old after a seek)')
+  check(auxNeedsDraw(5, { playing: true, busy: 'seeking' }), 'a seeking replay draws the aux at once')
+}
+
 if (failed) {
   console.error(`\n${failed} alert-history check(s) failed (${passed} passed)`)
   process.exit(1)

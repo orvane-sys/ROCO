@@ -153,6 +153,15 @@ export function reduceFsm(prev: MonitorState, frame: FsmFrame): Reduced {
   return { patch, persist: { events: r.events, carry: r.changed ? (r.carry ?? null) : null } }
 }
 
+/**
+ * Whether an aux frame must be drawn by itself. Usually the next robot frame draws it. With no robot frame for 100 ms (a silent
+ * robot), or in a paused or seeking replay (a seek sends the robot frame first, then this one, and then nothing), nothing else would.
+ */
+export function auxNeedsDraw(msSinceRobotFrame: number, replay: { playing: boolean; busy: string | null } | null | undefined): boolean {
+  if (msSinceRobotFrame > 100) return true
+  return !!replay && (!replay.playing || replay.busy !== null)
+}
+
 export function reduceAux(prev: MonitorState, aux: AuxFrame): Reduced {
   const fsm = { ...prev.fsm, segment: aux.segment }
   const carry0 = prev.alertCarry

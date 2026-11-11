@@ -236,6 +236,33 @@ try {
     await bad.close()
   }
 
+  // 6b. A jump while paused shows the target of the new moment: the joint table's target column after a jump to a moment is the same
+  // whichever moment the jump came from (it once kept the old target, because the page did not draw the frame that carries it).
+  {
+    const page = await open(1600, 900)
+    await tab(page, 'Analyze')
+    const play = page.locator('section[aria-labelledby=replay-heading] button').first()
+    if ((await play.textContent())?.includes('Pause')) await play.click()
+    const slider = page.getByRole('slider', { name: 'Recording position, seconds' })
+    const targetsAt = async (t) => {
+      await slider.fill(String(t))
+      await slider.press('Shift')
+      await page.waitForFunction(() => !document.querySelector('section[aria-labelledby=replay-heading] [aria-live]')?.textContent?.includes('Seeking'))
+      await page.waitForTimeout(700)
+      return page.evaluate(() =>
+        [...document.querySelectorAll('table tbody tr')].map((tr) => tr.querySelectorAll('td')[1]?.textContent ?? '').join('|')
+      )
+    }
+    const first = await targetsAt(10)
+    const mid = await targetsAt(25)
+    const late = await targetsAt(40)
+    const back = await targetsAt(10)
+    check(first.length > 0 && (first !== mid || first !== late), 'the target column changes between 10, 25 and 40 s (so the next check means something)')
+    check(back === first, 'paused: the target at 10 s is the same after a jump from 40 s as after a jump from the start')
+    check(page.errors.length === 0, `no page errors during the jumps (${page.errors.join('; ')})`)
+    await page.close()
+  }
+
   // 7a. Phones: every button in the bar is on screen (none cut off at the edge), the header is short, and the tone, voice and battery
   // menu works: opens, switches, closes on Escape (focus back on its button), on a click outside, and when Tab leaves it.
   for (const [w, h] of [

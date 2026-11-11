@@ -126,29 +126,48 @@ export function App() {
 
   useEffect(() => {
     let lastRenderTime = 0
+    let telemetryTimer: number | undefined
+    let pending: RobotTelemetry | null = null
+    // The service mutates and re-emits one pre-allocated snapshot (binary path). React bails out
+    // of setState for an identical reference and memoized children key off `joints`, so hand
+    // React a fresh copy at this throttled rate (~15 Hz × 29 small objects is negligible).
+    const renderTelemetry = (data: RobotTelemetry) => {
+      lastRenderTime = performance.now()
+      setTelemetry({
+        ...data,
+        joints: data.joints.map((j) => ({ ...j })),
+        basePose: data.basePose ? { ...data.basePose } : undefined,
+        imu: data.imu
+          ? {
+              ...data.imu,
+              quaternion: [...data.imu.quaternion] as typeof data.imu.quaternion,
+              gyroscope: [...data.imu.gyroscope] as typeof data.imu.gyroscope,
+              accelerometer: [...data.imu.accelerometer] as typeof data.imu.accelerometer,
+            }
+          : undefined,
+        linearVelocity: { ...data.linearVelocity },
+        angularVelocity: { ...data.angularVelocity },
+      })
+    }
+    // Throttle React state updates to ~15 Hz (66 ms) to keep DOM diffing light, but always draw the last frame: after a replay
+    // seek or pause nothing more arrives, so a frame dropped by the throttle would stay unshown (an old target beside a new angle).
     const unsubTelemetry = telemetryService.subscribeTelemetry((data) => {
-      const now = performance.now()
-      // Throttle React state updates to ~15 Hz (66ms) to keep DOM diffing lightweight
-      if (now - lastRenderTime >= 66) {
-        lastRenderTime = now
-        // The service mutates and re-emits one pre-allocated snapshot (binary path). React bails out
-        // of setState for an identical reference and memoized children key off `joints`, so hand
-        // React a fresh copy at this throttled rate (~15 Hz × 29 small objects is negligible).
-        setTelemetry({
-          ...data,
-          joints: data.joints.map((j) => ({ ...j })),
-          basePose: data.basePose ? { ...data.basePose } : undefined,
-          imu: data.imu
-            ? {
-                ...data.imu,
-                quaternion: [...data.imu.quaternion] as typeof data.imu.quaternion,
-                gyroscope: [...data.imu.gyroscope] as typeof data.imu.gyroscope,
-                accelerometer: [...data.imu.accelerometer] as typeof data.imu.accelerometer,
-              }
-            : undefined,
-          linearVelocity: { ...data.linearVelocity },
-          angularVelocity: { ...data.angularVelocity },
-        })
+      const wait = 66 - (performance.now() - lastRenderTime)
+      if (wait <= 0) {
+        window.clearTimeout(telemetryTimer)
+        telemetryTimer = undefined
+        pending = null
+        renderTelemetry(data)
+        return
+      }
+      pending = data
+      if (telemetryTimer === undefined) {
+        telemetryTimer = window.setTimeout(() => {
+          telemetryTimer = undefined
+          const d = pending
+          pending = null
+          if (d) renderTelemetry(d)
+        }, wait)
       }
     })
 
@@ -186,6 +205,7 @@ export function App() {
 
     return () => {
       unsubTelemetry()
+      window.clearTimeout(telemetryTimer)
       unsubStatus()
       unsubProfile()
       unsubEStop()

@@ -32,7 +32,7 @@ import type {
 import { PLOT_SLOTS, PlotRing } from './plotRing'
 import { matchMotorSlots } from '../utils/motorMatch'
 import { alertHistoryStore, alertScopeKey } from './alertHistoryStore'
-import { reduceAux, reduceFsm, reduceHello } from './monitorReducer'
+import { auxNeedsDraw, reduceAux, reduceFsm, reduceHello } from './monitorReducer'
 import { RecordedBridgeSocket } from './recordedBridge'
 import type { AlertPersist } from './monitorReducer'
 
@@ -365,8 +365,8 @@ export class TelemetryStreamService {
     alertHistoryStore.touch(aux.t)
     this.applyAuxToSnapshot()
     this.recordPlotSample(aux)
-    // Paused replay or a silent robot: no binary frames, but commands and alerts still change.
-    if (performance.now() - this.lastBinaryTimestamp > 100) {
+    // Paused or seeking replay, or a silent robot: no binary frame follows, but commands and alerts still change.
+    if (auxNeedsDraw(performance.now() - this.lastBinaryTimestamp, this.monitor.replay)) {
       this.latestSnapshot = this.snapshotBuffer
       this.emitTelemetry(this.snapshotBuffer)
     }
