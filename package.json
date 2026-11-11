@@ -37,7 +37,7 @@
     "typescript": "~7.0.2",
     "vite": "^8.3.5"
   },
-  "description": "Read-only browser-based test monitor for robots: live 3D view, limit alerts and session replay.",
+  "description": "Read-only browser-based test monitor for the Unitree G1: live 3D view, limit alerts and session replay.",
   "license": "Apache-2.0",
   "homepage": "https://orvane-sys.github.io/ROCO/",
   "repository": {

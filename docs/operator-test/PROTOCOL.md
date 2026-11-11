@@ -1,4 +1,4 @@
-# ROCO operator test (plan step 7)
+# ROCO operator test protocol
 
 Purpose: find out whether people who operate, or would operate, the G1 can do the core jobs with ROCO, and change the design
 from what they **do**, not what they say. Five people is enough to find the big problems; it is not enough to prove a rate.
@@ -39,18 +39,18 @@ Do not explain the interface before the tasks. Do not hint. Write down what you 
 Order: tasks 1 to 4 for every participant, in the order given. Rotate which input method comes first: participants 1, 3, 5
 start with the mouse, participants 2 and 4 with the keyboard only. A participant who uses a screen reader does all tasks with it.
 
-Recordings are replayed with `scripts/roco replay "<zip>:<prefix>"`. Paths below are under
-`unitree_rl_mjlab/deploy_lock/robots/g1/hw_logs/`.
+Recordings are replayed with `roco replay "<zip>:<prefix>"`. The recordings named below are the author's own and are not
+published. Use your own recordings of the same kinds of run, and rebuild the answer keys from them.
 
 ### Task 1: Glance (2 s)
 
-Setup: replay `g1_hw_test_2026-10-24.zip:2026-10-24/run3_squat_cal16/squat_cal16`, paused at the time shown. The observer covers
+Setup: replay the real-robot squat recording (`squat_cal16`, 2026-10-24), paused at the time shown. The observer covers
 the screen, uncovers it for 2 seconds by the clock, covers it again.
 
 Ask: "What state is the robot in? Does the screen show anything wrong, and if so what? What is the next step?"
 
-Answer key, from a re-capture on 2026-11-03 after the frame was added round the state and status (replay played at 8× to 16 s before the target, then 1×; the frozen screen was read). Rehearse again
-on your build and correct this table before the first participant:
+Answer key, from a capture on 2026-11-03 (replay played at 8× to 16 s before the target, then 1×; the frozen screen was
+read). Rehearse again on your build and correct this table before the first participant:
 
 | Scene | Pause at (picture shows) | Robot state | Status bar says | Alert panel |
 |---|---|---|---|---|
@@ -67,18 +67,20 @@ Add two scenes from the simulator fall recording (see task 2), played from 0 and
 | F | 40 s (41.7 s) | Velocity | No abort condition seen |
 | G | 58 s (59.5 s) | Passive | 5 critical, first: Joint range · Right Ankle Pitch (5 after Passive) |
 
-The "guided-check limits crossed" in scenes C to E are the real-robot procedure's own stop limits (for example ankle pitch torque 29.8 Nm
-in the squat against the 15 Nm limit at §6 T6), evaluated by the guided checks. No abort check and no alert is tripped. This
-is a real case: the 2026-10-24 report says the same squats were stopped for review, and the manual's own limits (knee peak
-45 Nm, ankle peak 15 Nm) were crossed. Score what the person **reads from the screen**, and whether they say the test should
-stop for review.
+The "guided-check limits crossed" in scenes C to E are the real-robot procedure's own stop limits (for example ankle pitch
+torque 29.8 Nm in the squat against the manual's 15 Nm limit), evaluated by the guided checks. No abort check and no alert
+is tripped. This is a real case: the 2026-10-24 report says the same squats were stopped for review, and the manual's own
+limits (knee peak 45 Nm, ankle peak 15 Nm) were crossed. Score what the person **reads from the screen**, and whether they
+say the test should stop for review.
 
-The answer key above depends on the pause time. An earlier capture (before the frame was added) overshot by 1 to 4 s, and
-scene C then showed 3 stage limits (the chip said "stage limits" then) and scene E showed no active alert; the second capture overshot by about 2 s, hence the
-"picture shows" times above. The pictures in `drill/` and `glance-drill.html` use what each picture shows. They were taken before the chip was renamed from "N stage limits crossed" to "N guided-check limits crossed" (1.8, W3), so the picture still reads "stage limits"; re-capture them before the real run. The pictures were
-re-captured on 2026-11-03 after the frame was added, so a drill run made on the earlier pictures (for example ID `P1`)
-saw the old top bar and is a baseline for that design only. If you pause live for a human observer, re-read the screen at the moment you
-pause and write that down, rather than trusting the table.
+The answer key depends on the pause time. Pausing overshoots the time asked by about 2 s, hence the "picture shows" times
+above. If you pause live for a human observer, re-read the screen at the moment you pause and write that down, rather than
+trusting the table.
+
+The pictures in `drill/`, used by `glance-drill.html`, show an older design of the Run screen: a two-row top bar, a chip
+that reads "N stage limits crossed" (now "N guided-check limits crossed") and guided checks out of 88 (now 85). Re-capture
+them from the current build before a real run. The drill rows in `results.csv` (ID `P1`) were made on even older pictures
+and are a baseline for that design only.
 
 Scene G is the only critical-alert scene, and it comes from a simulator run (the real controller, a simulated robot).
 
@@ -87,9 +89,10 @@ status both right.
 
 ### Task 2: First alert after a fall
 
-Setup: replay `~/ROCO_test_recordings/sim_fall_2026-11-03` (SIM: `g1_ctrl` with the MuJoCo simulator, recorded with
-`g1_record`; made with `docs/operator-test/make_sim_fall.py`, about 150 MB, kept outside the repository). It is the manual's §5 step 3: the robot stands in Velocity, the operator presses `p`
-at 52.0 s, and the simulated robot, with no rope, collapses. Play from 0 at 4×, pause at 63 s.
+Setup: replay the simulated fall recording `sim_fall_2026-11-03` (SIM: `g1_ctrl` with the MuJoCo simulator, recorded with
+`g1_record`; made with `docs/operator-test/make_sim_fall.py`, about 150 MB, not in the repository). It is the manual's §5
+step 3: the robot stands in Velocity, the operator presses `p` at 52.0 s, and the simulated robot, with no rope, collapses.
+Play from 0 at 4×, pause at 63 s.
 
 Ask: "Something went wrong in this recording. Which alert came first, what caused it, and what does the screen say to do?"
 
@@ -117,7 +120,7 @@ had to say anything beyond repeating the task). `pass` = reached live data withi
 
 ### Task 4: Ankle left versus right peak during the squat
 
-Setup: replay `g1_hw_test_2026-10-24.zip:2026-10-24/run3_squat_cal16/squat_cal16`, at the start, paused.
+Setup: replay the real-robot squat recording (`squat_cal16`), at the start, paused.
 
 Ask: "During the squats, which ankle works harder, left or right, and about how much torque at the peak?"
 
@@ -142,14 +145,15 @@ In order of value:
    you hesitate or reread is a finding. Write it in notes.
 2. **Blind the glance task with `glance-drill.html`.** Open it in a browser. It shows saved pictures of scenes A to G (in
    `drill/`) in random order, each for 2 s, then asks the state and what needs attention, and scores you against what the
-   picture itself showed. It has two modes. **Timed** keeps the picture up until you press Space, Enter or click, and records your reading time (a
-   scene with no key in 20 s is recorded as 20 s). **Flash** hides it after 1, 2 or 4 s. In the summary, a glance row only counts
-   if it was right and read within 2 s. The 2 s limit is my assumption, not a measured number, so use the timed medians to
-   decide whether to keep it. Download the rows and paste them under the header of `results.csv`. Only your first run counts,
-   because repeating teaches you the pictures. Pictures are still images of the Run screen (taken at 1440 x 900) and fill the browser window while shown; a first version showed them in a narrow column, which made the text smaller than on the real screen and was fixed on 2026-11-03, so this tests reading
-   the screen, not using it, and a screen-reader user cannot use it.
+   picture itself showed. It has two modes. **Timed** keeps the picture up until you press Space, Enter or click, and
+   records your reading time (a scene with no key in 20 s is recorded as 20 s). **Flash** hides it after 1, 2 or 4 s. In
+   the summary, a glance row only counts if it was right and read within 2 s. The 2 s limit is an assumption, not a
+   measured number, so use the timed medians to decide whether to keep it. Download the rows and paste them under the
+   header of `results.csv`. Only your first run counts, because repeating teaches you the pictures. The pictures are still
+   images of the Run screen, taken at 1440 x 900, and fill the browser window while shown. So this tests reading the
+   screen, not using it, and a screen-reader user cannot use it.
 3. **Keyboard-only and screen-reader runs by you** (task 5). These need only you, because the question is whether the task
-   is possible at all. Orca on this machine is still unverified.
+   is possible at all. Not yet tried with Orca.
 4. **One outside person for 10 minutes** is worth more than any of the above. A friend, family member or classmate who has
    never seen the screen can do task 3 (launch) and the glance task on scenes A, B and G, after you tell them what the three
    states are. They cannot judge robot-specific decisions, so do not use them for task 4's meaning or for abort judgement.
@@ -180,16 +184,16 @@ After the tasks, ask three questions and write the answers verbatim:
 
 - **Fall recording is simulated.** No real-robot fall recording exists here. `sim_fall_2026-11-03` is the best available and is
   labelled SIM above. If a real log with a fall or abort turns up, swap it in and re-rehearse the key.
-- **The recording script was run once as written in a scratch folder. I then changed the output log name to `log.txt`
-  in the saved copy and checked only its syntax.** Run it once before relying on it.
-- **Live sim for task 3:** `drive_squat.py` no longer exists here, so only the plain simulator start can be used.
+- **`make_sim_fall.py` changed after its one full run:** the output log is now named `log.txt`, and only the script's
+  syntax was checked after that. Run it once before relying on it.
+- **Live sim for task 3:** there is no scripted drive for the simulator, so use the plain simulator start.
 - **Scenes were rehearsed by playing from 0 and by jumping** (after the background pass finished) on the 2026-10-24 squat
   recording: scenes C, D and E read 2, 5 and 5 (History 2) either way. The slider is not exact, so a jump lands within
   a few seconds of the time asked, not on it. Scenes F and G (simulated fall) were not re-checked by jumping.
 - **Solo run:** if you do it alone, results are one person who knows the design. See "If you are testing alone".
 - **glance-drill.html** was tested in headless Chrome only (shuffle, 2 s display, scoring, invalid answer, CSV, summarizer reads
-  it). Its pictures come from replays on this PC: scenes A to E from the real 2026-10-24 squat log and F and G from the simulated
-  collapse. Scene E has no alert in its picture, so no picture shows a real-robot alert.
+  it). Its pictures come from replays of the author's recordings: scenes A to E from the real 2026-10-24 squat log and F
+  and G from the simulated collapse. Scene E has no alert in its picture, so no picture shows a real-robot alert.
 - **observer.html** was tested in headless Chrome only (add rows, timer, reload keeps rows, download, summarizer reads the file,
   no horizontal scroll at 390 px). It has not been used with a screen reader.
 - **People:** who the 3 to 5 participants are is your decision. Nothing in this folder contacts anyone.
