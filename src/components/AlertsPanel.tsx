@@ -18,6 +18,8 @@ interface AlertsPanelProps {
   defaultShowHistory?: boolean
   /** Guided-check stop limits crossed. They are not alerts, so the empty list says they exist and where to look. */
   stageStops?: number
+  /** Acknowledge every active alert and tripped abort check, as the A key does. */
+  onAcknowledgeAll?: () => void
 }
 
 const LEVEL_STYLE: Record<EffectiveLevel, { label: string; row: string; icon: typeof AlertTriangle; iconColor: string }> = {
@@ -208,7 +210,7 @@ function Group({ group, state, profile, onSelectSlot }: GroupProps) {
 }
 
 /** The checks real_log.py runs after a test, evaluated live on every ~1 kHz sample by the bridge, then presented first-out. */
-export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHistory = false, stageStops = 0 }: AlertsPanelProps) {
+export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHistory = false, stageStops = 0, onAcknowledgeAll }: AlertsPanelProps) {
   const [showHistory, setShowHistory] = useState(defaultShowHistory)
   const [showInfo, setShowInfo] = useState(false)
   const [showShelved, setShowShelved] = useState(false)
@@ -219,6 +221,7 @@ export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHis
   return (
     <section
       id="alerts"
+      data-action="alerts"
       data-tour="alerts"
       tabIndex={-1}
       aria-labelledby="alerts-heading"
@@ -236,16 +239,31 @@ export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHis
               : `${activeCount} active${counts.critical ? `, ${counts.critical} critical` : ''}${counts.followOn ? `, ${counts.followOn} after Passive` : ''}`}
           </span>
         </div>
-        <button type="button" onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory} className={smallButton}>
-          {showHistory ? 'Hide history' : `History (${closed.length})`}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {onAcknowledgeAll && (
+            <button
+              type="button"
+              data-action="ack-all"
+              onClick={onAcknowledgeAll}
+              title="Mark every active alert and tripped abort check as seen. They stay listed until the condition clears."
+              className={smallButton}
+            >
+              <CheckCheck className="w-4 h-4" aria-hidden="true" />
+              Acknowledge all
+              <kbd className="hidden sm:inline px-1 rounded border border-line-bold font-mono text-xs text-ink-soft">A</kbd>
+            </button>
+          )}
+          <button type="button" onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory} className={smallButton}>
+            {showHistory ? 'Hide history' : `History (${closed.length})`}
+          </button>
+        </div>
       </div>
 
       {view.groups.length === 0 ? (
         <p className="flex items-center gap-1.5 text-sm text-ink-soft">
           <CheckCircle2 className="w-4 h-4 text-ok shrink-0" aria-hidden="true" />
           <span>
-            No limit, range, speed, fault or link check is tripped.
+            All clear: no alert check is tripped.
             {stageStops > 0 && ` ${stageStops} guided-check stop limit${stageStops > 1 ? 's' : ''} crossed: see Guided checks.`}
           </span>
         </p>
@@ -280,7 +298,7 @@ export function AlertsPanel({ state, profile, view, onSelectSlot, defaultShowHis
               {showShelved ? <ChevronDown className="w-4 h-4" aria-hidden="true" /> : <ChevronRight className="w-4 h-4" aria-hidden="true" />}
               {plural(counts.shelved, 'warning')} shelved for this session
             </button>
-            <button type="button" onClick={unshelveAll} className={smallButton}>
+            <button type="button" data-action="unshelve" onClick={unshelveAll} className={smallButton}>
               <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
               Restore all
             </button>

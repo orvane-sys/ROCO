@@ -23,7 +23,8 @@ const choice =
   'hover:border-line-hot has-[:checked]:border-accent has-[:checked]:bg-accent-soft/40 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-focus'
 
 /** Theme and text size. Both apply at once and are remembered in this browser only. */
-export function AppearanceDialog({ onClose }: { onClose: () => void }) {
+/** onResetColumns: put the column widths of this workspace back to the default (also a double-click on a divider). */
+export function AppearanceDialog({ onClose, onResetColumns }: { onClose: () => void; onResetColumns?: () => void }) {
   const ui = useUiPrefs()
   const audioRunning = useAudioRunning()
   const canSound = soundSupported()
@@ -35,7 +36,7 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
       onClose={onClose}
     >
       <div className="flex flex-col gap-5">
-        <fieldset className="flex flex-col gap-2">
+        <fieldset data-action="theme" className="flex flex-col gap-2">
           <legend className="text-sm font-semibold text-ink mb-1">Theme</legend>
           {THEME_PREFS.map((t) => (
             <label key={t.value} className={choice}>
@@ -58,7 +59,7 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
           ))}
         </fieldset>
 
-        <fieldset className="flex flex-col gap-2">
+        <fieldset data-action="text" className="flex flex-col gap-2">
           <legend className="text-sm font-semibold text-ink mb-1">Text size</legend>
           <div className="grid grid-cols-3 gap-2">
             {TEXT_SCALES.map((s) => (
@@ -83,7 +84,7 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
           </p>
         </fieldset>
 
-        <fieldset className="flex flex-col gap-2">
+        <fieldset data-action="3d" className="flex flex-col gap-2">
           <legend className="text-sm font-semibold text-ink mb-1">3D view</legend>
           {SCENE3D_PREFS.map((q) => (
             <label key={q.value} className={choice}>
@@ -139,7 +140,7 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
               disabled={!canSpeak}
               onChange={(e) => {
                 setSpeech(e.target.checked)
-                if (e.target.checked) speak('Voice on')
+                if (e.target.checked) speak('Spoken alerts on')
               }}
               className="mt-1 accent-accent"
             />
@@ -154,6 +155,21 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
             Screen readers hear a new critical alert through a separate live region whatever these are set to, at most once every few seconds.
           </p>
         </fieldset>
+
+        {onResetColumns && (
+          <div className="flex flex-col gap-1.5">
+            <h3 className="text-sm font-semibold text-ink">Layout</h3>
+            <button
+              type="button"
+              data-action="reset-cols"
+              onClick={onResetColumns}
+              className="self-start px-3 min-h-9 rounded-lg border border-line-bold text-sm text-ink hover:bg-raised"
+            >
+              Reset column widths
+            </button>
+            <p className="text-xs text-ink-muted">Puts the columns of this workspace back to their first widths. A double-click on a divider does the same.</p>
+          </div>
+        )}
 
         <p className="text-xs text-ink-muted">Saved in this browser only. Nothing is sent to the bridge or the robot.</p>
         <button

@@ -25,11 +25,11 @@ robot it works with.
 
 ## Try it without a robot
 
-Open the [live demo](https://orvane-sys.github.io/ROCO/). It plays 60 s of a real G1 squat test, recorded from a real run
-and labelled SAMPLE everywhere, in your browser: no robot, no install, no account, and no data leaves the page. Press
-Play, drag the timeline, open Analyze and Review. It works on a phone too.
+Open the [live demo](https://orvane-sys.github.io/ROCO/). It plays 60 s of a simulated G1 (MuJoCo) driven by the real g1_ctrl
+controller as it stands and squats twice, labelled SAMPLE everywhere, in your browser: no robot, no install, no account, and no
+data leaves the page. Press Play, drag the timeline, open Analyze and Review. It works on a phone too.
 
-![A 10 second replay of the sample: the squat starts, a guided-check limit is crossed, and the alert appears on the timeline](docs/img/demo.gif)
+![A 10 second replay of the sample: the simulated G1 stands, then squats, with no alert and no stop condition seen](docs/img/demo.gif)
 
 | Run: what to watch during a test | Analyze: plots and the joint table | Review: numbers per state and the recording |
 |---|---|---|
@@ -47,7 +47,7 @@ The images are the page replaying the sample, drawn in software (no GPU), so the
   rules are data in `src/config/alertPolicy.ts`.
 - The manual §3 abort criteria as named checks: step interval, abort lines in the `g1_ctrl` log, and torso lean in the squat.
   "Not tripped" never means "safe": the bar says "No abort condition seen".
-- Optional tone and spoken cues (off by default, switches in the status bar) and screen reader announcements for new
+- Optional alert sound and spoken alerts (off by default, switches in the header) and screen reader announcements for new
   critical alerts.
 - Guided checks for the test stages T0 to T9 and the sim rehearsal (`src/config/procedures/g1_type6.ts`, plain data, so
   another robot can add its own). They are written from `TEST_MANUAL.md`, the author's own G1 test manual, which is not
@@ -68,12 +68,14 @@ The images are the page replaying the sample, drawn in software (no GPU), so the
   you saved) and a Left and right switch. At most four lines share an axis and a unit; torque, angle and tilt get their own
   plots, never a second y-axis. Hovering a plot moves one cursor across all plots, the timeline, the joint table (angle,
   target, torque and PD demand at that time) and, in a replay, the 3D pose. **CSV** saves the visible window, with the
-  unix time first, and PlotJuggler opens it directly. Names are plain first ("Joint angle (q)"); the `?` help has a glossary.
+  unix time first, and PlotJuggler opens it directly. Names are plain first ("Angle (q)"); the Help sheet has a glossary.
 - A per-state table (the same numbers as `real_log.py`), and all 29 motors.
 - A **session report** in Review, as Markdown laid out like the hardware test reports (summary, setup, timeline, per-state
   numbers, guided checks, abort checks, alerts, marks). It lists what ROCO saw and says it is not a clearance.
 - Replay of `g1_record` recordings, from a folder or a zip.
-- A short first-run tour of the Run workspace, skippable, shown once per browser and restartable from `?`.
+- A short first-run tour of the Run workspace, skippable, shown once per browser and restartable from Help.
+- Every action has a button on screen. **Help** (`?`) lists each one and where it is; the command palette (Ctrl+K) finds
+  them by name and says where each lives.
 
 Values were checked against `g1_record` CSVs from live simulator runs (differences below 5e-6).
 
@@ -146,7 +148,7 @@ page says "since X s". Once it has, a jump shows the same numbers as playing fro
 2 s of recording in memory and writes nothing to disk. `--no-checkpoints` turns it off.
 
 The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
-**The sample recording** is 60 s of a real G1 squat test, played in the page. It only starts if you press the button (or open `?demo=1`) and is labelled SAMPLE everywhere.
+**The sample recording** is 60 s of the simulated G1 (MuJoCo) with the real controller, made with `scripts/make_sim_demo.py` and `scripts/capture_demo.py`, played in the page. It only starts if you press the button (or open `?demo=1`) and is labelled SAMPLE everywhere.
 
 Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure, timeline, preference, demo,
 mesh and licence checks), `npm run check:layout` and `npm run check:a11y` (both drive Chrome on the built page: no layout jumps at any

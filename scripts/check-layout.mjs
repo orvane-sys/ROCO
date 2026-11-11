@@ -1,8 +1,9 @@
 // Checks the page layout in a real browser, on the built page (dist/) playing the sample recording: the header keeps its height whatever
 // it says, from xl the page does not scroll and the replay row and timeline stay on screen, every stage tab is in view, and each
-// workspace's note shows once. It uses the Chrome or Chromium on this PC (playwright-core downloads no browser).
+// workspace's note shows once, and every palette command has a visible control. It uses the Chrome or Chromium on this PC (playwright-core downloads no browser).
 //
 //   npm run build && npm run check:layout        (CHROME_PATH=/path/to/chrome to choose a browser)
+import { readFileSync } from 'node:fs'
 import { PAGE_READY_MS, startBrowser, tally } from './lib-browser.mjs'
 
 const { url, browser, close } = await startBrowser('check-layout')
@@ -192,6 +193,11 @@ try {
         const cardShows = card.bottom > c.top + n.height + 8 && card.top < c.bottom - n.height
         return { tabs: nav.querySelectorAll('button').length, top: n.top - c.top, bottom: c.bottom - n.bottom, cardShows, scrolls: col.scrollHeight > col.clientHeight }
       })
+    // the sample names its checklist: it opens on the simulator rehearsal; the real checklist, with the most tabs, is the one to fit
+    const procedure = page.getByLabel('Procedure', { exact: true })
+    check((await procedure.inputValue()) === 'g1_type6_sim' && (await inView()).tabs === 2, `the sample opens on the simulator checklist (${await procedure.inputValue()})`)
+    await procedure.selectOption('g1_type6')
+    await page.waitForTimeout(150)
     let covered = 0
     for (const to of [0, 150, 300, 450, 600, 800, 1200, 99999]) {
       await page.evaluate((y) => document.querySelector('nav[aria-label=Stages]').closest('.xl\\:overflow-y-auto').scrollTo(0, y), to)
@@ -284,19 +290,19 @@ try {
     const m = await measure(page)
     check(m.header.height <= 120, `${at}: the header is at most 120 px (${Math.round(m.header.height)})`)
 
-    const trigger = page.getByRole('button', { name: /^Tone, voice and battery/ })
+    const trigger = page.getByRole('button', { name: /^Sound, speech and battery/ })
     check((await trigger.count()) === 1, `${at}: one menu button for tone, voice and battery`)
-    check((await page.getByRole('button', { name: /^Tone (on|off)/ }).count()) === 0, `${at}: the switches are not in the bar while the menu is shut`)
+    check((await page.getByRole('button', { name: /^Alert sound (on|off)/ }).count()) === 0, `${at}: the switches are not in the bar while the menu is shut`)
     await trigger.click()
     check((await trigger.getAttribute('aria-expanded')) === 'true', `${at}: the menu opens`)
-    const tone = page.getByRole('button', { name: /^Tone (on|off)/ })
-    check((await tone.count()) === 1 && (await page.getByRole('button', { name: /^Voice / }).count()) === 1, `${at}: Tone and Voice are in the menu`)
+    const tone = page.getByRole('button', { name: /^Alert sound (on|off)/ })
+    check((await tone.count()) === 1 && (await page.getByRole('button', { name: /^Spoken alerts / }).count()) === 1, `${at}: Tone and Voice are in the menu`)
     check((await page.locator('#tools-menu [aria-label^="Battery"]').count()) === 1, `${at}: the battery is in the menu`)
     const box = await page.locator('#tools-menu').boundingBox()
     check(box !== null && box.x >= 0 && box.x + box.width <= w + 0.5, `${at}: the menu is on screen`)
     const before = await tone.getAttribute('aria-pressed')
     await tone.click()
-    check((await page.getByRole('button', { name: /^Tone (on|off)/ }).getAttribute('aria-pressed')) !== before, `${at}: Tone switches from the menu`)
+    check((await page.getByRole('button', { name: /^Alert sound (on|off)/ }).getAttribute('aria-pressed')) !== before, `${at}: Tone switches from the menu`)
     await page.keyboard.press('Escape')
     check((await trigger.getAttribute('aria-expanded')) === 'false', `${at}: Escape closes the menu`)
     check(await trigger.evaluate((el) => el === document.activeElement), `${at}: Escape puts focus back on the menu button`)
@@ -315,6 +321,44 @@ try {
     const m = await measure(page)
     console.log(`check-layout: text at 130 % on 1366x768: header ${Math.round(m.header.height)} px, workspace ${Math.round(m.panel.height)} px, page scrolls ${Math.max(0, Math.round(m.overflow))} px`)
     check(!m.hscroll, 'text at 130 %: no sideways scroll')
+    await page.close()
+  }
+
+  // 8. Every palette command has a control on screen (src/config/actions.ts says where): visible on its workspace, or in its dialog.
+  {
+    const src = readFileSync(new URL('../src/config/actions.ts', import.meta.url), 'utf8')
+    const actions = [...src.matchAll(/\{ id: '([a-z0-9-]+)'.*?place: '([a-z-]+)'/g)].map((m) => ({ id: m[1], place: m[2] }))
+    const page = await open(1600, 900)
+    const visible = (id) => page.locator(`[data-action="${id}"]`).evaluateAll((els) => els.some((e) => e.checkVisibility() && e.getBoundingClientRect().width > 0))
+    const onPage = { header: 'Run', run: 'Run', analyze: 'Analyze', review: 'Review', dock: 'Run', replay: 'Run' }
+    for (const ws of ['Run', 'Analyze', 'Review']) {
+      await tab(page, ws)
+      for (const a of actions.filter((x) => onPage[x.place] === ws)) check(await visible(a.id), `1600x900 ${ws}: the "${a.id}" control is visible`)
+    }
+    const dialogs = [
+      ['display', /^Display settings/],
+      ['settings', /^Settings/],
+      ['help', /^Help/],
+    ]
+    for (const [place, name] of dialogs) {
+      await page.getByRole('button', { name }).first().click()
+      await page.waitForTimeout(300)
+      for (const a of actions.filter((x) => x.place === place)) check(await visible(a.id), `1600x900 ${place} dialog: the "${a.id}" control is visible`)
+      if (place === 'help') {
+        const rows = await page.locator('[role=dialog] tbody tr').count()
+        check(rows === actions.length, `the Help sheet lists every action (${rows} of ${actions.length})`)
+      }
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(200)
+    }
+    check(await visible('tour'), 'the sample banner has a Take the tour button')
+    await page.keyboard.press('Control+k')
+    await page.waitForTimeout(200)
+    await page.keyboard.type('freeze')
+    const where = await page.locator('[role=option]').first().textContent()
+    check(/On screen: Analyze/.test(where ?? ''), `the palette says where a command is on screen (${where})`)
+    await page.keyboard.press('Escape')
+    check(page.errors.length === 0, `actions: no page errors (${page.errors[0] ?? ''})`)
     await page.close()
   }
 } finally {

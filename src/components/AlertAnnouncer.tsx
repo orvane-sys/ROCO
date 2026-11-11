@@ -85,7 +85,7 @@ export function AlertAnnouncer({ state, view, profile, sound, speech, limits }: 
     const before = lastState.current
     lastState.current = fsmState
     if (before === undefined || before === fsmState) return
-    const message = `g1_ctrl state: ${fsmState}`
+    const message = `Controller state: ${fsmState}`
     window.clearTimeout(politeTimer.current)
     const wait = Math.max(0, lastPolite.current + POLITE_MIN_GAP_MS - performance.now())
     politeTimer.current = window.setTimeout(() => {

@@ -213,6 +213,7 @@ export function MotorTelemetryGrid({
             <Search className="w-3.5 h-3.5 text-ink-muted absolute left-2.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
             <input
               id="joint-filter"
+              data-action="joint-filter"
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -335,21 +336,21 @@ export function MotorTelemetryGrid({
           tabIndex={0}
           aria-label="Joint table, scrolls sideways"
         >
-          <table className="w-full text-xs text-left tabular-nums whitespace-nowrap">
+          <table data-action="joint" className="w-full text-xs text-left tabular-nums whitespace-nowrap">
             <caption className="sr-only">
-              Per joint: measured angle, g1_ctrl target and the error between them, speed, measured torque, PD demand
+              Per joint: measured angle, the controller's target and the error between them, speed, measured torque, PD demand
               (largest since the last frame, against the joint limit; ankle rows add the approximate load on one of
               the joint's two {ankle?.peak ?? 24.8} Nm motors), temperature and motor fault bits
             </caption>
             <thead className="bg-surface text-ink-soft">
               <tr>
                 <th scope="col" className="px-2 py-2 font-medium">Joint</th>
-                <th scope="col" className="px-2 py-2 font-medium text-right">q °</th>
-                <th scope="col" className="px-2 py-2 font-medium text-right">q_cmd °</th>
+                <th scope="col" className="px-2 py-2 font-medium text-right" title="Measured joint angle (q)">Angle °</th>
+                <th scope="col" className="px-2 py-2 font-medium text-right" title="The angle the controller aims for (q_cmd); shown only while the joint is held">Target °</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">Error °</th>
-                <th scope="col" className="px-2 py-2 font-medium text-right">dq rad/s{atCursor ? ' (latest)' : ''}</th>
-                <th scope="col" className="px-2 py-2 font-medium text-right">τ Nm</th>
-                <th scope="col" className="px-2 py-2 font-medium text-right">PD demand (% of joint limit)</th>
+                <th scope="col" className="px-2 py-2 font-medium text-right" title="Joint speed (dq)">Speed rad/s{atCursor ? ' (latest)' : ''}</th>
+                <th scope="col" className="px-2 py-2 font-medium text-right" title="Torque the motor reports (τ, tau_est)">Torque Nm</th>
+                <th scope="col" className="px-2 py-2 font-medium text-right" title="Torque the controller asks for: stiffness × angle error + damping × speed error + feed-forward. Can exceed what the motor can give.">PD demand (% of joint limit)</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">Temp{atCursor ? ' (latest)' : ''}</th>
                 <th scope="col" className="px-2 py-2 font-medium text-right">Faults{atCursor ? ' (latest)' : ''}</th>
               </tr>

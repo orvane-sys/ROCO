@@ -25,12 +25,13 @@ export function AbortChecks({ checks, state }: { checks: AbortCheck[]; state: Mo
       <div className="flex items-center gap-2 flex-wrap">
         <ClipboardCheck className="w-5 h-5 text-accent" aria-hidden="true" />
         <h2 id="checks-heading" className="text-base font-semibold text-ink">
-          Abort checks (manual §3)
+          Abort checks
         </h2>
         <span className="text-xs px-2 py-0.5 rounded bg-raised border border-line-strong text-ink tabular-nums">
           {tripped.length === 0 ? 'none tripped' : `${tripped.length} tripped`}
         </span>
       </div>
+      <p className="text-xs text-ink-soft">The stop conditions of the test manual (section 3). Stop the test if one trips.</p>
       <ul className="flex flex-col gap-1.5">
         {checks.map((c) => {
           const st = STATUS[c.status]

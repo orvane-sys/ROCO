@@ -136,7 +136,7 @@ export function ConnectScreen({ monitor, wsUrl, connecting, sample, onRetry, onP
           </button>
         </div>
         <p className="text-xs text-ink-muted">
-          60 s of a real Unitree G1 squat test, played in this page. It is labelled SAMPLE and is never a live robot.
+          60 s of a simulated Unitree G1 (MuJoCo) driven by the real controller, played in this page. It is labelled SAMPLE and is never a live robot.
         </p>
       </div>
     </main>

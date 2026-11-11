@@ -366,6 +366,7 @@ export function SessionTimeline({ state, profile, model, scope }: SessionTimelin
           )}
           <button
             type="button"
+            data-action="mark"
             onClick={() => {
               addMarkNow()
             }}

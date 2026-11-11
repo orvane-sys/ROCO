@@ -21,7 +21,7 @@ export function ReportCard({ build }: ReportCardProps) {
       .catch(() => setStatus('The browser did not allow copying. Use Save instead.'))
   }
   return (
-    <section aria-labelledby="report-heading" className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2">
+    <section data-action="report" aria-labelledby="report-heading" className="bg-surface/80 border border-line/90 rounded-xl p-3 flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <FileText className="w-5 h-5 text-accent" aria-hidden="true" />
         <h2 id="report-heading" className="text-base font-semibold text-ink">

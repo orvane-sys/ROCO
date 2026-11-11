@@ -731,7 +731,7 @@ def r7_sample_recording(tmp: str, rec: str, res: Results) -> None:
     if cap.returncode != 0:
         res.say(case, "FAIL", f"capture_demo.py exited {cap.returncode}: {(cap.stdout + cap.stderr)[-400:]}")
         return
-    chk = subprocess.run([node, os.path.join(HERE, "check-demo.mjs"), out, "--times", "8,15,22"], capture_output=True, text=True, timeout=120)
+    chk = subprocess.run([node, os.path.join(HERE, "check-demo.mjs"), out, "--times", "8,15,22", "--allow-limits"], capture_output=True, text=True, timeout=120)
     if chk.returncode != 0:
         res.say(case, "FAIL", (chk.stdout + chk.stderr)[-600:])
         return

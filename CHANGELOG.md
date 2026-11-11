@@ -3,6 +3,12 @@
 All notable changes to ROCO. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- The hosted demo is now 60 s of the simulated G1 (MuJoCo) driven by the real g1_ctrl controller: it stands and squats twice, with no
+  stop limit crossed. It opens on the simulator checklist. `scripts/make_sim_demo.py` records the run.
+
 ## [0.1.0] - 2026-11-10
 
 First public release. ROCO is a read-only browser monitor for the Unitree G1. ROS 2 support is planned; this version monitors

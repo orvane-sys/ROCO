@@ -547,7 +547,7 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <div role="group" aria-label="Time window" className="flex items-center rounded-lg border border-line-bold overflow-hidden">
+          <div role="group" aria-label="Time window" data-action="win" className="flex items-center rounded-lg border border-line-bold overflow-hidden">
             {PLOT_WINDOWS.map((w) => (
               <button
                 key={w}
@@ -560,7 +560,7 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
               </button>
             ))}
           </div>
-          <button type="button" onClick={() => (frozen ? viewStore.unfreeze() : viewStore.freeze())} aria-pressed={!!frozen} className={btn}>
+          <button type="button" data-action="freeze" onClick={() => (frozen ? viewStore.unfreeze() : viewStore.freeze())} aria-pressed={!!frozen} className={btn}>
             {frozen ? <Play className="w-4 h-4" aria-hidden="true" /> : <Pause className="w-4 h-4" aria-hidden="true" />}
             {frozen ? 'Resume' : 'Freeze'}
           </button>
@@ -575,6 +575,7 @@ export function JointPlot({ profile, state, selectedJointId, onSelectJoint }: Jo
         <label className="flex items-center gap-1.5 text-sm text-ink">
           <span>Plot set</span>
           <select
+            data-action="set"
             value={prefs.setId}
             onChange={(e) => setPlotSet(e.target.value)}
             className="bg-surface border border-line-bold rounded-lg px-2 py-1 min-h-8 text-sm text-ink max-w-[11rem]"

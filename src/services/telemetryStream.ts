@@ -48,7 +48,7 @@ const ODOM_FRESH_MS = 500
 
 // Dashboard URL options, set by the bridge's printed link:
 //   ?ws=<ws:// or wss:// url>  bridge address
-//   ?demo=1                    play the sample recording, a real G1 run, without a bridge
+//   ?demo=1                    play the sample recording (the simulated G1 with the real controller) without a bridge
 //   ?monitor=1                 read-only from the first frame (no teleop is ever sent)
 const URL_PARAMS =
   typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams()

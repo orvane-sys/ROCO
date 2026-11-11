@@ -1,6 +1,7 @@
-import { Keyboard } from 'lucide-react'
+import { CircleHelp, Keyboard } from 'lucide-react'
 import { Dialog } from './Dialog'
 import { G1_CTRL_ABORT, G1_CTRL_KEYS } from '../utils/monitorFormat'
+import { ACTIONS } from '../config/actions'
 
 const SHORTCUTS: { keys: string[]; action: string }[] = [
   { keys: ['W', '↑'], action: 'Walk forward' },
@@ -15,15 +16,15 @@ const SHORTCUTS: { keys: string[]; action: string }[] = [
 
 /** Plain meanings for the names the plots, tables and alerts use. */
 const GLOSSARY: [string, string][] = [
-  ['q', 'Joint angle as measured, in degrees on the page (radians in the data).'],
-  ['q_cmd', 'The angle g1_ctrl is aiming for. It is shown only while the joint is held (stiffness above zero).'],
-  ['dq', 'Joint speed, in rad/s.'],
-  ['τ (tau_est)', 'Torque the motor reports, in Nm.'],
+  ['Angle (q)', 'Joint angle as measured, in degrees on the page (radians in the data).'],
+  ['Target (q_cmd)', 'The angle the controller (g1_ctrl) is aiming for. It is shown only while the joint is held (stiffness above zero).'],
+  ['Speed (dq)', 'Joint speed, in rad/s.'],
+  ['Torque (τ, tau_est)', 'Torque the motor reports, in Nm.'],
   ['PD demand', 'Torque the controller asks for: stiffness × angle error + damping × speed error + feed-forward. It can exceed what the motor can give.'],
   ['peak between frames', 'The largest PD demand among the ~1000 samples a second between two page updates, so a short spike still shows.'],
   ['rt/lowstate', 'The robot’s state message (angles, speeds, torques, IMU), about 500 to 1000 a second.'],
   ['rt/lowcmd', 'The commands g1_ctrl sends to the motors.'],
-  ['Passive, FixStand, Velocity', 'g1_ctrl states: motors damped; standing on a fixed pose; the walking policy (standing still with no command).'],
+  ['Passive, FixStand, Velocity', 'Controller states: motors damped; standing on a fixed pose; the walking policy (standing still with no command).'],
   ['first-out', 'The first alert of a burst. Later ones are often a result of it.'],
   ['Left and right', 'Overlays the same joint on the other side of the body, in the second plot colour.'],
 ]
@@ -50,12 +51,54 @@ export function ShortcutHelp({ onClose, monitor = false, onTour }: { onClose: ()
   if (monitor) {
     return (
       <Dialog
-        title="g1_ctrl keys"
-        icon={<Keyboard className="w-5 h-5 text-accent" aria-hidden="true" />}
+        title="Help"
+        icon={<CircleHelp className="w-5 h-5 text-accent" aria-hidden="true" />}
         onClose={onClose}
       >
         <p className="mb-3 text-sm text-ink-soft">
-          This page only watches. Type these in g1_ctrl's own terminal, or use the Unitree remote.
+          ROCO only watches the robot. Everything below is also in the command palette (Ctrl+K).
+        </p>
+        {onTour && (
+          <button
+            type="button"
+            data-action="tour"
+            onClick={onTour}
+            className="mb-4 px-3 min-h-9 rounded-lg bg-accent-solid hover:bg-accent-solid/85 text-on-accent font-semibold text-sm"
+          >
+            Take the tour
+          </button>
+        )}
+
+        <h3 className="mb-2 text-sm font-semibold text-ink">What you can do, and where</h3>
+        <table className="w-full text-sm">
+          <caption className="sr-only">Every action of the page, where its control is, and its key</caption>
+          <thead className="text-xs text-ink-muted text-left">
+            <tr>
+              <th scope="col" className="font-medium pb-1 pr-2">Action</th>
+              <th scope="col" className="font-medium pb-1 pr-2">Where</th>
+              <th scope="col" className="font-medium pb-1">Key</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ACTIONS.map((a) => (
+              <tr key={a.id} className="border-t border-line align-top">
+                <th scope="row" className="font-normal text-left text-ink py-1 pr-2">{a.label}</th>
+                <td className="text-ink-soft py-1 pr-2">{a.where}</td>
+                <td className="py-1 whitespace-nowrap">
+                  {a.key?.split(' ').map((k) => (
+                    <kbd key={k} className={kbd + ' mr-1'}>
+                      {k}
+                    </kbd>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <h3 className="mt-5 mb-2 text-sm font-semibold text-ink">g1_ctrl keys</h3>
+        <p className="mb-2 text-sm text-ink-soft">
+          To change what the robot does, type these in g1_ctrl's own terminal, or use the Unitree remote.
         </p>
         <ul className="flex flex-col gap-2 text-sm">
           {G1_CTRL_KEYS.map((k) => (
@@ -69,7 +112,7 @@ export function ShortcutHelp({ onClose, monitor = false, onTour }: { onClose: ()
         </ul>
         <p className="mt-3 text-xs text-ink-muted">{G1_CTRL_ABORT.text}</p>
 
-        <h3 className="mt-5 mb-2 text-sm font-semibold text-ink">On this page</h3>
+        <h3 className="mt-5 mb-2 text-sm font-semibold text-ink">Keys on this page</h3>
         <ul className="flex flex-col gap-2 text-sm">
           <KeyRow action="Run, Analyze or Review workspace" keys={['1', '2', '3']} />
           <KeyRow action="Command palette: workspaces, joints, settings" keys={['Ctrl', 'K']} />
@@ -92,11 +135,6 @@ export function ShortcutHelp({ onClose, monitor = false, onTour }: { onClose: ()
             </div>
           ))}
         </dl>
-        {onTour && (
-          <button type="button" onClick={onTour} className="mt-4 px-3 py-1.5 min-h-9 rounded-lg border border-line-bold text-sm text-ink hover:bg-raised">
-            Show the welcome tour
-          </button>
-        )}
       </Dialog>
     )
   }

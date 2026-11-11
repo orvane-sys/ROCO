@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Command as CommandIcon } from 'lucide-react'
 import { Dialog } from './Dialog'
+import { actionFor } from '../config/actions'
 
 export interface PaletteCommand {
   id: string
@@ -101,9 +102,12 @@ export function CommandPalette({ commands, onClose }: { commands: PaletteCommand
               (i === current ? 'bg-accent-soft text-ink outline outline-1 outline-accent' : 'text-ink hover:bg-raised')
             }
           >
-            <span className="min-w-0 truncate">
-              <span className="text-ink-muted">{c.group}: </span>
-              {c.label}
+            <span className="min-w-0 flex flex-col py-1">
+              <span className="truncate">
+                <span className="text-ink-muted">{c.group}: </span>
+                {c.label}
+              </span>
+              {actionFor(c.id) && <span className="truncate text-xs text-ink-muted">On screen: {actionFor(c.id)?.where}</span>}
             </span>
             {c.hint && <kbd className="shrink-0 px-1.5 rounded bg-raised border border-line-bold font-mono text-xs text-ink-soft">{c.hint}</kbd>}
           </li>

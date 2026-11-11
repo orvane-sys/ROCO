@@ -22,7 +22,7 @@ export function SegmentTable({ state }: { state: MonitorState }) {
         <div className="overflow-x-auto rounded-lg border border-line" tabIndex={0} aria-label="Per-state table, scrolls sideways">
           <table className="w-full text-xs text-left tabular-nums whitespace-nowrap">
             <caption className="sr-only">
-              Per g1_ctrl state: ankle pitch PD demand against one {peak} Nm ankle motor, time over it, measured torques,
+              Per controller state: ankle pitch PD demand against one {peak} Nm ankle motor, time over it, measured torques,
               leg PD error, leg speed, tilt and gyro
             </caption>
             <thead className="bg-surface text-ink-soft whitespace-normal align-bottom">

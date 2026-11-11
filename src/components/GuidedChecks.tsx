@@ -213,6 +213,7 @@ export function GuidedChecks({
               key={s.stage.id}
               type="button"
               aria-current={here ? 'step' : undefined}
+              title={`${s.stage.id}: ${s.stage.title}`}
               onClick={() => store.setStage(proc.id, s.stage.id)}
               className={cn(
                 'inline-flex items-center gap-1 rounded-lg border px-2.5 text-sm tabular-nums',
@@ -267,16 +268,16 @@ export function GuidedChecks({
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <button type="button" className={b} disabled={idx <= 0} onClick={() => store.setStage(proc.id, result.stages[idx - 1].stage.id)}>
+        <button type="button" className={b} disabled={idx <= 0} title={idx > 0 ? `${result.stages[idx - 1].stage.id}: ${result.stages[idx - 1].stage.title}` : undefined} onClick={() => store.setStage(proc.id, result.stages[idx - 1].stage.id)}>
           <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-          Previous
+          {idx > 0 ? `Previous: ${result.stages[idx - 1].stage.id}` : 'Previous'}
         </button>
         <button type="button" className={b} aria-pressed={selected.done} onClick={() => store.toggleDone(proc.id, selected.stage.id)}>
           <Check className="w-4 h-4" aria-hidden="true" />
           {selected.done ? `${selected.stage.id} marked done: undo` : `Mark ${selected.stage.id} done`}
         </button>
-        <button type="button" className={b} disabled={idx >= result.stages.length - 1} onClick={() => store.setStage(proc.id, result.stages[idx + 1].stage.id)}>
-          Next
+        <button type="button" className={b} disabled={idx >= result.stages.length - 1} title={idx < result.stages.length - 1 ? `${result.stages[idx + 1].stage.id}: ${result.stages[idx + 1].stage.title}` : undefined} onClick={() => store.setStage(proc.id, result.stages[idx + 1].stage.id)}>
+          {idx < result.stages.length - 1 ? `Next: ${result.stages[idx + 1].stage.id}` : 'Next'}
           <ArrowRight className="w-4 h-4" aria-hidden="true" />
         </button>
         <button type="button" className={b} onClick={() => store.clear(proc.id)}>

@@ -2,7 +2,10 @@
 // src/services/recordedBridge.ts: it is small, it says nothing about the PC it was made on, and a jump shows what playing there shows.
 // The reports are compared by check-regress-report.mjs, the test the real bridge passes in regress.py R4.
 //
-//   node scripts/check-demo.mjs [file] [--times 15,30,45]      (times in seconds into the recording)
+//   node scripts/check-demo.mjs [file] [--times 15,30,45] [--allow-limits]      (times in seconds into the recording)
+//
+// --allow-limits skips the clean-run checks (no abort trip, stop limit or critical alert), for regress.py R7, whose test recording
+// crosses limits on purpose.
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,6 +21,8 @@ const STEP_MS = 20
 const args = process.argv.slice(2)
 const flag = args.indexOf('--times')
 const times = (flag >= 0 ? args.splice(flag, 2)[1] : '15,30,45').split(',').map(Number)
+const allowLimits = args.includes('--allow-limits')
+if (allowLimits) args.splice(args.indexOf('--allow-limits'), 1)
 const file = args[0] ?? join(root, 'public/demo/g1-sample.rocodemo.gz')
 
 let failed = 0
@@ -63,7 +68,63 @@ function played(ms, step) {
 }
 const opened = (r) => JSON.parse(r).alertEvents?.length
 const alertFrames = sample.play.filter((r) => r.alert).length
-check(alertFrames > 0 && text(played(sample.endMs, 8 * STEP_MS)).filter((f) => f.startsWith('{"type":"aux"') && opened(f)).length === alertFrames, `8x speed keeps every alert frame (${alertFrames})`)
+check(text(played(sample.endMs, 8 * STEP_MS)).filter((f) => f.startsWith('{"type":"aux"') && opened(f)).length === alertFrames, `8x speed keeps every alert frame (${alertFrames})`)
+
+// How far the bridge's median sample interval moved in this sample (a segment's durS / samples is the median it used): a jump may
+// give a segment's duration from a later median, so the reports may differ by that much.
+const dts = []
+for (const f of text(played(sample.endMs, STEP_MS))) {
+  if (!f.startsWith('{"type":"fsm"')) continue
+  for (const s of JSON.parse(f).segments ?? []) if (s.samples > 1000) dts.push(s.durS / s.samples)
+}
+const segmentTol = dts.length ? Math.max(0.002, (Math.max(...dts) - Math.min(...dts)) / Math.min(...dts) + 0.002) : 0.002
+check(segmentTol < 0.03, `the median sample interval stays within 3 % over the sample (${(100 * segmentTol).toFixed(2)} %)`)
+
+// The sample is a clean run: played through the page's own code, no abort check trips, no guided-check stop limit is crossed under
+// either checklist, and no alert reaches critical. The checklist the hello names is one the page has.
+{
+  const load = async (p) => {
+    const bb = await rolldown({ input: join(root, p), logLevel: 'silent' })
+    const { output: out } = await bb.generate({ format: 'esm' })
+    await bb.close()
+    return import('data:text/javascript;base64,' + Buffer.from(out[0].code.replaceAll('import.meta.env.BASE_URL', '"/"')).toString('base64'))
+  }
+  globalThis.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+  const { reduceHello, reduceFsm, reduceAux } = await load('src/services/monitorReducer.ts')
+  const { buildAlertView, evaluateAbortChecks } = await load('src/utils/alertModel.ts')
+  const { evaluateProcedure, newReachedOk, NO_OPS } = await load('src/utils/procedureModel.ts')
+  const { PROCEDURES } = await load('src/config/procedures/g1_type6.ts')
+  check(!hello.demo.procedure || PROCEDURES.some((p) => p.id === hello.demo.procedure), `the hello's checklist ${hello.demo.procedure} is one the page has`)
+  let state = { hello: null, aux: null, fsm: { state: null, since: null, events: [], segments: [], segment: null }, replay: null, alertLog: [] }
+  const latches = new Map(PROCEDURES.map((p) => [p.id, newReachedOk()]))
+  const trips = new Set()
+  const stops = new Set()
+  const critical = new Set()
+  const states = new Set()
+  for (const line of [...text(sample.greeting), ...text(played(sample.endMs, STEP_MS))]) {
+    const f = JSON.parse(line)
+    if (f.type === 'hello') state = { ...state, ...reduceHello(f, null, '') }
+    else if (f.type === 'fsm') state = { ...state, ...reduceFsm(state, f).patch }
+    else if (f.type === 'aux') state = { ...state, ...reduceAux(state, f).patch }
+    else if (f.type === 'replay') state = { ...state, replay: f }
+    else continue
+    if (state.fsm.state) states.add(state.fsm.state)
+    for (const c of evaluateAbortChecks(state)) if (c.status === 'trip') trips.add(c.id)
+    for (const p of PROCEDURES) {
+      const r = evaluateProcedure(p, state, { ...NO_OPS, latch: latches.get(p.id) })
+      for (const s of r.stages) for (const it of s.items) if (it.status === 'stop') stops.add(`${p.id}/${it.item.id}`)
+    }
+    const view = buildAlertView(state)
+    for (const g of view.groups) if (g.level === 'critical') critical.add(g.first.alert.id)
+    for (const a of view.closed) if (a.level === 'critical') critical.add(a.alert.id)
+  }
+  check(states.size > 1, `the sample goes through more than one controller state (${[...states].join(', ')})`)
+  if (!allowLimits) {
+    check(trips.size === 0, `no abort check trips (${[...trips].join(', ')})`)
+    check(stops.size === 0, `no guided-check stop limit is crossed (${[...stops].join(', ')})`)
+    check(critical.size === 0, `no alert reaches critical (${[...critical].join(', ')})`)
+  }
+}
 
 const tmp = mkdtempSync(join(tmpdir(), 'roco_demo_'))
 const write = (name, lines) => {
@@ -80,7 +141,7 @@ try {
     const seek = write('seek.jsonl', [...start, JSON.stringify({ seek: t }), ...text(seekFrames(sample, ms)), status()])
     for (const speed of [1, 8]) {
       const play = write('play.jsonl', [...start, ...text(played(ms, speed * STEP_MS)), status()])
-      const r = spawnSync(process.execPath, [join(root, 'scripts/check-regress-report.mjs'), play, seek], { encoding: 'utf8' })
+      const r = spawnSync(process.execPath, [join(root, 'scripts/check-regress-report.mjs'), play, seek, '--segment-tol', String(segmentTol)], { encoding: 'utf8' })
       check(r.status === 0, `the report at ${sec} s after a jump equals ${speed}x play:\n${r.stdout}${r.stderr}`)
     }
   }

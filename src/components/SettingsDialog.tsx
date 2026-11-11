@@ -197,6 +197,7 @@ export function SettingsDialog({ profile, onSelectProfile, onImport, status, wsU
           </button>
           <button
             type="button"
+            data-action="reconnect"
             onClick={() => {
               onReconnect()
               onClose()

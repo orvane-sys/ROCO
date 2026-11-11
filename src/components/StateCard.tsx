@@ -16,7 +16,7 @@ export function StateCard({ state }: { state: MonitorState }) {
         <div className="flex items-center gap-2">
           <Eye className="w-5 h-5 text-accent" aria-hidden="true" />
           <h2 id="state-heading" className="text-base font-semibold text-ink">
-            g1_ctrl state
+            Controller state
           </h2>
         </div>
         <span className="text-xs text-ink-soft">{replay ? 'Replaying a recording' : 'Monitor only: sends nothing to the robot'}</span>
@@ -29,7 +29,7 @@ export function StateCard({ state }: { state: MonitorState }) {
             ? replay
               ? 'No g1_ctrl log lines for this recording'
               : 'No log from a running g1_ctrl. g1_ctrl writes log/log.txt only when started with --log.'
-            : `since ${formatDataTime(fsm.since, state)}${inState !== null ? ` · ${formatDuration(inState)}` : ''}`}
+            : `${replay && fsm.since !== null && fsm.since < replay.t0 - 0.05 ? 'already in it when the recording started' : `since ${formatDataTime(fsm.since, state)}`}${inState !== null ? ` · ${formatDuration(inState)}` : ''}`}
         </div>
         {aux?.fsmStale && (
           <p className="mt-2 text-xs text-warn-ink bg-warn-soft/60 border border-warn-line/60 rounded-lg px-2 py-1">
@@ -44,7 +44,7 @@ export function StateCard({ state }: { state: MonitorState }) {
             <Workflow className="w-4 h-4 text-accent" aria-hidden="true" />
             State changes
           </h3>
-          <ol className="flex flex-wrap items-center gap-1.5 text-xs" aria-label="g1_ctrl state changes, oldest first">
+          <ol className="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Controller state changes, oldest first">
             {changes.slice(-8).map((e, i) => (
               <li
                 key={`${e.t}-${i}`}

@@ -2,8 +2,10 @@
 """
 Makes the page's sample recording: what the real bridge sends for a window of a g1_record recording, saved for the browser to play.
 
-  python3 scripts/capture_demo.py <prefix> --log <g1_ctrl log> --config <config yaml> --from 155 --seconds 60 \
-      --title "Unitree G1 squat test" --out public/demo/g1-sample.rocodemo.gz
+  python3 scripts/capture_demo.py <prefix> --log <g1_ctrl log> --config <config yaml> --from 20 --seconds 60 \
+      --title "Simulated G1 (MuJoCo) · real controller" --procedure g1_type6_sim --out public/demo/g1-sample.rocodemo.gz
+
+The hosted sample is cut from a run of scripts/make_sim_demo.py.
 
 GitHub Pages cannot run the bridge, so src/services/recordedBridge.ts plays this file in its place. The window is copied to a temporary
 folder; the recording, the log and the config are only read.
@@ -111,7 +113,7 @@ class Capture:
             if time.monotonic() > end:
                 raise SystemExit(f"the bridge did not get ready: {s}")
 
-    def greeting(self, title: str, recorded: str, note: str) -> List[Tuple[int, bytes]]:
+    def greeting(self, title: str, recorded: str, note: str, procedure: str = "") -> List[Tuple[int, bytes]]:
         """What a page connecting now receives, with the sample's name in the hello."""
         ws = Ws(self.port)
         out: List[Tuple[int, bytes]] = []
@@ -123,7 +125,7 @@ class Capture:
                     continue
                 f = scrub(json.loads(p))
                 if f["type"] == "hello":
-                    f["demo"] = {"title": title, "recorded": recorded}
+                    f["demo"] = {"title": title, "recorded": recorded, **({"procedure": procedure} if procedure else {})}
                     f["replay"]["notes"] = [*f["replay"]["notes"], note]
                 out.append((0, compact(f)))
                 if f["type"] == "replay":
@@ -184,6 +186,7 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--rate", type=float, default=50.0, help="dashboard frame rate in Hz")
     ap.add_argument("--title", required=True)
+    ap.add_argument("--procedure", default="", help="guided checklist the page opens the sample with, e.g. g1_type6_sim")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -214,7 +217,7 @@ def main() -> int:
 
         recorded = datetime.datetime.fromtimestamp(t0).strftime("%Y-%m-%d")
         note = f"a {t1 - t0:.0f} s cut of {name}, from {args.start:.0f} s; its Config line and last state change are repeated at its start"
-        records = [(0, GREETING | k, p) for k, p in cap.greeting(args.title, recorded, note)]
+        records = [(0, GREETING | k, p) for k, p in cap.greeting(args.title, recorded, note, args.procedure)]
         t_play = time.monotonic()
         print("[capture] playing at 1x", flush=True)
         records += [(ms, PLAY | k, p) for ms, k, p in cap.play(t0)]

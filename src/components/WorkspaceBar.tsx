@@ -18,6 +18,9 @@ interface WorkspaceBarProps {
 const iconButton =
   'w-11 h-11 max-md:w-10 max-md:h-10 rounded-lg flex items-center justify-center bg-surface/80 border border-line-strong hover:border-line-hot text-ink-soft hover:text-ink transition-colors'
 
+// Icon and word from 768 px, icon only on phones (the name stays in aria-label)
+const labelled = cn(iconButton, 'xl:w-auto xl:px-3 gap-2 text-sm font-semibold')
+
 /** The workspace tabs (keys 1, 2, 3) and the buttons that open the palette, help and settings. */
 export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp, onOpenDisplay, onOpenSettings, tools }: WorkspaceBarProps) {
   const tabs = useRef<(HTMLButtonElement | null)[]>([])
@@ -37,7 +40,7 @@ export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp
   return (
     <nav aria-label="Workspaces and settings" className="border-b border-line/80 bg-surface/60 px-3 lg:px-4 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-1.5 shrink-0">
       {workspace !== null ? (
-        <div role="tablist" aria-label="Workspace" className="flex items-center gap-1.5">
+        <div role="tablist" aria-label="Workspace" data-action="ws" className="flex items-center gap-1.5">
           {WORKSPACES.map((w, i) => {
             const on = w.id === workspace
             return (
@@ -72,16 +75,19 @@ export function WorkspaceBar({ workspace, onWorkspace, onOpenPalette, onOpenHelp
         {tools}
         <button type="button" onClick={onOpenPalette} className={cn(iconButton, 'w-auto px-3 max-md:px-2.5 gap-2 text-sm')} aria-label="Ctrl+K command palette" title="Command palette (Ctrl+K)" aria-haspopup="dialog">
           <Command className="w-4 h-4" aria-hidden="true" />
-          <span className="hidden xl:inline">Ctrl+K</span>
+          <span className="hidden 2xl:inline">Ctrl+K</span>
         </button>
-        <button type="button" onClick={onOpenHelp} className={iconButton} aria-label="Keyboard shortcuts (press ?)" title="Keyboard shortcuts (?)" aria-haspopup="dialog">
+        <button type="button" data-action="help" onClick={onOpenHelp} className={labelled} aria-label="Help: every action, shortcuts and words (press ?)" title="Help: every action, shortcuts and words (?)" aria-haspopup="dialog">
           <CircleHelp className="w-5 h-5" aria-hidden="true" />
+          <span className="hidden xl:inline" aria-hidden="true">Help</span>
         </button>
-        <button type="button" onClick={onOpenDisplay} className={iconButton} aria-label="Display settings: theme, text size and 3D view" title="Display settings" aria-haspopup="dialog">
+        <button type="button" data-action="display" onClick={onOpenDisplay} className={labelled} aria-label="Display settings: theme, text size and 3D view" title="Display: theme, text size and 3D view" aria-haspopup="dialog">
           <SunMoon className="w-5 h-5" aria-hidden="true" />
+          <span className="hidden xl:inline" aria-hidden="true">Display</span>
         </button>
-        <button type="button" onClick={onOpenSettings} className={iconButton} aria-label="Settings: connection, robot and protocol" title="Settings" aria-haspopup="dialog">
+        <button type="button" data-action="settings" onClick={onOpenSettings} className={labelled} aria-label="Settings: connection, robot and protocol" title="Settings: connection, robot and protocol" aria-haspopup="dialog">
           <Settings className="w-5 h-5" aria-hidden="true" />
+          <span className="hidden xl:inline" aria-hidden="true">Settings</span>
         </button>
       </div>
     </nav>

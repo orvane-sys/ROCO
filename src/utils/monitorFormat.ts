@@ -29,7 +29,8 @@ export function slotName(slot: number | null, profile: RobotProfile, state: Moni
 export function formatDataTime(t: number | null | undefined, state: MonitorState): string {
   if (t === null || t === undefined || !Number.isFinite(t)) return '—'
   const replay = state.replay
-  if (replay) return `${(t - replay.t0).toFixed(1)} s`
+  // a log line from before the recorded samples (the state g1_ctrl was already in) has no place on the recording's clock
+  if (replay) return t - replay.t0 < -0.05 ? 'before the recording' : `${Math.max(0, t - replay.t0).toFixed(1)} s`
   const d = new Date(t * 1000)
   const pad = (n: number, w = 2) => String(n).padStart(w, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`

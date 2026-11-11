@@ -17,7 +17,7 @@ const STEPS: { title: string; target?: string; body: string[] }[] = [
     title: 'The bar at the top',
     target: 'bar',
     body: [
-      'It always shows where the data comes from (SIM, ROBOT or REPLAY), the g1_ctrl state and the alert count.',
+      'It always shows where the data comes from (SIM, ROBOT or REPLAY), the controller state (g1_ctrl) and the alert count.',
       'The alert count includes abort checks and stop limits from the guided checks. "No abort condition seen" means none was seen, not that it is safe.',
     ],
   },

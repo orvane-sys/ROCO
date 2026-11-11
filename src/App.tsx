@@ -291,6 +291,7 @@ export function App() {
   const reachedOk = useRef(newReachedOk())
   useEffect(() => {
     procedureStore('replay').reset()
+    if (monitor.hello?.demo?.procedure) procedureStore('replay').setProcedure(monitor.hello.demo.procedure)
     reachedOk.current = newReachedOk()
   }, [monitor.hello])
   const procResult = useMemo(() => {
@@ -355,7 +356,7 @@ export function App() {
       return
     }
     setSpeech(true)
-    speak('Voice on')
+    speak('Spoken alerts on')
   }, [ui.speech])
 
   const replay = monitor.replay
@@ -446,8 +447,8 @@ export function App() {
     if (isMonitor) {
       list.push({ id: 'ack-all', group: 'Alerts', label: 'Acknowledge all active alerts', hint: 'A', keywords: 'seen ack', run: handleAcknowledgeAll })
       list.push({ id: 'unshelve', group: 'Alerts', label: 'Restore shelved warnings', keywords: 'shelve unshelve', run: () => unshelveAll() })
-      if (soundSupported()) list.push({ id: 'sound', group: 'Alerts', label: ui.sound ? 'Tone for critical alerts: turn off' : 'Tone for critical alerts: turn on', keywords: 'sound audio beep', run: handleToggleSound })
-      if (speechSupported()) list.push({ id: 'voice', group: 'Alerts', label: ui.speech ? 'Voice: turn off' : 'Voice: turn on', keywords: 'speech speak say', run: handleToggleSpeech })
+      if (soundSupported()) list.push({ id: 'sound', group: 'Alerts', label: ui.sound ? 'Alert sound: turn off' : 'Alert sound: turn on', keywords: 'sound audio beep tone critical', run: handleToggleSound })
+      if (speechSupported()) list.push({ id: 'voice', group: 'Alerts', label: ui.speech ? 'Spoken alerts: turn off' : 'Spoken alerts: turn on', keywords: 'speech speak say voice', run: handleToggleSpeech })
     }
     if (isMonitor) {
       list.push({ id: 'mark', group: 'Timeline', label: 'Add a mark here', hint: 'M', keywords: 'note flag bookmark', run: () => void addMarkNow() })
@@ -455,7 +456,7 @@ export function App() {
       for (const w of PLOT_WINDOWS) list.push({ id: `win-${w}`, group: 'Plots', label: `Plot window: ${w} s`, keywords: 'time span seconds', run: () => { setWindow(w); goToWorkspace('analyze') } })
       for (const ps of SHIPPED_SETS) list.push({ id: `set-${ps.id}`, group: 'Plots', label: `Plot set: ${ps.label}`, keywords: 'signals ankle knee balance squat', run: () => { setPlotSet(ps.id); goToWorkspace('analyze') } })
       list.push({ id: 'report', group: 'Review', label: 'Go to the session report', keywords: 'download markdown handover', run: () => goToWorkspace('review', 'report-heading') })
-      list.push({ id: 'tour', group: 'Open', label: 'Show the welcome tour', keywords: 'help intro first run', run: () => setIsTourOpen(true) })
+      list.push({ id: 'tour', group: 'Open', label: 'Take the welcome tour', keywords: 'help intro first run show', run: () => setIsTourOpen(true) })
     }
     if (replay) list.push({ id: 'replay-toggle', group: 'Replay', label: replay.playing ? 'Pause' : 'Play', hint: 'K', run: toggleReplay })
     for (const t of THEME_PREFS) list.push({ id: `theme-${t.value}`, group: 'Theme', label: t.label, keywords: 'colour color display dark light contrast', run: () => setTheme(t.value) })
@@ -464,7 +465,7 @@ export function App() {
     list.push({ id: 'reset-cols', group: 'Layout', label: 'Reset column widths', keywords: 'splitter resize', run: () => setSplit(layoutKey, null) })
     list.push({ id: 'display', group: 'Open', label: 'Display settings', run: () => setIsAppearanceOpen(true) })
     list.push({ id: 'settings', group: 'Open', label: 'Settings: connection, robot model, protocol', run: () => setIsSettingsOpen(true) })
-    list.push({ id: 'help', group: 'Open', label: 'Keyboard shortcuts', hint: '?', run: () => setIsHelpOpen(true) })
+    list.push({ id: 'help', group: 'Open', label: 'Help: every action, keys and words', keywords: 'keyboard shortcuts glossary', hint: '?', run: () => setIsHelpOpen(true) })
     list.push({ id: 'reconnect', group: 'Connection', label: 'Reconnect to the bridge', run: () => telemetryService.reconnect() })
     return list
   }, [isMonitor, activeProfile, replay, layoutKey, ui.sound, ui.speech, goToWorkspace, toggleReplay, handleToggleSound, handleToggleSpeech, handleAcknowledgeAll])
@@ -503,7 +504,7 @@ export function App() {
     />
   )
 
-  const alerts = <AlertsPanel state={monitor} profile={activeProfile} view={alertView} stageStops={stageStops} onSelectSlot={handleSelectSlot} defaultShowHistory={workspace === 'review'} />
+  const alerts = <AlertsPanel state={monitor} profile={activeProfile} view={alertView} stageStops={stageStops} onAcknowledgeAll={handleAcknowledgeAll} onSelectSlot={handleSelectSlot} defaultShowHistory={workspace === 'review'} />
   const checks = <AbortChecks checks={abortChecks} state={monitor} />
   const guided = procResult ? <GuidedChecks state={monitor} scope={procScope} procState={procState} result={procResult} big={workspace === 'run'} /> : null
 
@@ -696,11 +697,20 @@ export function App() {
       )}
 
       {monitor.hello?.demo && (
-        <div
-          role="status"
-          className="bg-demo-soft/70 text-demo-ink px-4 py-2 border-b border-demo/60 text-sm font-semibold"
-        >
-          Sample recording · {monitor.hello.demo.title} · recorded {monitor.hello.demo.recorded} · not a live robot
+        <div className="bg-demo-soft/70 text-demo-ink px-4 py-1.5 border-b border-demo/60 text-sm font-semibold flex items-center gap-x-3 gap-y-1 flex-wrap">
+          <p role="status" className="min-w-0">
+            Sample recording · {monitor.hello.demo.title} · recorded {monitor.hello.demo.recorded} · not a live robot
+          </p>
+          {isMonitor && (
+            <button
+              type="button"
+              data-action="tour"
+              onClick={() => setIsTourOpen(true)}
+              className="shrink-0 px-2.5 min-h-8 rounded-lg border border-demo/70 bg-surface/60 text-ink text-sm font-semibold hover:bg-surface"
+            >
+              Take the tour
+            </button>
+          )}
         </div>
       )}
 
@@ -777,7 +787,7 @@ export function App() {
           }}
         />
       )}
-      {isAppearanceOpen && <AppearanceDialog onClose={() => setIsAppearanceOpen(false)} />}
+      {isAppearanceOpen && <AppearanceDialog onClose={() => setIsAppearanceOpen(false)} onResetColumns={() => setSplit(layoutKey, null)} />}
       {isSettingsOpen && (
         <SettingsDialog
           profile={activeProfile}

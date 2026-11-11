@@ -33,6 +33,7 @@ export function ReplayControls({ state }: { state: MonitorState }) {
       <Film className="w-5 h-5 text-accent shrink-0 max-xl:hidden" aria-hidden="true" />
       <button
         type="button"
+        data-action="replay-toggle"
         onClick={() => telemetryService.sendReplayControl(r.playing ? 'pause' : 'play')}
         disabled={!!r.busy}
         className="px-3 min-h-9 rounded-lg bg-accent-solid text-on-accent font-semibold text-sm flex items-center gap-1.5 disabled:opacity-50 shrink-0"

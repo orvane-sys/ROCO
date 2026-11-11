@@ -1,5 +1,6 @@
 // Checks what a visitor sees before the app runs (index.html: title, description, icons, browser bar colour), that no unused
-// file sits in public/ or src/assets/, and that every tour step points at a part of the page that exists.
+// file sits in public/ or src/assets/, that every tour step points at a part of the page that exists, and that every command of the
+// palette has a control on screen (src/config/actions.ts).
 //
 //   node scripts/check-meta.mjs
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -95,6 +96,20 @@ const tour = read('src/components/Tour.tsx')
 const targets = [...tour.matchAll(/target: '([a-z-]+)'/g)].map((m) => m[1])
 check(targets.length >= 4, `the tour points at the page's parts (${targets.length} targets)`)
 for (const t of targets) check(sources.some((s) => s.includes(`data-tour="${t}"`)), `the tour target "${t}" is marked in a component`)
+
+// every palette command has a place in src/config/actions.ts, and every place a control marked data-action="…"
+const actionsSrc = read('src/config/actions.ts')
+const actionIds = [...actionsSrc.matchAll(/\{ id: '([a-z0-9-]+)'/g)].map((m) => m[1])
+check(actionIds.length >= 20 && new Set(actionIds).size === actionIds.length, `src/config/actions.ts lists each action once (${actionIds.length})`)
+const appSrc = read('src/App.tsx')
+const commandIds = [...appSrc.matchAll(/list\.push\(\{\s*id: [`']([a-z0-9]+(?:-[a-z0-9]+)*)/g)].map((m) => m[1])
+check(commandIds.length >= 20, `the palette commands are found in App.tsx (${commandIds.length})`)
+for (const id of commandIds) {
+  const family = id.includes('-') ? id.slice(0, id.indexOf('-')) : id
+  check(actionIds.includes(id) || actionIds.includes(family), `the palette command "${id}" has a place in src/config/actions.ts`)
+}
+const controls = sources.filter((s) => s !== actionsSrc)
+for (const id of actionIds) check(controls.some((s) => s.includes(`data-action="${id}"`)), `the action "${id}" has a control marked data-action="${id}"`)
 
 console.log(`meta: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

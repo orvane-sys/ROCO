@@ -168,7 +168,7 @@ export function StatusBar({
           {/* Frame round the two things to read first: the state and the abort status. */}
           <div role="group" aria-label="Robot state and alert status" className="flex items-center gap-2 rounded-xl border-2 border-accent p-1 min-w-0">
           <div className={cn(chip, TONE.neutral, 'gap-3 shrink-0')}>
-            <span className="text-xs text-ink-muted max-lg:sr-only">g1_ctrl state</span>
+            <span className="text-xs text-ink-muted max-lg:sr-only">Controller state</span>
             <span className="text-lg font-semibold leading-tight truncate max-w-[12rem]" title={fsm.state ?? undefined}>
               {fsm.state ?? 'Unknown'}
             </span>
@@ -248,11 +248,12 @@ export function HeaderTools({
   batteryVoltage: number | null
   batteryPercentage: number | null
 }) {
-  const toneText = `Tone ${sound ? (audioRunning ? 'on' : 'on, click the page') : 'off'}`
-  const voiceText = `Voice ${!speechAvailable ? 'n/a' : speech ? 'on' : 'off'}`
+  const toneText = `Alert sound ${sound ? (audioRunning ? 'on' : 'on, click the page') : 'off'}`
+  const voiceText = `Spoken alerts ${!speechAvailable ? 'n/a' : speech ? 'on' : 'off'}`
   const toneButton = (words: boolean) => (
     <button
       type="button"
+      data-action="sound"
       onClick={onToggleSound}
       aria-pressed={sound}
       aria-label={toneText}
@@ -260,12 +261,13 @@ export function HeaderTools({
       className={cn(chip, 'cursor-pointer hover:border-line-hot', sound ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
     >
       {sound ? <Volume2 className="w-4 h-4" aria-hidden="true" /> : <VolumeX className="w-4 h-4 text-ink-muted" aria-hidden="true" />}
-      <span className={words ? undefined : 'hidden xl:inline'} aria-hidden="true">{toneText}</span>
+      <span className={words ? undefined : 'hidden 2xl:inline'} aria-hidden="true">{toneText}</span>
     </button>
   )
   const voiceButton = (words: boolean) => (
     <button
       type="button"
+      data-action="voice"
       onClick={onToggleSpeech}
       aria-pressed={speech}
       aria-label={voiceText}
@@ -280,7 +282,7 @@ export function HeaderTools({
       className={cn(chip, 'cursor-pointer hover:border-line-hot disabled:cursor-default disabled:opacity-60', speech ? 'border-accent bg-accent-soft/40 text-ink' : TONE.neutral)}
     >
       <Speech className={cn('w-4 h-4', !speech && 'text-ink-muted')} aria-hidden="true" />
-      <span className={words ? undefined : 'hidden xl:inline'} aria-hidden="true">{voiceText}</span>
+      <span className={words ? undefined : 'hidden 2xl:inline'} aria-hidden="true">{voiceText}</span>
     </button>
   )
   return (
@@ -350,8 +352,8 @@ function ToolsMenu({ batteryPercent, batteryVolts, monitor, children }: { batter
         type="button"
         aria-expanded={open}
         aria-controls="tools-menu"
-        aria-label={`Tone, voice and battery. ${label}`}
-        title={`Tone, voice and battery. ${label}`}
+        aria-label={`Sound, speech and battery. ${label}`}
+        title={`Sound, speech and battery. ${label}`}
         onClick={() => setOpen((o) => !o)}
         className="h-10 px-2 rounded-lg flex items-center gap-1 bg-surface/80 border border-line-strong hover:border-line-hot text-ink-soft hover:text-ink transition-colors"
       >
@@ -359,7 +361,7 @@ function ToolsMenu({ batteryPercent, batteryVolts, monitor, children }: { batter
         <Ellipsis className="w-4 h-4" aria-hidden="true" />
       </button>
       {open && (
-        <div id="tools-menu" role="group" aria-label="Tone, voice and battery" className="absolute left-0 top-full mt-1.5 z-30 flex flex-col items-stretch gap-1.5 rounded-xl border border-line-strong bg-surface p-2 shadow-lg">
+        <div id="tools-menu" role="group" aria-label="Sound, speech and battery" className="absolute left-0 top-full mt-1.5 z-30 flex flex-col items-stretch gap-1.5 rounded-xl border border-line-strong bg-surface p-2 shadow-lg">
           {children}
         </div>
       )}
