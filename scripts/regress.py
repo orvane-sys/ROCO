@@ -2,7 +2,7 @@
 """
 Regression tests for the ROCO bridge against real processes (the audit's reproductions, repeatable).
 
-  python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump, R6 launcher  (about 60 s)
+  python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump, R6 launcher, R7 sample, R8 demo  (about 70 s)
   python3 scripts/regress.py --live     # also R3 old log, no --log, and R5 bridge restart (DDS domain 42, needs unitree_sdk2py)
 
 Standard library only. It writes its own 60 s recording to a temporary folder (no files in ~ are used), starts each bridge on a
@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from typing import List, Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -738,6 +739,40 @@ def r7_sample_recording(tmp: str, rec: str, res: Results) -> None:
     res.say(case, "PASS", f"{os.path.getsize(out) / 1e6:.2f} MB, {chk.stdout.strip()}")
 
 
+def r8_demo(tmp: str, res: Results) -> None:
+    case = "R8 roco demo serves the page and the sample with no bridge, and Ctrl-C stops it"
+    if not os.path.isfile(os.path.join(ROOT, "dist", "index.html")):
+        res.say(case, "SKIP", "the page is not built: npm run build")
+        return
+    web_port = free_port()
+    child = Child([LAUNCHER, "demo", "--web-port", str(web_port)], tmp, "r8")
+    try:
+        t_end = time.time() + 15
+        while time.time() < t_end and child.alive() and "[roco] open " not in child.stdout():
+            time.sleep(0.05)
+        want = f"http://localhost:{web_port}/?demo=1"
+        bad = [] if want in child.stdout() else [f"address {want} not printed"]
+        for path in ("/?demo=1", "/demo/g1-sample.rocodemo.gz"):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{web_port}{path}", timeout=5) as r:
+                    if r.status != 200 or not r.read(64):
+                        bad.append(f"{path}: {r.status}")
+            except OSError as e:
+                bad.append(f"{path}: {e}")
+        kids = children(child.pid) if sys.platform.startswith("linux") else []
+        if kids:
+            bad.append(f"{len(kids)} child process(es): demo starts no bridge")
+        os.kill(child.pid, signal.SIGINT)
+        code = child.proc.wait(8)
+        text = child.stdout() + child.stderr()
+        if code or "Traceback" in text:
+            bad.append(f"exit code {code}, traceback printed: {'Traceback' in text}")
+        res.say(case, "FAIL" if bad else "PASS", "; ".join(bad) + (f"\n{text}" if bad else "") or
+                "page and sample served (200), no child process, Ctrl-C exit code 0")
+    finally:
+        child.stop()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="ROCO bridge regression tests against real processes")
     ap.add_argument("--live", action="store_true", help="also the cases that need DDS (domain 42): R3 and R5")
@@ -759,7 +794,7 @@ def main() -> int:
         print(f"[regress] recording written in {time.time() - t0:.1f} s", flush=True)
         cases = [("R1", lambda: r1_stuck_client(tmp, rec, res)), ("R2", lambda: r2_cut_recordings(tmp, rec_dir, res)),
                  ("R4", lambda: r4_report_after_jump(tmp, rec, res)), ("R6", lambda: r6_launcher(tmp, rec, res)),
-                 ("R7", lambda: r7_sample_recording(tmp, rec, res))]
+                 ("R7", lambda: r7_sample_recording(tmp, rec, res)), ("R8", lambda: r8_demo(tmp, res))]
         if args.live:
             cases += [("R3", lambda: r3_old_log(tmp, res)), ("R5", lambda: r5_bridge_restart(tmp, res))]
         for name, run in cases:

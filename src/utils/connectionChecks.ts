@@ -46,7 +46,7 @@ export function connectionChecks(monitor: MonitorState, bridgeUrl: string): Conn
       text: ctrl
         ? `State ${monitor.fsm.state ?? 'not known yet'}`
         : hello
-        ? `No log from a running g1_ctrl. Is g1_ctrl running with --log${ctrlLog ? ` (the bridge reads ${ctrlLog})` : ''}?`
+        ? `No log from a running g1_ctrl. Run g1_ctrl with --log, or pipe its output through tee into the file the bridge reads${ctrlLog ? ` (${ctrlLog})` : ''}. See Controller state in the README.`
         : 'Waits for the bridge.',
     },
   ]

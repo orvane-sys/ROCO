@@ -111,5 +111,45 @@ for (const id of commandIds) {
 const controls = sources.filter((s) => s !== actionsSrc)
 for (const id of actionIds) check(controls.some((s) => s.includes(`data-action="${id}"`)), `the action "${id}" has a control marked data-action="${id}"`)
 
+// the abort: Unitree's own g1_ctrl stops on LT+B only; p is a keyboard abort that only some builds have, so it is never given alone
+// or first (the type-6 procedure is written for a build that has it, so it is not checked here)
+for (const [f, text] of [
+  ['src/components/Tour.tsx', read('src/components/Tour.tsx').match(/'The real abort[^']*(?:\\'[^']*)*'/)?.[0] ?? ''],
+  ['src/config/alertPolicy.ts', read('src/config/alertPolicy.ts').match(/const ABORT = '([^']*)'/)?.[1] ?? ''],
+  ['src/components/AbortChecks.tsx', read('src/components/AbortChecks.tsx').match(/abort \(([^)]*)\)/)?.[1] ?? ''],
+  ['src/utils/monitorFormat.ts', read('src/utils/monitorFormat.ts').match(/text: 'Abort from any state:([^']*)'/)?.[1] ?? ''],
+]) {
+  const ltb = text.search(/LT ?\+ ?B/), p = text.search(/\bp\b/)
+  check(ltb >= 0 && (p < 0 || ltb < p) && (p < 0 || /if your/.test(text)), `${f} gives LT+B first and p only for builds that have it ("${text.slice(0, 60)}")`)
+}
+{
+  const safety = readme.match(/## Safety[\s\S]*?(?=\n## )/)?.[0] ?? ''
+  const ltb = safety.search(/LT ?\+ ?B/), p = safety.search(/`p`/)
+  check(ltb >= 0 && (p < 0 || ltb < p), 'the README\'s Safety section gives LT+B first')
+}
+
+// a newcomer's path: the README says what runs where, how to start with Unitree's own g1_ctrl, and what to do when it does not work
+for (const [re, what] of [
+  [/^## Quick start$/m, 'a Quick start section'],
+  [/^## Troubleshooting$/m, 'a Troubleshooting section'],
+  [/\*\*Supported:\*\* Ubuntu 22\.04 with Python 3\.10\. Tested in Chrome\./, 'the supported platform line'],
+  [/roco demo/, 'roco demo'],
+  [/--deploy-dir/, '--deploy-dir'],
+  [/g1_ctrl --network=lo 2>&1 \| tee \.\.\/log\/log\.txt/, 'running g1_ctrl through tee into the log ROCO reads'],
+  [/\]\(docs\/recording-format\.md\)/, 'a link to docs/recording-format.md'],
+  [/ssh -L 8765:127\.0\.0\.1:8765/, 'the SSH tunnel for watching from another PC'],
+]) check(re.test(readme), `the README has ${what}`)
+// the tee line must write the file the bridge reads by default (deploy/robots/g1/log/log.txt, run from deploy/robots/g1/build)
+check(/"ctrl_log": os\.path\.join\(root, "robots\/g1\/log\/log\.txt"\)/.test(read('scripts/roco_dds_bridge.py')), 'the bridge reads robots/g1/log/log.txt, as the README\'s tee line writes')
+check(/cd .*deploy\/robots\/g1\/build|in `~\/unitree_rl_mjlab\/deploy\/robots\/g1\/build`/.test(readme), 'the README says where to run g1_ctrl from')
+const recFormat = existsSync(join(root, 'docs/recording-format.md')) ? read('docs/recording-format.md') : ''
+check(recFormat.length > 0, 'docs/recording-format.md exists')
+// every column the replay needs is documented, and is still one the bridge reads
+const bridgeSrc = read('scripts/roco_dds_bridge.py')
+for (const c of ['unix_t', 'tick', 'mode_pr', 'mode_machine', 'quat_w', 'gyro_x', 'acc_x', 'rpy_r', 'tau_est', 'temp0_', 'temp1_', 'vol_', 'motorstate_']) {
+  check(recFormat.includes('`' + c) && bridgeSrc.includes(`"${c}"`), `docs/recording-format.md documents the column ${c}, which the bridge reads`)
+}
+check(meta('referrer') === 'no-referrer', 'index.html sends no referrer (a bridge token never leaks in one)')
+
 console.log(`meta: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

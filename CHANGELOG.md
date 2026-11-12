@@ -5,13 +5,31 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
-### Fixed
-- The 3D view's badge while a replay is paused ("Paused at 82.5 s / 236.2 s") stays inside its box: the robot's name gives way
-  first. It ran past the edge on recordings of a few minutes at 1366 and 1440 px.
+### Added
+- `roco demo` plays the sample recording from your own PC, with no robot and no internet.
+- `--ctrl-log FILE` on `roco sim` and `roco robot`, for a `g1_ctrl` log that is not in the deploy folder.
+- The README has a Quick start for each way in (no robot, the simulator, the robot, a recording), a supported-platform line,
+  a Controller state section, a Deploy folder section and a Troubleshooting table. The checks, regression tests and
+  performance tools moved to CONTRIBUTING.md.
+- `docs/recording-format.md` describes the recording files ROCO replays, so other tools can write them.
+- SECURITY.md and the README say that a bridge token travels in the address over plain `ws://`, and suggest an SSH tunnel for
+  watching from another PC. The page sends no referrer.
 
 ### Changed
+- The bridge finds the deploy folder on its own: `--deploy-dir` or `ROCO_DEPLOY_DIR`, else `~/unitree_rl_mjlab/deploy_lock`,
+  else `~/unitree_rl_mjlab/deploy` (the folder Unitree's repository ships). It prints the folder it uses. Robot data uses
+  `config.yaml` when there is no `config_hw.yaml`.
+- The abort is given as LT+B on the remote first (Unitree's default), and `p` only for `g1_ctrl` builds that have the keyboard
+  abort: in the tour, the alerts, the abort checks and Help.
+- Without a controller log, the page and the bridge say how to get one from Unitree's `g1_ctrl` (run it through `tee`).
+- The tour's first step says that a recorded simulator run can be played with no robot, and where to start with your own G1.
 - Operator test: the glance-drill pictures are retaken from the current page, and the answer keys for tasks 1 and 2 are
   re-read (the simulated fall's first alert now shows as Tilt, at the same moment as the ankle pitch ranges).
+
+### Fixed
+- The launcher printed a `ConnectionResetError` traceback when a browser stopped a download part way.
+- The 3D view's badge while a replay is paused ("Paused at 82.5 s / 236.2 s") stays inside its box: the robot's name gives way
+  first. It ran past the edge on recordings of a few minutes at 1366 and 1440 px.
 
 ## [0.1.1] - 2026-11-12
 

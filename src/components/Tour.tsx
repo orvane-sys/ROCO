@@ -10,7 +10,8 @@ const STEPS: { title: string; target?: string; body: string[] }[] = [
     title: 'ROCO only watches',
     body: [
       'ROCO only watches. This page shows what the robot and g1_ctrl are doing. It never sends a command, and it never says "safe".',
-      'The real abort is in g1_ctrl: press p in its terminal or LT+B on the remote.',
+      'The real abort is in g1_ctrl: LT+B on the remote (Unitree\'s default). If your g1_ctrl build has a keyboard abort, p in its terminal works too.',
+      'No robot? The page can play a recorded simulator run. To watch your own G1, see Quick start in the README.',
     ],
   },
   {

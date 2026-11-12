@@ -108,7 +108,7 @@ export function ShortcutHelp({ onClose, monitor = false, onTour }: { onClose: ()
               keys={k.remote ? [k.key, k.remote] : [k.key]}
             />
           ))}
-          <KeyRow action="Abort to Passive, from any state" keys={[G1_CTRL_ABORT.key, G1_CTRL_ABORT.remote]} />
+          <KeyRow action="Abort to Passive, from any state" keys={[G1_CTRL_ABORT.remote, G1_CTRL_ABORT.key]} />
         </ul>
         <p className="mt-3 text-xs text-ink-muted">{G1_CTRL_ABORT.text}</p>
 

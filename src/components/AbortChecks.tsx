@@ -78,7 +78,7 @@ export function AbortChecks({ checks, state }: { checks: AbortCheck[]; state: Mo
       </ul>
       {unseen.length > 0 && (
         <p className="text-xs text-crit-ink">
-          The manual says to abort (LT+B or p, spotter takes the weight) when one of these is crossed, and not to restart before the cause is known.
+          The manual says to abort (LT+B, or p if your g1_ctrl has the keyboard abort; spotter takes the weight) when one of these is crossed, and not to restart before the cause is known.
         </p>
       )}
       <p className="text-xs text-ink-muted">

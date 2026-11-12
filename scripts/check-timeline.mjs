@@ -451,6 +451,7 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   const hello = conn.connectionChecks(live({ aux: null, fsm: { state: null, events: [], segments: [], segment: null } }), 'x')
   check(hello[0].ok && !hello[1].ok && !hello[2].ok && hello[1].text.includes('interface'), 'bridge up but no robot state: the second check says what to look at')
   const all = conn.connectionChecks(live(), 'x')
+  check(hello[2].text.includes('tee') && hello[2].text.includes('--log'), 'no g1_ctrl log: the third check names --log and the tee way (Unitree\'s g1_ctrl has no --log)')
   check(all.every((c) => c.ok), 'a running session passes all three')
   const stale = conn.connectionChecks(live({ aux: { t: 1, alerts: [], link: { lowstateHz: 500, lowstateAgeMs: 4000 } } }), 'x')
   check(!stale[1].ok, 'robot state that stopped arriving is not "OK"')

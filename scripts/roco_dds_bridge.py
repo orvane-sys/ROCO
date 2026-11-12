@@ -80,8 +80,18 @@ KNEE = (3, 9)
 # 24.8 Nm (real_log.py ANK_PEAK). real_log compares the ankle pitch PD demand against this value.
 ANKLE_MOTOR_PEAK_NM = 24.8
 
-# Where the controller's folder is: --deploy-dir, else $ROCO_DEPLOY_DIR, else the usual place. ROCO only reads from it.
-DEPLOY_LOCK = os.path.expanduser(os.environ.get("ROCO_DEPLOY_DIR") or "~/unitree_rl_mjlab/deploy_lock")
+def default_deploy_dir(home: Optional[str] = None, env: Optional[dict] = None) -> str:
+    """Where the controller's folder is when --deploy-dir is not given: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock
+    if it exists, else ~/unitree_rl_mjlab/deploy (the folder Unitree's own unitree_rl_mjlab ships). ROCO only reads from it."""
+    env = os.environ if env is None else env
+    if env.get("ROCO_DEPLOY_DIR"):
+        return os.path.expanduser(env["ROCO_DEPLOY_DIR"])
+    base = os.path.join(home or os.path.expanduser("~"), "unitree_rl_mjlab")
+    lock = os.path.join(base, "deploy_lock")
+    return lock if os.path.isdir(lock) else os.path.join(base, "deploy")
+
+
+DEPLOY_DIR = default_deploy_dir()
 
 
 def deploy_paths(root: str) -> dict:
@@ -94,6 +104,12 @@ def deploy_paths(root: str) -> dict:
         "ctrl_log": os.path.join(root, "robots/g1/log/log.txt"),
         "manual": os.path.join(root, "TEST_MANUAL.md"),
     }
+
+
+def robot_config(dp: dict) -> str:
+    """The controller config for robot data: config_hw.yaml, or config.yaml when the folder has no config_hw.yaml
+    (Unitree's own deploy folder has only config.yaml)."""
+    return dp["cfg_hw"] if os.path.exists(dp["cfg_hw"]) or not os.path.exists(dp["cfg_sim"]) else dp["cfg_sim"]
 
 
 def display_path(path: Optional[str], root: Optional[str]) -> Optional[str]:
@@ -121,7 +137,7 @@ def public_limits(limits: dict, root: Optional[str]) -> dict:
     return limits
 
 
-_DEPLOY = deploy_paths(DEPLOY_LOCK)
+_DEPLOY = deploy_paths(DEPLOY_DIR)
 DEFAULT_MODEL = _DEPLOY["model"]
 DEFAULT_CFG_SIM = _DEPLOY["cfg_sim"]
 DEFAULT_CFG_HW = _DEPLOY["cfg_hw"]
@@ -1245,7 +1261,8 @@ class LogTailer(threading.Thread):
                         if writing is False:
                             f.seek(0, os.SEEK_END)      # an old run's log: follow only what a new run writes
                             print(f"[ROCO DDS] {self.path} is not open in g1_ctrl (an old run's log): state unknown "
-                                  "until g1_ctrl runs with --log")
+                                  "until g1_ctrl runs with --log, or with its output piped into this file by tee "
+                                  "(README, Controller state)")
                         else:
                             # last session only: lines after the latest "Config:" line
                             f.seek(max(0, st.st_size - self.BACKFILL_BYTES))
@@ -1904,7 +1921,7 @@ def open_replay(args, dp: dict, index: bool = True):
     worker both call this, so the worker plays exactly what the bridge shows."""
     store, prefix = resolve_replay(args.replay)
     events, cfg, cfg_name, notes = find_replay_context(
-        store, prefix, args.ctrl_log, args.ctrl_config or dp["cfg_hw"], [args.ctrl_config, dp["cfg_sim"], dp["cfg_hw"]], dp["root"])
+        store, prefix, args.ctrl_log, args.ctrl_config or robot_config(dp), [args.ctrl_config, dp["cfg_sim"], dp["cfg_hw"]], dp["root"])
     top = prefix.split("/")[0] if "/" in prefix else ""
     model_in_store = [n for n in store.names if os.path.basename(n) == os.path.basename(args.model or "")
                       and (not top or n.startswith(top + "/"))]
@@ -2409,7 +2426,7 @@ def run_self_test() -> bool:
         print("  [-] deploy_lock files not found, skipped")
 
     print("\n--- PD demand vs real_log.py's formula on a g1_record CSV ---")
-    pre = os.path.join(DEPLOY_LOCK, "robots/g1/hw_logs/2026-10-23/precheck")
+    pre = os.path.join(DEPLOY_DIR, "robots/g1/hw_logs/2026-10-23/precheck")
     if os.path.exists(pre + "_lowstate.csv"):
         Ls = np.genfromtxt(pre + "_lowstate.csv", delimiter=",", names=True, max_rows=3000)
         Lc = np.genfromtxt(pre + "_lowcmd.csv", delimiter=",", names=True, max_rows=3000)
@@ -2597,6 +2614,24 @@ def run_self_test() -> bool:
             check(cfg == {"marker": 22} and any("other.yaml" in n and "not found" in n for n in notes),
                   "a config named nowhere falls back to config_hw.yaml and says the named one was not found")
             check(not any(d in n for n in notes), "the notes carry no absolute path of this PC")
+        # W14: which deploy folder is read when --deploy-dir is not given, and which config robot data gets
+        home = os.path.join(d, "home")
+        base = os.path.join(home, "unitree_rl_mjlab")
+        check(default_deploy_dir(home, {}) == os.path.join(base, "deploy"), "no folder at all: ~/unitree_rl_mjlab/deploy (the warning names both)")
+        os.makedirs(os.path.join(base, "deploy/robots/g1/config"))
+        check(default_deploy_dir(home, {}) == os.path.join(base, "deploy"), "only deploy (Unitree's layout): deploy")
+        os.makedirs(os.path.join(base, "deploy_lock"))
+        check(default_deploy_dir(home, {}) == os.path.join(base, "deploy_lock"), "deploy_lock is preferred when both exist")
+        check(default_deploy_dir(home, {"ROCO_DEPLOY_DIR": "/x/dep"}) == "/x/dep", "ROCO_DEPLOY_DIR wins")
+        dp3 = deploy_paths(os.path.join(base, "deploy"))
+        check(robot_config(dp3) == dp3["cfg_hw"], "neither config: config_hw.yaml is named (so the warning names it)")
+        with open(dp3["cfg_sim"], "w") as f:
+            f.write("marker: 1\n")
+        check(robot_config(dp3) == dp3["cfg_sim"], "no config_hw.yaml: robot data gets config.yaml")
+        with open(dp3["cfg_hw"], "w") as f:
+            f.write("marker: 2\n")
+        check(robot_config(dp3) == dp3["cfg_hw"], "config_hw.yaml present: robot data gets it")
+
         # W13: what the hello shows of a path
         check(display_path("/home/u/deploy/robots/g1/config/config.yaml", "/home/u/deploy") == "deploy/robots/g1/config/config.yaml",
               "a path inside the deploy folder is shown relative to it")
@@ -2864,8 +2899,9 @@ def main():
     ap.add_argument("--odom-topic", default="auto",
                     help="odometry topic: auto (lo: rt/sportmodestate, else rt/odommodestate), a topic name, or none")
     ap.add_argument("--deploy-dir", default=None, metavar="DIR",
-                    help="g1_ctrl's deploy folder, read only (default: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock)")
-    ap.add_argument("--ctrl-config", default=None, help="g1_ctrl config (default: config.yaml on lo, else config_hw.yaml, in the deploy folder)")
+                    help="g1_ctrl's deploy folder, read only (default: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock "
+                         "if it exists, else ~/unitree_rl_mjlab/deploy)")
+    ap.add_argument("--ctrl-config", default=None, help="g1_ctrl config (default: config.yaml on lo, else config_hw.yaml if present, in the deploy folder)")
     ap.add_argument("--model", default=None, help="robot MJCF for torque limits and joint ranges (default: sim/g1/g1_29dof_type6.xml in the deploy folder)")
     ap.add_argument("--ctrl-log", default=None, help="g1_ctrl log to follow for the FSM state (default: robots/g1/log/log.txt in the deploy folder)")
     ap.add_argument("--no-ctrl-log", action="store_true", help="do not read g1_ctrl's log")
@@ -2898,12 +2934,16 @@ def main():
     if args.exit_with_stdin and not args.checkpoint_worker:
         threading.Thread(target=_exit_when_stdin_closes, name="stdin-watch", daemon=True).start()
 
-    dp = deploy_paths(args.deploy_dir or DEPLOY_LOCK)
+    dp = deploy_paths(args.deploy_dir or DEPLOY_DIR)
     args.manual = dp["manual"]
     args.model = args.model or dp["model"]
-    if not os.path.isdir(dp["root"]):
-        print(f"[ROCO DDS] warning: deploy folder {dp['root']} not found: ROCO's default limits, no manual hash "
-              "(set --deploy-dir or ROCO_DEPLOY_DIR)")
+    if os.path.isdir(dp["root"]):
+        print(f"[ROCO DDS] deploy folder: {dp['root']} (read only)")
+    elif args.deploy_dir or os.environ.get("ROCO_DEPLOY_DIR"):
+        print(f"[ROCO DDS] warning: deploy folder {dp['root']} not found: ROCO's default limits, no manual hash")
+    else:
+        print("[ROCO DDS] warning: no deploy folder at ~/unitree_rl_mjlab/deploy_lock or ~/unitree_rl_mjlab/deploy: "
+              "ROCO's default limits (pass --deploy-dir DIR or set ROCO_DEPLOY_DIR)")
 
     if args.checkpoint_worker:
         if not args.replay or args.checkpoint_fd < 0:
@@ -2932,7 +2972,7 @@ def main():
         return
 
     source = args.source or ("sim" if args.iface == "lo" else "robot")
-    cfg = args.ctrl_config or (dp["cfg_sim"] if args.iface == "lo" else dp["cfg_hw"])
+    cfg = args.ctrl_config or (dp["cfg_sim"] if args.iface == "lo" else robot_config(dp))
     limits = load_limits(args.model, cfg, args.tilt_warn_deg, args.tilt_crit_deg)
     for w in limits["warnings"]:
         print(f"[ROCO DDS] warning: {w}")

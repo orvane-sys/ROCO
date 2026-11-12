@@ -21,7 +21,7 @@ export interface AlertResponse {
   stateUnknown?: string
 }
 
-const ABORT = 'LT+B or p'
+const ABORT = 'LT+B (or p, if your g1_ctrl has the keyboard abort)'
 
 /** One entry per alert `kind` the bridge raises (scripts/roco_dds_bridge.py). */
 export const RESPONSES: Record<string, AlertResponse> = {

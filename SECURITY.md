@@ -15,7 +15,11 @@ Supported: the latest release only.
   publishes to DDS or commands the robot.
 - **Any other address** (`--host 0.0.0.0`, for a page on another PC) needs `--token SECRET`; the page connects with
   `ws://host:port/?token=SECRET`. Browser pages from other origins are refused unless named with `--allow-origin`.
-  Anyone on that network who has the token can see the telemetry, so use it on the robot's own network only.
+  Anyone on that network who has the token can see the telemetry. The token travels in the address over plain `ws://`
+  (no encryption), so anyone who can watch that network can read it: use it on the robot's own wired network only.
+- **To watch from another PC, prefer an SSH tunnel** and keep the bridge on loopback:
+  `ssh -L 8765:127.0.0.1:8765 -L 8780:127.0.0.1:8780 testpc`, then open the link the launcher printed. The page sends no
+  referrer, so the address with the token is not passed on to other sites.
 - **The launcher** (`scripts/roco`) serves the built page on 127.0.0.1 only, and only files inside `dist/`.
 - **The page** keeps marks, ticks and alert history in the browser's own storage for the day. It sends nothing anywhere
   except to the bridge address it was given.

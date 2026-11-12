@@ -13,7 +13,7 @@ export const G1_CTRL_KEYS: { from: string; to: string; key: string; remote: stri
 export const G1_CTRL_ABORT = {
   key: 'p',
   remote: 'LT + B',
-  text: 'Abort from any state: LT + B on the remote or p in the g1_ctrl terminal (Passive, damping). ' +
+  text: 'Abort from any state: LT + B on the remote, or p in the g1_ctrl terminal if your build has the keyboard abort (Passive, damping). ' +
     'Ctrl+C in that terminal: Passive for 1 s, then g1_ctrl exits.',
 }
 

@@ -4,6 +4,7 @@
     scripts/roco sim                 simulator on this PC (unitree_mujoco and g1_ctrl on the loopback interface)
     scripts/roco robot enp2s0        the real robot, on the wired interface that reaches it
     scripts/roco replay <path>       a g1_record folder or zip (optionally <zip>:<prefix>)
+    scripts/roco demo                the sample recording that ships with the page: no robot, no simulator, no bridge
 
 It needs only Python (the bridge's own packages are needed as before) and the built page: dist/ in a clone (`npm run build` once,
 on any PC with Node, then copy dist/ here), or the page inside the release's wheel. The page is served on loopback only. The launcher sends nothing to the robot: the bridge it
@@ -15,6 +16,7 @@ import http.server
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -39,6 +41,11 @@ def find_dist(here: str = HERE, root: str = ROOT) -> str:
 DIST = find_dist()
 
 
+def demo_url(web_port: int) -> str:
+    """The address of the sample recording, played by the page itself (no bridge)."""
+    return f"http://localhost:{web_port}/?demo=1"
+
+
 def page_url(web_port: int, bridge_port: int, token=None) -> str:
     """The address to open: the page, told which bridge to read (it opens in monitor mode, so it never offers drive controls).
     The token is the bridge's, when it has one: without it the page cannot connect."""
@@ -58,6 +65,8 @@ def bridge_command(args) -> list:
         cmd += ["--iface", args.iface]
     if args.deploy_dir:
         cmd += ["--deploy-dir", args.deploy_dir]
+    if getattr(args, "ctrl_log", None):
+        cmd += ["--ctrl-log", args.ctrl_log]
     return cmd
 
 
@@ -119,9 +128,17 @@ def cache_policy(url_path: str) -> str:
     return "no-cache"
 
 
+class QuietServer(http.server.ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # a browser that stops a download (a reload, a closed tab) is not an error to show the operator
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)
+
+
 def make_server(directory: str, port: int) -> http.server.ThreadingHTTPServer:
     handler = functools.partial(QuietHandler, directory=directory)
-    return http.server.ThreadingHTTPServer((LOOPBACK, port), handler)
+    return QuietServer((LOOPBACK, port), handler)
 
 
 def parse(argv):
@@ -133,12 +150,19 @@ def parse(argv):
     robot.add_argument("target", metavar="IFACE", help="wired interface that reaches the robot, e.g. enp2s0")
     replay = sub.add_parser("replay", help="a g1_record recording")
     replay.add_argument("target", metavar="PATH", help="folder or zip (optionally <zip>:<prefix>)")
+    demo = sub.add_parser("demo", help="the sample recording, with no robot and no bridge")
+    demo.add_argument("--web-port", type=int, default=8780, help="port the page is served on (default 8780)")
+    demo.add_argument("--open", action="store_true", help="open the page in the default browser")
     for p in (sim, robot, replay):
         p.add_argument("--port", type=int, default=8765, help="bridge WebSocket port (default 8765)")
         p.add_argument("--web-port", type=int, default=8780, help="port the page is served on (default 8780)")
         p.add_argument("--open", action="store_true", help="open the page in the default browser")
         p.add_argument("--deploy-dir", default=None, metavar="DIR",
-                       help="g1_ctrl's deploy folder (default: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock)")
+                       help="g1_ctrl's deploy folder (default: $ROCO_DEPLOY_DIR, else ~/unitree_rl_mjlab/deploy_lock if it exists, "
+                            "else ~/unitree_rl_mjlab/deploy)")
+    for p in (sim, robot):
+        p.add_argument("--ctrl-log", default=None, metavar="FILE",
+                       help="g1_ctrl's log, for the controller state (default: robots/g1/log/log.txt in the deploy folder)")
     ap.add_argument("--self-test", action="store_true")
     return ap, ap.parse_args(argv)
 
@@ -153,11 +177,14 @@ def run(args) -> int:
               "       In a clone, run `npm run build` once on a PC with Node. Or install the wheel from the GitHub release, "
               "which has the page inside.")
         return 2
-    for name, port in (("bridge", args.port), ("page", args.web_port)):
+    ports = (("page", args.web_port),) if args.mode == "demo" else (("bridge", args.port), ("page", args.web_port))
+    for name, port in ports:
         if not port_free(port):
             print(f"[roco] port {port} ({name}) is already in use. Is another roco or bridge running? Use --port / --web-port to change it.")
             return 2
     server = make_server(DIST, args.web_port)
+    if args.mode == "demo":
+        return run_demo(args, server)
     cmd = bridge_command(args)
     print("[roco] starting the bridge: " + " ".join(cmd[1:]))
     # Started before the web thread: preexec_fn is not safe once this process has threads.
@@ -189,6 +216,25 @@ def run(args) -> int:
         server.server_close()
 
 
+def run_demo(args, server) -> int:
+    """Serves the page and prints the address of the sample recording; the page plays it by itself, so no bridge is started."""
+    threading.Thread(target=server.serve_forever, name="web", daemon=True).start()
+    try:
+        url = demo_url(args.web_port)
+        print(f"[roco] open {url}\n[roco] the sample recording of a simulated G1, labelled SAMPLE. Ctrl+C stops.")
+        if args.open:
+            import webbrowser
+            webbrowser.open(url)
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n[roco] stopping")
+        return 0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def self_test() -> bool:
     import tempfile
     import urllib.request
@@ -208,6 +254,12 @@ def self_test() -> bool:
     check(bridge_command(a)[1:] == [BRIDGE, "--port", "8765", "--page-port", "9100", "--exit-with-stdin", "--replay", "/x/log.zip:stand"], "replay: the path as given, the bridge told the page's port")
     _, a = parse(["sim", "--deploy-dir", "/opt/dl"])
     check(bridge_command(a)[-2:] == ["--deploy-dir", "/opt/dl"], "the deploy folder is passed on only when given")
+    _, a = parse(["robot", "enp2s0", "--ctrl-log", "/x/g1_ctrl.log"])
+    check(bridge_command(a)[-2:] == ["--ctrl-log", "/x/g1_ctrl.log"], "the g1_ctrl log is passed on when given")
+    _, a = parse(["sim"])
+    check("--ctrl-log" not in bridge_command(a), "and not otherwise")
+    _, a = parse(["demo", "--web-port", "9200"])
+    check(a.mode == "demo" and demo_url(a.web_port) == "http://localhost:9200/?demo=1", "demo: the sample's address, no bridge")
     check(page_url(8780, 8765) =="http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765", "page address names the bridge and monitor mode")
     check(page_url(8780, 8765, "s3") == "http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765%2F%3Ftoken%3Ds3", "with a bridge token the address carries it")
     with tempfile.TemporaryDirectory() as t:
@@ -256,6 +308,18 @@ def self_test() -> bool:
             except urllib.error.HTTPError as e:
                 status = e.code
             check(status == 304, "an unchanged model is answered 304, not sent again")
+            with open(os.path.join(d, "models", "big.glb"), "wb") as f:
+                f.write(b"x" * 8_000_000)
+            import contextlib
+            import io
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                r = urllib.request.urlopen(f"http://{LOOPBACK}:{port}/models/big.glb", timeout=3)
+                r.read(64)
+                r.fp.raw._sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))   # a reset, as a closed tab
+                r.close()
+                time.sleep(0.5)
+            check("Traceback" not in err.getvalue(), "a download the browser stops prints no traceback")
         finally:
             srv.shutdown()
             srv.server_close()

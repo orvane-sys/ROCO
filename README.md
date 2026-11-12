@@ -10,18 +10,25 @@
 ![Version 0.1.1](https://img.shields.io/badge/version-0.1.1-informational.svg)
 [![Live demo](https://img.shields.io/badge/live%20demo-orvane--sys.github.io%2FROCO-2ea44f.svg)](https://orvane-sys.github.io/ROCO/)
 
-A read-only monitor for a Unitree G1 (29-DoF EDU, type 6, waist roll and pitch locked) running Unitree's `g1_ctrl`
-deploy controller, in the MuJoCo simulator or on the robot. It shows what the robot is doing, warns when a limit from
-the controller's own config is approached, and replays recordings. It never commands anything.
+A read-only monitor for a Unitree G1 (29-DoF) running Unitree's `g1_ctrl` deploy controller from
+[unitree_rl_mjlab](https://github.com/unitreerobotics/unitree_rl_mjlab), in the MuJoCo simulator or on the robot. It shows
+what the robot is doing in your browser, warns when a limit from the controller's own config is approached, and replays
+recordings. It never commands anything. Its limits come from your controller config; the guided checks and a few of ROCO's own
+limits were written for a 29-DoF EDU with the waist roll and pitch locked (type 6).
+
+**Who it is for:** people who run `g1_ctrl` on a G1, or rehearse in MuJoCo first, and want a second screen that shows the
+joints, the controller state and the limits while they watch the robot.
 
 React 19, Vite, Tailwind v4 and three.js in the browser; a Python bridge reads DDS. ROS 2 support is planned; ROCO v0.1.1
 monitors Unitree G1 over DDS.
 
 **Not a safety system. No warranty.** ROCO only watches. It cannot see the rope, the spotter or the room, and "no alert"
-never means "safe". Keep your E-stop in reach and follow your own test manual.
+never means "safe". Keep your E-stop in reach and follow your own test procedure.
 
 ROCO is an independent project, not affiliated with or endorsed by Unitree Robotics. Unitree and G1 are named only to say which
 robot it works with.
+
+**Supported:** Ubuntu 22.04 with Python 3.10. Tested in Chrome. Node 20 or newer is needed only to build the page from a clone.
 
 ## Try it without a robot
 
@@ -37,10 +44,130 @@ data leaves the page. Press Play, drag the timeline, open Analyze and Review. It
 
 The images are the page replaying the sample, drawn in software (no GPU), so the 3D view is the reduced one.
 
+## Quick start
+
+Install the wheel first (see [Install](#install)). Then pick one:
+
+**1. No robot, no internet.** The same sample as the live demo, served from your PC:
+
+```bash
+roco demo                  # prints http://localhost:8780/?demo=1; open it
+```
+
+**2. The simulator.** Start Unitree's `unitree_mujoco` with the G1 scene on the loopback interface, as the unitree_rl_mjlab
+README describes. Then start `g1_ctrl` with its output copied into the log file ROCO reads (see
+[Controller state](#controller-state)), in `~/unitree_rl_mjlab/deploy/robots/g1/build`:
+
+```bash
+mkdir -p ../log && stdbuf -oL ./g1_ctrl --network=lo 2>&1 | tee ../log/log.txt
+```
+
+In a third terminal:
+
+```bash
+roco sim                   # prints a link; open it
+```
+
+**3. The robot.** On the PC wired to the G1, with the interface that reaches it:
+
+```bash
+roco robot enp2s0          # prints a link; open it
+```
+
+**4. A recording.** A folder or zip in the [recording format](docs/recording-format.md):
+
+```bash
+roco replay <folder-or-zip>
+```
+
+Each command starts the bridge, serves the page on this PC only (port 8780) and prints the link to open. Ctrl-C, closing the
+terminal or `kill` stops it. `--port` and `--web-port` change the ports. The hosted demo page cannot show your own robot: open
+the link `roco` prints.
+
+## Install
+
+The quickest install is the wheel on the [latest release](https://github.com/orvane-sys/ROCO/releases/latest): it has the
+built page inside, so the PC needs Python only, no Node. It gives the commands `roco` and `roco-dds-bridge`.
+
+Do not run `pip install roco`. That name on PyPI belongs to an unrelated package, so it installs something else. ROCO is
+installed from the links here.
+
+```bash
+pipx install https://github.com/orvane-sys/ROCO/releases/download/v0.1.1/roco-0.1.1-py3-none-any.whl
+roco demo                             # the sample; needs nothing more
+roco replay <folder-or-zip>           # a recording; needs nothing more
+
+# live data (sim or robot) also needs DDS, in the same environment
+pipx inject roco cyclonedds==0.10.2
+pipx runpip roco install -e <your clone of unitree_sdk2_python>
+```
+
+Install `unitree_sdk2py` from a clone, the way Unitree describes it (`git clone`, then `pip install -e .`). A plain
+`pip install git+https://…` build leaves out `unitree_sdk2py/b2`, which has no `__init__.py`, and the import then fails.
+
+An install from the source (`pipx install git+https://github.com/orvane-sys/ROCO`) has the commands but no page, because the
+page is built by Node and is not in git. Use the wheel, or a clone.
+
+From a clone, build the page once with `npm ci && npm run build`, then use `./scripts/roco` the same way
+(`./scripts/roco sim`, `./scripts/roco robot enp2s0`, `./scripts/roco replay <folder-or-zip>`, `./scripts/roco demo`).
+The page needs no internet at run time (no external fonts, scripts or models).
+
+## Controller state
+
+ROCO shows the controller state (Passive, FixStand, Velocity and the rest of your config) and the keys for the next one, read
+from `g1_ctrl`'s log. Unitree's `g1_ctrl` prints its state changes ("FSM: Change state from Passive to FixStand") to its
+terminal only, so copy that output into the file ROCO reads: run it as in the Quick start,
+
+```bash
+mkdir -p ../log && stdbuf -oL ./g1_ctrl --network=lo 2>&1 | tee ../log/log.txt
+```
+
+from `deploy/robots/g1/build`. Keys typed into that terminal still reach `g1_ctrl`. A build of `g1_ctrl` with a `--log` option
+writes the same file itself. For a log somewhere else, pass `--ctrl-log FILE` to `roco sim` or `roco robot`.
+
+Without a log the page says the controller state is unknown, and everything else still works. If `g1_ctrl` runs on another PC
+(the robot's own), its log is not on this one, so the state stays unknown.
+
+## Deploy folder
+
+The bridge reads `g1_ctrl`'s config (the joint limits, gains and state names), the robot model and the log from the deploy
+folder, read only. It looks, in order, at:
+
+1. `--deploy-dir DIR`, or the `ROCO_DEPLOY_DIR` variable;
+2. `~/unitree_rl_mjlab/deploy_lock`, if it exists;
+3. `~/unitree_rl_mjlab/deploy`, the folder Unitree's repository ships.
+
+It prints the folder it uses when it starts. On robot data it reads `robots/g1/config/config_hw.yaml` when there is one, else
+`config.yaml`. Without the folder it warns and starts with ROCO's own default limits.
+
+## Watching from another PC
+
+The bridge and the page listen on this PC only (loopback). To watch from a laptop, prefer an SSH tunnel and leave them there:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 -L 8780:127.0.0.1:8780 testpc     # on the laptop, then open the link roco printed
+```
+
+`--host 0.0.0.0 --token SECRET` on the bridge also works, but the page sends the token in the address over plain `ws://`, so
+anyone on that network can read it. Use it only on the robot's own wired network. See [SECURITY.md](SECURITY.md).
+
+## Troubleshooting
+
+| What you see | What to do |
+|---|---|
+| "Not connected" | The bridge is not running, or the page points at another port. Start `roco sim`, `roco robot IFACE` or `roco replay`, and open the link it prints. |
+| The hosted demo page does not show my robot | It cannot: it only plays the sample. Open the link `roco` prints on your PC. |
+| Connected, but no robot data | Wrong interface: the simulator is on `lo`, the robot on the wired interface that reaches it (`ip -br addr`). `g1_ctrl`, the simulator and ROCO use DDS domain 0; for another, run `roco-dds-bridge --domain N`. A firewall must let UDP multicast through on that interface. |
+| Controller state unknown | `g1_ctrl` prints its state to its terminal only. Run it through `tee` as in [Controller state](#controller-state). |
+| A warning that the deploy folder was not found and ROCO's default limits are used | Pass `--deploy-dir` with your `unitree_rl_mjlab/deploy` folder, or see [Deploy folder](#deploy-folder). |
+| "port 8765 (bridge) is already in use" | Another `roco` or bridge is running. Stop it, or use `--port` / `--web-port`. |
+| An import error from `unitree_sdk2py` (often about `b2`) | Install it from a clone with `pip install -e .`, as in [Install](#install). |
+| "the page is not built" (from a clone) | Run `npm ci && npm run build` once. |
+
 ## What it shows
 
 - A 3D model driven by `rt/lowstate`.
-- The `g1_ctrl` state (Passive, FixStand, Velocity, squat) read from its log, with the keys for the next state.
+- The `g1_ctrl` state read from its log (see [Controller state](#controller-state)), with the keys for the next state.
 - Alerts for ankle PD demand, torque and joint-range limits, temperature, motor state, tilt, and stream gaps. The first
   alert of a burst is pinned on top, alerts after a change into Passive say so, each one has a "Do:" line with its manual
   section, and warnings can be shelved for the session (critical alerts cannot). The responses and the state-aware severity
@@ -72,101 +199,12 @@ The images are the page replaying the sample, drawn in software (no GPU), so the
 - A per-state table (the same numbers as `real_log.py`), and all 29 motors.
 - A **session report** in Review, as Markdown laid out like the hardware test reports (summary, setup, timeline, per-state
   numbers, guided checks, abort checks, alerts, marks). It lists what ROCO saw and says it is not a clearance.
-- Replay of `g1_record` recordings, from a folder or a zip.
+- Replay of recordings from a folder or a zip, in the [recording format](docs/recording-format.md) that `g1_record` writes.
 - A short first-run tour of the Run workspace, skippable, shown once per browser and restartable from Help.
 - Every action has a button on screen. **Help** (`?`) lists each one and where it is; the command palette (Ctrl+K) finds
   them by name and says where each lives.
 
 Values were checked against `g1_record` CSVs from live simulator runs (differences below 5e-6).
-
-## Run it
-
-Needs Node 20+ for the page, and Python 3.10 with `unitree_sdk2py` and CycloneDDS for the bridge. The page needs no
-internet at run time (no external fonts, scripts or models). Replaying a recording needs only Python, numpy and PyYAML.
-
-Install `unitree_sdk2py` from a clone, the way Unitree describes it (`git clone`, then `pip install -e .`). A plain
-`pip install git+https://…` build leaves out `unitree_sdk2py/b2`, which has no `__init__.py`, and the import then fails.
-
-The quickest install is the wheel on the [latest release](https://github.com/orvane-sys/ROCO/releases/latest): it has the
-built page inside, so the test PC needs Python only, no Node. It gives the commands `roco` and `roco-dds-bridge`.
-
-Do not run `pip install roco`. That name on PyPI belongs to an unrelated package, so it installs something else. ROCO is
-installed from the links here.
-
-```bash
-pipx install https://github.com/orvane-sys/ROCO/releases/download/v0.1.1/roco-0.1.1-py3-none-any.whl
-roco replay <folder-or-zip>           # replay needs nothing more
-
-# live data also needs DDS, in the same environment
-pipx inject roco cyclonedds==0.10.2
-pipx runpip roco install -e <your clone of unitree_sdk2_python>
-roco robot enp2s0
-```
-
-An install from the source (`pipx install git+https://github.com/orvane-sys/ROCO`) has the commands but no page, because the
-page is built by Node and is not in git. Use the wheel, or a clone.
-
-From a clone, the launcher does the same (Python only on the test PC). Build the page once with `npm run build`, then:
-
-```bash
-./scripts/roco sim                      # simulator on this PC
-./scripts/roco robot enp2s0             # real robot, on the wired interface that reaches it
-./scripts/roco replay <folder-or-zip>   # a g1_record recording (or <zip>:<prefix>)
-```
-
-It starts the bridge, serves `dist/` on loopback only (default port 8780) and prints the link to open. Ctrl-C, closing the
-terminal or `kill` stops the bridge too. `--port` and `--web-port` change the ports.
-
-The bridge reads g1_ctrl's config, the robot model, the test manual and its log from the deploy folder
-(`~/unitree_rl_mjlab/deploy_lock` by default; read only). If yours is elsewhere, pass `--deploy-dir DIR` or set
-`ROCO_DEPLOY_DIR`. Without the folder the bridge warns and starts with ROCO's own default limits.
-
-For development, with Node:
-
-```bash
-npm install
-npm run dev            # page at http://localhost:5173
-```
-
-In another terminal, one of:
-
-```bash
-# simulator on this PC (unitree_mujoco and g1_ctrl on the loopback interface)
-python3 scripts/roco_dds_bridge.py --iface lo
-
-# real robot, on the wired interface that reaches it
-python3 scripts/roco_dds_bridge.py --iface enp2s0 --source robot
-
-# replay a recording (g1_record folder or zip)
-python3 scripts/roco_dds_bridge.py --replay <folder-or-zip>
-```
-
-A replay also starts a second, low-priority Python process (idle scheduling class, one thread) that plays the whole
-recording once in the background. The page shows "Preparing numbers for jumps (N %)" while it runs (about 20 CPU seconds for
-a 4-minute recording on a desktop PC). Until it has covered a jump target, a jump restarts the numbers there and the
-page says "since X s". Once it has, a jump shows the same numbers as playing from the start. It keeps about 10 KB per
-2 s of recording in memory and writes nothing to disk. `--no-checkpoints` turns it off.
-
-The bridge prints a link; open it. Without a bridge the page shows a "Not connected" screen with these commands.
-**The sample recording** is 60 s of the simulated G1 (MuJoCo) with the real controller, made with `scripts/make_sim_demo.py` and `scripts/capture_demo.py`, played in the page. It only starts if you press the button (or open `?demo=1`) and is labelled SAMPLE everywhere.
-
-Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, profile, procedure, timeline, preference, demo,
-mesh and licence checks), `npm run check:layout` and `npm run check:a11y` (both drive Chrome on the built page: no layout jumps at any
-width, axe in three themes, reflow at 200 % and 400 % zoom, and a keyboard walk), `python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,
-`python3 tools/sim-drive/mujoco_roco_bridge.py --self-test`. CI (`.github/workflows/ci.yml`) runs all of them, `regress.py`
-and a check that a full clone stays under 40 MB. See `CONTRIBUTING.md`.
-
-Regression tests against real bridge processes (about 1 minute, Python and Node only, writes its own 60 s recording to a temporary folder):
-`python3 scripts/regress.py`. It starts bridges on free ports and checks that a client that stops reading does not hold up the others,
-that recordings cut off mid-write open and play to the end, and that the session report after a jump equals the report of the played
-run. `--live` adds an old run's log (state stays unknown) and a bridge restart (new session, its own alert history); these use a
-synthetic LowState_ on DDS domain 42, so a simulator or robot on domain 0 never sees it. It prints PASS / FAIL / SKIP per case and
-exits 1 on a failure. It is not part of `npm run lint`.
-
-Performance tools, run by hand: `npm run perf:load` prints a cold-load report of the built page (requests, bytes, time to the
-robot), and `npm run soak -- --minutes 120` plays the sample over and over and checks that the page's heap stays flat and its
-frame rate holds. The robot's meshes ship as compressed GLB files (`public/models/g1_description/meshes_glb/`, made from
-Unitree's STL files by `node scripts/pack-meshes.mjs`; the STL files stay as the source).
 
 ## Accessibility
 
@@ -180,13 +218,20 @@ their own shapes), live alerts are announced once and rate limited, and the layo
 - The bridge subscribes only. A guard stops any DDS writer from being created in the process, so it cannot command the
   robot and does not trip `g1_ctrl`'s other-publisher check. Frames from the page are ignored except replay controls.
 - The bridge listens on loopback only. Another host needs `--host` with `--token`.
-- ROCO does not show a "safe to start". It cannot see the rope, the spotter or the room. Abort with `p` (keyboard) or
-  `LT+B` (remote) in `g1_ctrl`.
+- ROCO does not show a "safe to start". It cannot see the rope, the spotter or the room. Abort in `g1_ctrl` with `LT+B` on
+  the remote (Unitree's default), or `p` in its terminal if your build has the keyboard abort.
 - Values from the simulator are not expectations for the real robot, and ROCO does not show one as the other.
+
+## Development
+
+Run the page with `npm install && npm run dev` (http://localhost:5173) and the bridge with
+`python3 scripts/roco_dds_bridge.py --iface lo` (or `--iface enp2s0 --source robot`, or `--replay <folder-or-zip>`). The
+checks, the regression tests and the performance tools are in [CONTRIBUTING.md](CONTRIBUTING.md); CI runs them on every push.
 
 ## Layout
 
-- `docs/` the screen reader test script and the operator test sheets. `scripts/check-*.mjs` the page's own checks.
+- `docs/` the recording format, the screen reader test script and the operator test sheets. `scripts/check-*.mjs` the page's
+  own checks.
 - `src/` the page. `src/services/telemetryStream.ts` is the WebSocket client; `src/types/monitor.ts` the bridge frames.
 - `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/roco_common.py` the wire format,
   robot profiles and WebSocket server both bridges share.
