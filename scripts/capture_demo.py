@@ -71,14 +71,18 @@ def cut_csv(src: str, dst: str, t_from: float, seconds: float) -> Tuple[float, i
     return last, n
 
 
+# g1_ctrl's startup lines that name the motion and policy files on the PC the run was made on: a public sample leaves them out.
+DROPPED = ("Loaded motion file", "Policy directory:")
+
+
 def cut_log(log: str, dst: str, t0: float, t1: float) -> int:
     """The log lines of the window. g1_ctrl's last Config line and state change before it are repeated just before its first moment:
-    the bridge only reads 30 s back, and without them the state would be unknown until the next change."""
+    the bridge only reads 30 s back, and without them the state would be unknown until the next change. DROPPED lines are left out."""
     config, state, kept = None, None, []
     with open(log, errors="ignore") as f:
         for line in f:
             p = parse_log_line(line)
-            if not p or p[0] > t1 + 1:
+            if not p or p[0] > t1 + 1 or p[2].startswith(DROPPED):
                 continue
             if p[0] >= t0 - 30:
                 kept.append(line.rstrip("\n"))

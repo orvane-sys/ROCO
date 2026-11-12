@@ -43,7 +43,7 @@ import { telemetryService } from './services/telemetryStream'
 import { acknowledge, getAlertControls, resetAlertControls, unshelveAll, useAlertControls } from './services/alertControls'
 import { playTestTone, prepareAudio, soundSupported, speak, speechSupported, useAudioRunning } from './services/alertCues'
 import { buildAlertView, evaluateAbortChecks } from './utils/alertModel'
-import { evaluateProcedure, newReachedOk } from './utils/procedureModel'
+import { evaluateProcedure, newReachedOk, type ReachedOk } from './utils/procedureModel'
 import { buildTimeline } from './utils/timelineModel'
 import { buildReport } from './utils/sessionReport'
 import { alertTitle } from './utils/monitorFormat'
@@ -81,6 +81,16 @@ import type {
   VelocityCommand,
 } from './types/telemetry'
 import { AlertTriangle, CircleHelp, ShieldAlert, X } from 'lucide-react'
+
+/** Which guided-check limits were reached and passed, kept between frames: one per hello, so another robot or recording starts over. */
+const latches = new WeakMap<object, ReachedOk>()
+const NO_HELLO = {}
+function latchFor(hello: object | null | undefined): ReachedOk {
+  const key = hello ?? NO_HELLO
+  let latch = latches.get(key)
+  if (!latch) latches.set(key, (latch = newReachedOk()))
+  return latch
+}
 
 /** Column widths (percent) when a layout has no saved ones, for the columns that are visible. */
 const DEFAULT_WIDTHS: Record<Workspace | 'drive', number[]> = {
@@ -288,16 +298,14 @@ export function App() {
   // guided checks: a recording keeps its ticks in memory and forgets them when another one opens; live ticks last for the day
   const procScope: ProcScope = monitor.hello?.source === 'replay' ? 'replay' : 'live'
   const procState = useProcedureState(procScope)
-  const reachedOk = useRef(newReachedOk())
   useEffect(() => {
     procedureStore('replay').reset()
     if (monitor.hello?.demo?.procedure) procedureStore('replay').setProcedure(monitor.hello.demo.procedure)
-    reachedOk.current = newReachedOk()
   }, [monitor.hello])
   const procResult = useMemo(() => {
     if (!isMonitor) return null
     const proc = PROCEDURES.find((p) => p.id === procState.procedure) ?? PROCEDURES[0]
-    return evaluateProcedure(proc, monitor, { ...opsOf(procDataOf(procState, proc.id)), latch: reachedOk.current })
+    return evaluateProcedure(proc, monitor, { ...opsOf(procDataOf(procState, proc.id)), latch: latchFor(monitor.hello) })
   }, [isMonitor, monitor, procState])
   const stageStops = procResult?.counts.stop ?? 0
   // what the announcer says besides alerts: a tripped abort check or a crossed stop limit, once each

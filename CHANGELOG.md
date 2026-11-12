@@ -3,13 +3,33 @@
 All notable changes to ROCO. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1] - 2026-11-12
+
+A clearer page, a 3D robot that stands on the floor, and a hosted demo that crosses no limit.
+
+### Added
+- Every action has a control in sight, labelled in words: Help, Display and Settings in the header, Take the tour on the sample
+  banner, and stage names on the guided checks' Previous and Next buttons. Help lists every action with where its control is and
+  its key.
+- A Follow heading button on the 3D view. The camera stays still unless it is on, and the choice is remembered.
+- `scripts/make_sim_demo.py` records the simulator run the hosted demo is cut from, and `scripts/capture_demo.py --procedure`
+  picks the checklist a sample opens on.
 
 ### Changed
-- The hosted demo is now 60 s of the simulated G1 (MuJoCo) driven by the real g1_ctrl controller: it stands and squats twice, with no
-  stop limit crossed. It opens on the simulator checklist. `scripts/make_sim_demo.py` records the run.
+- The hosted demo is now 60 s of the simulated G1 (MuJoCo) driven by the real g1_ctrl controller: it stands and squats twice,
+  with no stop limit crossed. It opens on the simulator checklist, and `npm run lint` fails a sample that crosses one.
+  `capture_demo.py` leaves out g1_ctrl's startup lines that name the run's motion and policy files.
+- Plainer words: Controller state instead of g1_ctrl state, Target and Torque next to q_cmd and τ, Alert sound and Spoken
+  alerts, and a state change before a recording starts reads "before the recording".
+- The 3D floor is lighter than the background in every theme, and a soft contact shadow under the feet replaces the glowing ring,
+  so the robot no longer looks like it floats. The grid lines are all one colour and the light no longer turns with the robot.
 - The CI clone-size guard is now 40 MB (was 25 MB). Git keeps every past version of the demo and screenshots, so each refresh
-  adds about 4 MB to a full clone; it was 26 MB after this one.
+  adds about 4 MB to a full clone.
+- The package description says Unitree G1, and `docs/brand/README.md` says the name and logo are outside Apache-2.0.
+
+### Fixed
+- After a jump in a paused replay, the joint targets showed the moment before the jump.
+- Opening another workspace briefly showed the robot's old pose in the 3D view.
 
 ## [0.1.0] - 2026-11-10
 

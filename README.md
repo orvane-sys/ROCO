@@ -7,14 +7,14 @@
 
 [![CI](https://github.com/orvane-sys/ROCO/actions/workflows/ci.yml/badge.svg)](https://github.com/orvane-sys/ROCO/actions/workflows/ci.yml)
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
-![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-informational.svg)
+![Version 0.1.1](https://img.shields.io/badge/version-0.1.1-informational.svg)
 [![Live demo](https://img.shields.io/badge/live%20demo-orvane--sys.github.io%2FROCO-2ea44f.svg)](https://orvane-sys.github.io/ROCO/)
 
 A read-only monitor for a Unitree G1 (29-DoF EDU, type 6, waist roll and pitch locked) running Unitree's `g1_ctrl`
 deploy controller, in the MuJoCo simulator or on the robot. It shows what the robot is doing, warns when a limit from
 the controller's own config is approached, and replays recordings. It never commands anything.
 
-React 19, Vite, Tailwind v4 and three.js in the browser; a Python bridge reads DDS. ROS 2 support is planned; ROCO v0.1.0
+React 19, Vite, Tailwind v4 and three.js in the browser; a Python bridge reads DDS. ROS 2 support is planned; ROCO v0.1.1
 monitors Unitree G1 over DDS.
 
 **Not a safety system. No warranty.** ROCO only watches. It cannot see the rope, the spotter or the room, and "no alert"
@@ -94,7 +94,7 @@ Do not run `pip install roco`. That name on PyPI belongs to an unrelated package
 installed from the links here.
 
 ```bash
-pipx install https://github.com/orvane-sys/ROCO/releases/download/v0.1.0/roco-0.1.0-py3-none-any.whl
+pipx install https://github.com/orvane-sys/ROCO/releases/download/v0.1.1/roco-0.1.1-py3-none-any.whl
 roco replay <folder-or-zip>           # replay needs nothing more
 
 # live data also needs DDS, in the same environment

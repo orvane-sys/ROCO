@@ -48,6 +48,8 @@ const allText = [...text(sample.greeting), ...text(sample.snapshots.flat()), ...
 
 check(statSync(file).size <= MAX_BYTES, `the file is at most 3 MB (${(statSync(file).size / 1e6).toFixed(2)} MB)`)
 for (const p of ['/home/', '/Users/', '/root/', '/tmp/', 'C:\\\\']) check(!allText.some((s) => s.includes(p)), `no text in the file holds ${p}`)
+// g1_ctrl's startup lines that name the run's motion and policy files (capture_demo.py leaves them out)
+for (const p of ['Loaded motion file', 'Policy directory:']) check(!allText.some((s) => s.includes(p)), `no startup line naming the run's files (${p})`)
 
 const hello = JSON.parse(sample.greeting[0])
 check(hello.type === 'hello' && hello.source === 'replay' && hello.readOnly === true, 'it starts with a read-only replay hello')

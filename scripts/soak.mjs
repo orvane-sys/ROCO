@@ -19,7 +19,6 @@ const minutes = Number(arg('minutes', 120))
 const everyMin = Number(arg('every', 5))
 const out = arg('out', 'soak.csv')
 const [width, height] = arg('size', '960x540').split('x').map(Number)
-const everyMs = everyMin * 60_000
 const warmupMin = Math.min(10, minutes / 4)
 
 const { url, browser, close } = await startBrowser('soak')

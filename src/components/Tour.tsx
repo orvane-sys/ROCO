@@ -49,16 +49,14 @@ const STEPS: { title: string; target?: string; body: string[] }[] = [
 
 /** Where the step's target is on screen, following scrolls and size changes while the tour is open. */
 function useTargetRect(target: string | undefined): DOMRect | null {
-  const [rect, setRect] = useState<DOMRect | null>(null)
+  // the rect is kept with the target it was measured for, so a step whose target is not on the page shows none
+  const [seen, setSeen] = useState<{ target: string; rect: DOMRect } | null>(null)
   useLayoutEffect(() => {
     const el = target ? document.querySelector<HTMLElement>(`[data-tour="${target}"]`) : null
-    if (!el) {
-      setRect(null)
-      return
-    }
+    if (!target || !el) return
     const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
     el.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' })
-    const update = () => setRect(el.getBoundingClientRect())
+    const update = () => setSeen({ target, rect: el.getBoundingClientRect() })
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)
@@ -70,7 +68,7 @@ function useTargetRect(target: string | undefined): DOMRect | null {
       window.removeEventListener('resize', update)
     }
   }, [target])
-  return rect
+  return seen && seen.target === target ? seen.rect : null
 }
 
 /** Centre the panel unless it would cover the target; then put it on the other half of the screen. */
