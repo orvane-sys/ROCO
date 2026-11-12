@@ -3,7 +3,7 @@
 Regression tests for the ROCO bridge against real processes (the audit's reproductions, repeatable).
 
   python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump, R6 launcher, R7 sample, R8 demo  (about 70 s)
-  python3 scripts/regress.py --live     # also R3 old log, no --log, and R5 bridge restart (DDS domain 42, needs unitree_sdk2py)
+  python3 scripts/regress.py --live     # also R3 old log, no --log, R5 bridge restart and R9 roco record (DDS domain 42, needs unitree_sdk2py)
 
 Standard library only. It writes its own 60 s recording to a temporary folder (no files in ~ are used), starts each bridge on a
 free port and stops it in a `finally`; a bridge is a child process, ended by its PID (never by name). Prints PASS / FAIL / SKIP for
@@ -195,7 +195,7 @@ def have_dds() -> bool:
 
 
 def publisher_main(domain: int, tilt_deg: float, tilt_after_s: float) -> None:
-    """Test only: a synthetic LowState_ at 500 Hz on a private domain, tilted `tilt_deg` after `tilt_after_s`."""
+    """Test only: a synthetic LowState_ at about 400-500 Hz (a 2 ms sleep per write) on a private domain, tilted `tilt_deg` after `tilt_after_s`."""
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher
     from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_ as default_ls
     from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
@@ -773,9 +773,67 @@ def r8_demo(tmp: str, res: Results) -> None:
         child.stop()
 
 
+def r9_record(tmp: str, res: Results) -> None:
+    case = "R9 roco record writes what was published, the replay plays it to the end, and Ctrl-C leaves complete rows"
+    if not have_dds():
+        res.say(case, "SKIP", "unitree_sdk2py is not importable")
+        return
+    out = os.path.join(tmp, "r9_rec")
+    pub = Child([os.path.abspath(__file__), "--publisher", str(DOMAIN), "30", "2.5"], tmp, "r9_pub")
+    rec = stopped = None
+    bad = []
+    try:
+        time.sleep(1.0)
+        rec = Child([LAUNCHER, "record", "lo", out, "--domain", str(DOMAIN), "--prefix", "run", "--duration", "4"], tmp, "r9_rec")
+        code = rec.proc.wait(20)
+        text = rec.stdout() + rec.stderr()
+        if code or "Traceback" in text:
+            bad.append(f"exit code {code}: {text[-400:]}")
+        with open(os.path.join(out, "run_lowstate.csv")) as f:
+            header = f.readline().strip().split(",")
+            rows = [ln.split(",") for ln in f]
+        col = {c: i for i, c in enumerate(header)}
+        ticks = [int(r[col["tick"]]) for r in rows]
+        rolls = [float(r[col["rpy_r"]]) for r in rows]
+        span = float(rows[-1][col["t"]]) - float(rows[0][col["t"]]) if len(rows) > 1 else 0.0
+        # every tick from the first to the last is a row: no sample lost (--duration counts from the start, and DDS
+        # discovery takes part of it, so the count alone says little)
+        lost = ticks[-1] - ticks[0] + 1 - len(ticks) if ticks else 0
+        if len(rows) < 1000 or lost > len(rows) // 200:
+            bad.append(f"{len(rows)} rows over {span:.2f} s, {lost} ticks missing")
+        if any(b <= a for a, b in zip(ticks, ticks[1:])):
+            bad.append("tick does not always increase")
+        if not (rolls and abs(rolls[0]) < 1e-6 and abs(max(rolls) - math.radians(30)) < 1e-5):
+            bad.append(f"the published tilt is not in rpy_r (first {rolls[:1]}, max {max(rolls, default=None)})")
+        child, port = start_bridge(tmp, "r9_play", "--replay", os.path.join(out, "run"), "--no-checkpoints")
+        try:
+            ok, detail = play_to_end(port, 30.0)
+            if not ok:
+                bad.append("replay: " + detail)
+        finally:
+            child.stop()
+        # stopped with Ctrl-C part way: exit code 0, and every line is a complete row
+        stopped = Child([LAUNCHER, "record", "lo", out, "--domain", str(DOMAIN), "--prefix", "cut"], tmp, "r9_cut")
+        time.sleep(2.5)
+        os.kill(stopped.pid, signal.SIGINT)
+        code = stopped.proc.wait(8)
+        with open(os.path.join(out, "cut_lowstate.csv"), "rb") as f:
+            data = f.read()
+        lines = data.split(b"\n")
+        ends_nl = data.endswith(b"\n")
+        if code or not ends_nl or any(ln.count(b",") != len(header) - 1 for ln in lines[1:-1]) or len(lines) < 200:
+            bad.append(f"Ctrl-C: exit code {code}, {len(lines) - 2} rows, ends on a newline: {ends_nl}")
+        res.say(case, "FAIL" if bad else "PASS", "; ".join(bad) or
+                f"{len(rows)} rows over {span:.1f} s, {lost} ticks missing, ticks increasing, the tilt recorded, replay played to the end, Ctrl-C left {len(lines) - 2} complete rows")
+    finally:
+        for c in (stopped, rec, pub):
+            if c:
+                c.stop()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="ROCO bridge regression tests against real processes")
-    ap.add_argument("--live", action="store_true", help="also the cases that need DDS (domain 42): R3 and R5")
+    ap.add_argument("--live", action="store_true", help="also the cases that need DDS (domain 42): R3, R5 and R9")
     ap.add_argument("--publisher", nargs=3, metavar=("DOMAIN", "TILT_DEG", "AFTER_S"), help=argparse.SUPPRESS)
     ap.add_argument("--keep", action="store_true", help="keep the temporary folder")
     args = ap.parse_args()
@@ -796,7 +854,8 @@ def main() -> int:
                  ("R4", lambda: r4_report_after_jump(tmp, rec, res)), ("R6", lambda: r6_launcher(tmp, rec, res)),
                  ("R7", lambda: r7_sample_recording(tmp, rec, res)), ("R8", lambda: r8_demo(tmp, res))]
         if args.live:
-            cases += [("R3", lambda: r3_old_log(tmp, res)), ("R5", lambda: r5_bridge_restart(tmp, res))]
+            cases += [("R3", lambda: r3_old_log(tmp, res)), ("R5", lambda: r5_bridge_restart(tmp, res)),
+                      ("R9", lambda: r9_record(tmp, res))]
         for name, run in cases:
             try:
                 run()

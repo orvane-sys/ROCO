@@ -7,6 +7,8 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 - `roco demo` plays the sample recording from your own PC, with no robot and no internet.
+- `roco record IFACE OUT` records `rt/lowstate` and `rt/lowcmd` to CSV files that `roco replay` plays. It only subscribes,
+  writes only into OUT (never into the deploy folder, never over a recording) and writes in batches every 0.2 s.
 - `--ctrl-log FILE` on `roco sim` and `roco robot`, for a `g1_ctrl` log that is not in the deploy folder.
 - The README has a Quick start for each way in (no robot, the simulator, the robot, a recording), a supported-platform line,
   a Controller state section, a Deploy folder section and a Troubleshooting table. The checks, regression tests and

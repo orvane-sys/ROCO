@@ -1,8 +1,8 @@
 # Recording format
 
 ROCO replays a recording of a G1 run made of two CSV files that share a name (the *prefix*), plus an optional `g1_ctrl` log.
-This is the layout `g1_record` writes. Anything that writes the same files can be replayed with
-`roco replay <folder-or-zip>`.
+This is the layout `g1_record` writes, and `roco record IFACE OUT` writes it too (see Quick start in the README). Anything
+that writes the same files can be replayed with `roco replay <folder-or-zip>`.
 
 ```
 my_run/

@@ -80,7 +80,19 @@ roco robot enp2s0          # prints a link; open it
 roco replay <folder-or-zip>
 ```
 
-Each command starts the bridge, serves the page on this PC only (port 8780) and prints the link to open. Ctrl-C, closing the
+**5. Make a recording.** While the simulator or the robot runs, in another terminal (`lo` for the simulator, the wired
+interface for the robot):
+
+```bash
+roco record lo my_run --duration 60    # writes my_run/rec_<date>_<time>_lowstate.csv and _lowcmd.csv
+roco replay my_run
+```
+
+It only subscribes, like the bridge, and writes only into the folder you give it (never into the deploy folder). Without
+`--duration` it records until Ctrl-C. Copy `g1_ctrl`'s `log.txt` from the same run into the folder to see the controller state
+in the replay.
+
+`sim`, `robot` and `replay` each start the bridge, serve the page on this PC only (port 8780) and print the link to open. Ctrl-C, closing the
 terminal or `kill` stops it. `--port` and `--web-port` change the ports. The hosted demo page cannot show your own robot: open
 the link `roco` prints.
 
@@ -163,6 +175,7 @@ anyone on that network can read it. Use it only on the robot's own wired network
 | "port 8765 (bridge) is already in use" | Another `roco` or bridge is running. Stop it, or use `--port` / `--web-port`. |
 | An import error from `unitree_sdk2py` (often about `b2`) | Install it from a clone with `pip install -e .`, as in [Install](#install). |
 | "the page is not built" (from a clone) | Run `npm ci && npm run build` once. |
+| `roco record` says there is no `rt/lowstate` yet | The same causes as "no robot data": the interface, the domain (`--domain N`) or a firewall. |
 
 ## What it shows
 
@@ -233,7 +246,7 @@ checks, the regression tests and the performance tools are in [CONTRIBUTING.md](
 - `docs/` the recording format, the screen reader test script and the operator test sheets. `scripts/check-*.mjs` the page's
   own checks.
 - `src/` the page. `src/services/telemetryStream.ts` is the WebSocket client; `src/types/monitor.ts` the bridge frames.
-- `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/roco_common.py` the wire format,
+- `scripts/roco` the launcher. `scripts/roco_dds_bridge.py` the read-only DDS bridge. `scripts/roco_record.py` the recorder. `scripts/roco_common.py` the wire format,
   robot profiles and WebSocket server both bridges share.
 - `tools/sim-drive/` an older MuJoCo simulator bridge that accepts drive commands. It is not part of the monitor; see its README.
 

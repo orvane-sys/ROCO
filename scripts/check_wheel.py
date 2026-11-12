@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGE = os.path.join(ROOT, "scripts", "roco_page")
 
 PROBE = """
-import os, roco_page, roco_launcher
+import os, roco_page, roco_launcher, roco_record
 page = os.path.dirname(roco_page.__file__)
 assert os.path.isfile(os.path.join(page, "index.html")), "the wheel has no page"
 assert os.path.isfile(os.path.join(page, "demo", "g1-sample.rocodemo.gz")), "the wheel has no sample recording"
@@ -27,6 +27,7 @@ assert os.path.isdir(os.path.join(page, "models", "g1_description", "meshes_glb"
 for name in ("LICENSE", "THIRD-PARTY-LICENSES.md"):
     assert os.path.isfile(os.path.join(page, name)), f"the wheel has no {name}"
 assert roco_launcher.find_dist() == page, "the launcher does not find the packed page"
+assert roco_record.LS_COLS[:2] == ["t", "unix_t"], "the wheel's recorder does not import"
 print("the wheel has the page, the sample, the models and the licences, and the launcher finds them")
 """
 

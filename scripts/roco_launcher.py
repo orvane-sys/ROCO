@@ -5,6 +5,7 @@
     scripts/roco robot enp2s0        the real robot, on the wired interface that reaches it
     scripts/roco replay <path>       a g1_record folder or zip (optionally <zip>:<prefix>)
     scripts/roco demo                the sample recording that ships with the page: no robot, no simulator, no bridge
+    scripts/roco record lo my_run    record rt/lowstate and rt/lowcmd to CSV files that replay plays (no page, no bridge)
 
 It needs only Python (the bridge's own packages are needed as before) and the built page: dist/ in a clone (`npm run build` once,
 on any PC with Node, then copy dist/ here), or the page inside the release's wheel. The page is served on loopback only. The launcher sends nothing to the robot: the bridge it
@@ -136,6 +137,15 @@ class QuietServer(http.server.ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+def record_argv(args) -> list:
+    """roco record's arguments for roco_record.main: only what was given, so the recorder's own defaults apply."""
+    argv = [args.target, args.out]
+    for flag, v in (("--domain", args.domain), ("--prefix", args.prefix), ("--duration", args.duration)):
+        if v is not None:
+            argv += [flag, str(v)]
+    return argv
+
+
 def make_server(directory: str, port: int) -> http.server.ThreadingHTTPServer:
     handler = functools.partial(QuietHandler, directory=directory)
     return QuietServer((LOOPBACK, port), handler)
@@ -153,6 +163,12 @@ def parse(argv):
     demo = sub.add_parser("demo", help="the sample recording, with no robot and no bridge")
     demo.add_argument("--web-port", type=int, default=8780, help="port the page is served on (default 8780)")
     demo.add_argument("--open", action="store_true", help="open the page in the default browser")
+    rec = sub.add_parser("record", help="record rt/lowstate and rt/lowcmd to CSV files that replay plays")
+    rec.add_argument("target", metavar="IFACE", help="DDS interface: lo for the simulator on this PC, or the wired interface to the robot")
+    rec.add_argument("out", metavar="OUT", help="folder for the recording (created if missing)")
+    rec.add_argument("--domain", type=int, default=None, help="DDS domain id (default 0)")
+    rec.add_argument("--prefix", default=None, help="file name prefix (default rec_<date>_<time>)")
+    rec.add_argument("--duration", type=float, default=None, metavar="S", help="stop after S seconds (default: run until Ctrl+C)")
     for p in (sim, robot, replay):
         p.add_argument("--port", type=int, default=8765, help="bridge WebSocket port (default 8765)")
         p.add_argument("--web-port", type=int, default=8780, help="port the page is served on (default 8780)")
@@ -258,6 +274,8 @@ def self_test() -> bool:
     check(bridge_command(a)[-2:] == ["--ctrl-log", "/x/g1_ctrl.log"], "the g1_ctrl log is passed on when given")
     _, a = parse(["sim"])
     check("--ctrl-log" not in bridge_command(a), "and not otherwise")
+    _, a = parse(["record", "enp2s0", "/data/runs", "--duration", "60"])
+    check(a.mode == "record" and record_argv(a) == ["enp2s0", "/data/runs", "--duration", "60.0"], "record: interface, folder and only the options given")
     _, a = parse(["demo", "--web-port", "9200"])
     check(a.mode == "demo" and demo_url(a.web_port) == "http://localhost:9200/?demo=1", "demo: the sample's address, no bridge")
     check(page_url(8780, 8765) =="http://localhost:8780/?monitor=1&ws=ws%3A%2F%2Flocalhost%3A8765", "page address names the bridge and monitor mode")
@@ -354,6 +372,9 @@ def main() -> int:
     if not args.mode:
         ap.print_help()
         return 2
+    if args.mode == "record":
+        import roco_record      # no page and no bridge: the recorder is its own read-only DDS reader
+        return roco_record.main(record_argv(args))
     return run(args)
 
 

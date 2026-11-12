@@ -44,7 +44,7 @@ Changelog = "https://github.com/orvane-sys/ROCO/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 package-dir = { "" = "scripts" }
-py-modules = ["roco_common", "roco_dds_bridge", "roco_launcher"]
+py-modules = ["roco_common", "roco_dds_bridge", "roco_launcher", "roco_record"]
 
 # The page folder and the folders inside it (assets/, models/ ...) are found as packages, so setuptools does not warn about them.
 [tool.setuptools.packages.find]
