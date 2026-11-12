@@ -3,6 +3,16 @@
 All notable changes to ROCO. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- The 3D view's badge while a replay is paused ("Paused at 82.5 s / 236.2 s") stays inside its box: the robot's name gives way
+  first. It ran past the edge on recordings of a few minutes at 1366 and 1440 px.
+
+### Changed
+- Operator test: the glance-drill pictures are retaken from the current page, and the answer keys for tasks 1 and 2 are
+  re-read (the simulated fall's first alert now shows as Tilt, at the same moment as the ankle pitch ranges).
+
 ## [0.1.1] - 2026-11-12
 
 A clearer page, a 3D robot that stands on the floor, and a hosted demo that crosses no limit.

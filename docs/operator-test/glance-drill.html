@@ -53,7 +53,7 @@
     <fieldset>
       <legend>What does the screen show that needs attention? Tick everything that applies.</legend>
       <label><input type="checkbox" name="what" value="none"> Nothing: no abort condition seen</label>
-      <label><input type="checkbox" name="what" value="limits"> Stage limits crossed (the red count)</label>
+      <label><input type="checkbox" name="what" value="limits"> Guided-check limits crossed (the red count)</label>
       <label><input type="checkbox" name="what" value="alert"> An alert (warning or critical)</label>
     </fieldset>
     <label>Anything else you noticed or could not tell (not scored) <input type="text" id="note" size="50"></label>
@@ -82,16 +82,16 @@
   'use strict'
   /* The truth for each picture is what the screen itself showed when the picture was taken (see the "taken" notes). */
   const SCENES = [
-    { id: 'A', file: 'drill/A.png', state: 'FixStand', what: ['none'], taken: 'real robot log, squat_cal16, about 19.5 s' },
-    { id: 'B', file: 'drill/B.png', state: 'Velocity', what: ['none'], taken: 'real robot log, squat_cal16, about 42 s' },
-    { id: 'C', file: 'drill/C.png', state: 'squat', what: ['limits'], taken: 'real robot log, squat_cal16, about 82 s' },
-    { id: 'D', file: 'drill/D.png', state: 'Velocity', what: ['limits'], taken: 'real robot log, squat_cal16, about 114 s' },
-    { id: 'E', file: 'drill/E.png', state: 'Passive', what: ['limits'], taken: 'real robot log, squat_cal16, about 230 s, no alert active at that moment' },
-    { id: 'F', file: 'drill/F.png', state: 'Velocity', what: ['none'], taken: 'SIM: commanded Passive collapse, about 42 s, before the collapse' },
-    { id: 'G', file: 'drill/G.png', state: 'Passive', what: ['alert'], taken: 'SIM: commanded Passive collapse, about 59.5 s, 5 critical' },
+    { id: 'A', file: 'drill/A.png', state: 'FixStand', what: ['none'], taken: 'real robot log, squat_cal16, 19.6 s' },
+    { id: 'B', file: 'drill/B.png', state: 'Velocity', what: ['none'], taken: 'real robot log, squat_cal16, 42.0 s' },
+    { id: 'C', file: 'drill/C.png', state: 'squat', what: ['limits'], taken: 'real robot log, squat_cal16, 82.5 s' },
+    { id: 'D', file: 'drill/D.png', state: 'Velocity', what: ['limits'], taken: 'real robot log, squat_cal16, 114.1 s' },
+    { id: 'E', file: 'drill/E.png', state: 'Passive', what: ['limits'], taken: 'real robot log, squat_cal16, 230.0 s, no alert active at that moment' },
+    { id: 'F', file: 'drill/F.png', state: 'Velocity', what: ['none'], taken: 'SIM: commanded Passive collapse, 41.9 s, before the collapse' },
+    { id: 'G', file: 'drill/G.png', state: 'Passive', what: ['alert'], taken: 'SIM: commanded Passive collapse, 59.6 s, 5 critical, first: Tilt' },
   ]
   const STATES = ['Passive', 'FixStand', 'Velocity', 'squat', 'Not sure']
-  const WHAT = { none: 'nothing', limits: 'stage limits crossed', alert: 'an alert' }
+  const WHAT = { none: 'nothing', limits: 'guided-check limits crossed', alert: 'an alert' }
   const $ = (id) => document.getElementById(id)
   let order = [], idx = 0, results = [], pid = 'ME', shown = false, mode = 'timed', flashMs = 2000, t0 = 0, endTimer = null, live = false, lastMs = 0, timedOut = false
   const MAX_MS = 20000

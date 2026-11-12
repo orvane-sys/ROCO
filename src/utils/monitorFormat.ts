@@ -72,7 +72,7 @@ export function statsPassNote(state: MonitorState): string | null {
 
 /**
  * What the 3D view's badge says while data is replayed: where the recording is, instead of "Live". Null when this is not a replay.
- * The position reads "Replay 198.8 s / 236.2 s" (no end time until the bridge has indexed the file).
+ * The position reads "Replay 198.8 s / 236.2 s", or "Paused at 198.8 s / 236.2 s" (no end time until the bridge has indexed the file).
  */
 export function replayBadge(state: MonitorState): string | null {
   const r = state.replay
@@ -81,7 +81,7 @@ export function replayBadge(state: MonitorState): string | null {
   if (r.ended) return 'Replay ended'
   const at = formatDataTime(r.t, state)
   const where = r.t1 !== null ? `${at} / ${formatDataTime(r.t1, state)}` : at
-  return r.playing ? `Replay ${where}` : `Replay paused at ${where}`
+  return r.playing ? `Replay ${where}` : `Paused at ${where}`
 }
 
 /** Why plots and rates show nothing in a replay that is not moving: "Paused at 198.8 s", "Replay ended", "Seeking…". Null otherwise. */

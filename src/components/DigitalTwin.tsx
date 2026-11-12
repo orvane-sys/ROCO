@@ -959,11 +959,12 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
                 : 'bg-warn'
             }`}
           />
-          <span className="font-semibold text-ink truncate min-w-0">
+          {/* the robot's name only takes the room left over (basis 0), so the replay position stays readable; the position truncates last */}
+          <span className="font-semibold text-ink truncate min-w-0 flex-1">
             {profile.name}
             <span className="hidden sm:inline"> · Digital twin</span>
           </span>
-          <span className="text-accent-ink text-xs hidden sm:inline shrink-0">{statusLabel}</span>
+          <span className="text-accent-ink text-xs hidden sm:inline truncate min-w-0" title={statusLabel}>{statusLabel}</span>
         </div>
 
         <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">

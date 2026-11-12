@@ -49,23 +49,23 @@ the screen, uncovers it for 2 seconds by the clock, covers it again.
 
 Ask: "What state is the robot in? Does the screen show anything wrong, and if so what? What is the next step?"
 
-Answer key, from a capture on 2026-11-03 (replay played at 8× to 16 s before the target, then 1×; the frozen screen was
-read). Rehearse again on your build and correct this table before the first participant:
+Answer key, from a capture on 2026-11-12 with the v0.1.1 build (replay played at 8× to 16 s before the target, then 1×; the
+frozen screen was read). Rehearse again on your build and correct this table before the first participant:
 
 | Scene | Pause at (picture shows) | Robot state | Status bar says | Alert panel |
 |---|---|---|---|---|
-| A | 17 s (19.5 s) | FixStand | No abort condition seen | none active |
+| A | 17 s (19.6 s) | FixStand | No abort condition seen | none active |
 | B | 40 s (42.0 s) | Velocity | No abort condition seen | none active |
-| C | 80 s (82.3 s) | squat | 2 guided-check limits crossed | none active |
-| D | 112 s (113.8 s) | Velocity | 5 guided-check limits crossed | none active |
+| C | 80 s (82.5 s) | squat | 2 guided-check limits crossed | none active |
+| D | 112 s (114.1 s) | Velocity | 5 guided-check limits crossed | none active |
 | E | 228 s (230.0 s) | Passive | 5 guided-check limits crossed | none active (History 2) |
 
 Add two scenes from the simulator fall recording (see task 2), played from 0 and paused at the time shown:
 
 | Scene | Pause at | Robot state | Status bar says |
 |---|---|---|---|
-| F | 40 s (41.7 s) | Velocity | No abort condition seen |
-| G | 58 s (59.5 s) | Passive | 5 critical, first: Joint range · Right Ankle Pitch (5 after Passive) |
+| F | 40 s (41.9 s) | Velocity | No abort condition seen |
+| G | 58 s (59.6 s) | Passive | 5 critical, first: Tilt (5 after Passive) |
 
 The "guided-check limits crossed" in scenes C to E are the real-robot procedure's own stop limits (for example ankle pitch
 torque 29.8 Nm in the squat against the manual's 15 Nm limit), evaluated by the guided checks. No abort check and no alert
@@ -77,10 +77,10 @@ The answer key depends on the pause time. Pausing overshoots the time asked by a
 above. If you pause live for a human observer, re-read the screen at the moment you pause and write that down, rather than
 trusting the table.
 
-The pictures in `drill/`, used by `glance-drill.html`, show an older design of the Run screen: a two-row top bar, a chip
-that reads "N stage limits crossed" (now "N guided-check limits crossed") and guided checks out of 88 (now 85). Re-capture
-them from the current build before a real run. The drill rows in `results.csv` (ID `P1`) were made on even older pictures
-and are a baseline for that design only.
+The pictures in `drill/`, used by `glance-drill.html`, were taken from the v0.1.1 build on 2026-11-12, at the times in the
+"picture shows" column, and match the tables above. If the Run screen changes, take them again before a real run. The drill
+rows in `results.csv` (ID `P1`) were made on pictures of an older design (a two-row top bar, a chip that read "N stage limits
+crossed", guided checks out of 88) and are a baseline for that design only.
 
 Scene G is the only critical-alert scene, and it comes from a simulator run (the real controller, a simulated robot).
 
@@ -96,13 +96,14 @@ Play from 0 at 4×, pause at 63 s.
 
 Ask: "Something went wrong in this recording. Which alert came first, what caused it, and what does the screen say to do?"
 
-Answer key, from the rehearsal on 2026-11-03:
+Answer key, from the rehearsal on 2026-11-03, re-read on 2026-11-12 with the v0.1.1 build:
 - Cause: `keyboard abort 'p' -> Passive` at 52.0 s. ROCO labels the alerts that follow as "after the change to Passive".
-- First alert: Joint range, right ankle pitch (52.4 s; the left ankle pitch tripped at the same time). ROCO pins it as the first-out
-  and marks it "First after Passive". Accept either ankle pitch, or "the change to Passive" as the cause.
+- First alert: Tilt (52.4 s; both ankle pitch joint ranges tripped at the same time). ROCO pins it as the first-out and marks it
+  "First after Passive" (the 2026-11-03 build pinned the right ankle pitch). Accept tilt, either ankle pitch, or "the change to
+  Passive" as the cause.
 - What to do, as the alert says: abort with LT+B or `p` if still in a policy state; after a fall, check the robot on the rope (manual §3).
-- By 63 s the status bar reads "7 critical", and the first-out shown has moved to the right ankle roll, because ROCO starts a
-  new burst after a 2 s quiet gap. Watch whether people are misled by that; note it either way.
+- By 63 s the status bar reads "6 critical · 1 warning", and the first-out shown has moved to the left ankle roll (59.7 s),
+  because ROCO starts a new burst after a 2 s quiet gap. Watch whether people are misled by that; note it either way.
 
 Time from "go" to the answer. Target: under 10 s. `pass` = named an accepted first alert, or the change to Passive as the cause.
 This is a rehearsal-style fall with a command to Passive, not a fall with the policy still running, so say so to the team

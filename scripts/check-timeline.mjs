@@ -463,7 +463,7 @@ console.log(`check-timeline: ${passed} checks passed${failed ? `, ${failed} FAIL
   const rp = (extra = {}) => live({ replay: { type: 'replay', file: 'f', store: 's', t0: 1000, t1: 1236.2, t: 1198.8, speed: 1, playing: true, ended: false, indexing: false, busy: null, speeds: [1], ...extra } })
   check(fmtMod.replayBadge(live()) === null && fmtMod.replayIdleNote(live()) === null, 'live data: no replay badge, no idle note')
   check(fmtMod.replayBadge(rp()) === 'Replay 198.8 s / 236.2 s', 'a playing replay says where it is, not Live')
-  check(fmtMod.replayBadge(rp({ playing: false })) === 'Replay paused at 198.8 s / 236.2 s', 'a paused replay says paused')
+  check(fmtMod.replayBadge(rp({ playing: false })) === 'Paused at 198.8 s / 236.2 s', 'a paused replay says paused (short, so it fits the 3D view\'s badge)')
   check(fmtMod.replayBadge(rp({ t1: null })) === 'Replay 198.8 s', 'no end time yet: the position alone')
   check(fmtMod.replayBadge(rp({ ended: true, playing: false })) === 'Replay ended', 'an ended replay says so')
   check(fmtMod.replayBadge(rp({ busy: 'seek' })) === 'Seeking…', 'a seek in progress says so')

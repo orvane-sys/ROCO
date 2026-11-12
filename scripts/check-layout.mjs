@@ -269,6 +269,23 @@ try {
     await page.close()
   }
 
+  // 6c. The 3D view's badge while paused (its longest text): the replay position is shown whole and inside the badge, at the widths
+  // the operator test uses (it once ran past the badge's edge at 1440 px).
+  for (const [w, h] of [[1440, 900], [1366, 768]]) {
+    const page = await open(w, h)
+    const play = page.locator('section[aria-labelledby=replay-heading] button').first()
+    if ((await play.textContent())?.includes('Pause')) await play.click()
+    await page.waitForFunction(() => /paused at/i.test(document.querySelector('section[aria-label="Unitree G1 digital twin"]')?.textContent ?? ''))
+    const fit = await page.evaluate(() => {
+      const label = [...document.querySelectorAll('section[aria-label="Unitree G1 digital twin"] span')].find((s) => s.children.length === 0 && /paused at/i.test(s.textContent ?? ''))
+      if (!label) return null
+      const badge = label.parentElement.getBoundingClientRect()
+      return { whole: label.scrollWidth <= label.clientWidth, inside: label.getBoundingClientRect().right <= badge.right + 0.5, text: label.textContent }
+    })
+    check(fit !== null && fit.whole && fit.inside, `${w}x${h}: the paused replay position is whole and inside the 3D view's badge (${JSON.stringify(fit)})`)
+    await page.close()
+  }
+
   // 7a. Phones: every button in the bar is on screen (none cut off at the edge), the header is short, and the tone, voice and battery
   // menu works: opens, switches, closes on Escape (focus back on its button), on a click outside, and when Tab leaves it.
   for (const [w, h] of [
