@@ -127,13 +127,19 @@ def display_path(path: Optional[str], root: Optional[str]) -> Optional[str]:
     return os.path.basename(path.rstrip("/\\")) or path
 
 
+_PAREN_PATH = re.compile(r"\((/[^)]+)\)")
+
+
 def public_limits(limits: dict, root: Optional[str]) -> dict:
-    """The limits dict as the hello sends it: display paths for the robot model and the controller config."""
+    """The limits dict as the hello sends it: display paths for the robot model and the controller config, and in the warnings."""
     for key in ("model", "ctrlConfig"):
         v = limits.get(key)
         # only an absolute path is a path on this PC; a recording's own "<recording>:<member>" and a shortened one are left as they are
         if v and os.path.isabs(v):
             limits[key] = display_path(v, root)
+    if limits.get("warnings"):
+        # a warning names its file in brackets, "robot model not found (/home/…/g1.xml)": the same display path
+        limits["warnings"] = [_PAREN_PATH.sub(lambda m: f"({display_path(m[1], root)})", w) for w in limits["warnings"]]
     return limits
 
 
@@ -1097,7 +1103,9 @@ class DdsSource(threading.Thread):
     """Polls the readers in batches every POLL_S (a ctypes listener callback per 1 kHz sample costs far more)."""
 
     QUEUE = 64          # samples kept per reader between polls (64 ms at 1 kHz)
-    POLL_S = 0.02       # ~20 samples per batch; per-sample numbers do not depend on the batch size
+    # ~10 samples per batch; per-sample numbers do not depend on the batch size. At most half the frame interval (20 ms at the
+    # default 50 Hz): with a 20 ms poll the frame loop and the poll drift past each other, and a pass with no new batch drops a frame
+    POLL_S = 0.01
     BMS_EVERY_S = 0.5
 
     def __init__(self, monitor: Monitor, iface: str, domain: int, odom_topics: List[str]):
@@ -2090,9 +2098,9 @@ async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer
     last_status = 0.0
     last_print = time.time()
     loop = asyncio.get_running_loop()
+    next_t = time.perf_counter()
     try:
         while True:
-            start = time.perf_counter()
             if replayer is not None:
                 while pending_controls and not replayer.busy:
                     msg = pending_controls.pop(0)
@@ -2136,7 +2144,14 @@ async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer
                 last_print = time.time()
                 print(f"[ROCO DDS] lowstate {monitor.ls_hz:.0f} Hz, lowcmd {monitor.cmd_hz:.0f} Hz, "
                       f"state {monitor.fsm_state or '?'}, alerts {len(monitor.alerts.active)}, clients {len(server.clients)}")
-            await asyncio.sleep(max(0.001, interval - (time.perf_counter() - start)))
+            # sleep to the next deadline, not for interval minus this pass: a sleep that overruns is made up on the next one,
+            # so the rate stays at --rate (sleeping relative to each pass gave about 47 a second). After a stall of more than
+            # one interval the deadlines start again from now, with no burst of frames to catch up.
+            next_t += interval
+            delay = next_t - time.perf_counter()
+            if delay < -interval:
+                next_t, delay = time.perf_counter(), 0.0
+            await asyncio.sleep(max(0.001, delay))
     finally:
         await server.stop()
 
@@ -2310,6 +2325,10 @@ def run_self_test() -> bool:
 
     print("=" * 72 + "\nroco_dds_bridge self-test\n" + "=" * 72)
     rng = np.random.default_rng(7)
+
+    print("\n--- DDS poll vs frame rate ---")
+    check(DdsSource.POLL_S <= 0.5 / 50.0, "the DDS poll is at most half the default frame interval, so every frame has a new batch")
+    check(DdsSource.QUEUE >= 2 * DdsSource.POLL_S * 1000, "a reader keeps at least two polls of 1 kHz samples")
 
     print("\n--- No-publisher guard ---")
     install_no_publisher_guard()
@@ -2639,6 +2658,12 @@ def run_self_test() -> bool:
         check(display_path("/home/u/rec/", "/home/u/deploy") == "rec", "a folder with a trailing slash is its name")
         pl = public_limits({"model": "/home/u/deploy/sim/g1/m.xml", "ctrlConfig": "day.zip:ctx/config.yaml"}, "/home/u/deploy")
         check(pl["model"] == "deploy/sim/g1/m.xml" and pl["ctrlConfig"] == "day.zip:ctx/config.yaml", "the limits shown have no absolute path; a recording's own config name stays")
+        pl = public_limits({"warnings": ["robot model not found (/home/u/deploy/sim/g1/m.xml): no torque limits or joint ranges",
+                                         "controller config not read (/home/u/other/config.yaml): no safety thresholds",
+                                         "no lowcmd (yet)"]}, "/home/u/deploy")
+        check(pl["warnings"] == ["robot model not found (deploy/sim/g1/m.xml): no torque limits or joint ranges",
+                                 "controller config not read (config.yaml): no safety thresholds", "no lowcmd (yet)"],
+              "the warnings carry no absolute path either; other brackets stay")
 
     print("\n--- g1_ctrl log: an old run's state is never shown as current ---")
     import subprocess

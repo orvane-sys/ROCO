@@ -29,6 +29,11 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
   re-read (the simulated fall's first alert now shows as Tilt, at the same moment as the ankle pitch ranges).
 
 ### Fixed
+- The bridge sends 50 frames a second, as set (it sent 47 to 48), with no frame dropped. It reads DDS every 10 ms instead of
+  20 ms, so live data reaches the page sooner: about 5 ms, and 12 ms at worst for 99 % of frames (was 12 ms and 22 ms).
+  The bridge uses no more CPU than before.
+- The page's warnings about a robot model or controller config that could not be read showed the file's full path on this PC.
+  They now show it as the rest of the page does (`deploy/...`, or only the file name).
 - The launcher printed a `ConnectionResetError` traceback when a browser stopped a download part way.
 - The 3D view's badge while a replay is paused ("Paused at 82.5 s / 236.2 s") stays inside its box: the robot's name gives way
   first. It ran past the edge on recordings of a few minutes at 1366 and 1440 px.

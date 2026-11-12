@@ -2,7 +2,8 @@
 """
 Regression tests for the ROCO bridge against real processes (the audit's reproductions, repeatable).
 
-  python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump, R6 launcher, R7 sample, R8 demo  (about 70 s)
+  python3 scripts/regress.py            # R1 stuck client, R2 cut-off recordings, R4 report after a jump, R6 launcher, R7 sample, R8 demo,
+                                        # R10 frame rate  (about 85 s)
   python3 scripts/regress.py --live     # also R3 old log, no --log, R5 bridge restart and R9 roco record (DDS domain 42, needs unitree_sdk2py)
 
 Standard library only. It writes its own 60 s recording to a temporary folder (no files in ~ are used), starts each bridge on a
@@ -773,6 +774,28 @@ def r8_demo(tmp: str, res: Results) -> None:
         child.stop()
 
 
+def r10_frame_rate(tmp: str, rec: str, res: Results) -> None:
+    case = "R10 the bridge sends 50 binary frames a second, without drift"
+    child, port = start_bridge(tmp, "r10", "--replay", rec, "--no-checkpoints")
+    ws = None
+    try:
+        ws = Ws(port)
+        while True:                               # frames flow once the replay has sent its status
+            op, p = ws.frame()
+            if op == 0x1 and is_type(p, "replay"):
+                break
+        stamps = [ts for ts, op, _ in ws.json_frames(10.0) if op == 0x2]
+        gaps = [y - x for x, y in zip(stamps, stamps[1:])]
+        worst = max(gaps) if gaps else 99.0
+        n = len(stamps)
+        ok = 490 <= n <= 510 and worst < 0.1
+        res.say(case, "PASS" if ok else "FAIL", f"{n} binary frames in 10 s (want 490 to 510), largest gap {worst * 1000:.0f} ms")
+    finally:
+        if ws:
+            ws.close()
+        child.stop()
+
+
 def r9_record(tmp: str, res: Results) -> None:
     case = "R9 roco record writes what was published, the replay plays it to the end, and Ctrl-C leaves complete rows"
     if not have_dds():
@@ -852,7 +875,8 @@ def main() -> int:
         print(f"[regress] recording written in {time.time() - t0:.1f} s", flush=True)
         cases = [("R1", lambda: r1_stuck_client(tmp, rec, res)), ("R2", lambda: r2_cut_recordings(tmp, rec_dir, res)),
                  ("R4", lambda: r4_report_after_jump(tmp, rec, res)), ("R6", lambda: r6_launcher(tmp, rec, res)),
-                 ("R7", lambda: r7_sample_recording(tmp, rec, res)), ("R8", lambda: r8_demo(tmp, res))]
+                 ("R7", lambda: r7_sample_recording(tmp, rec, res)), ("R8", lambda: r8_demo(tmp, res)),
+                 ("R10", lambda: r10_frame_rate(tmp, rec, res))]
         if args.live:
             cases += [("R3", lambda: r3_old_log(tmp, res)), ("R5", lambda: r5_bridge_restart(tmp, res)),
                       ("R9", lambda: r9_record(tmp, res))]

@@ -36,7 +36,7 @@ python3 -m pyflakes scripts tools
 python3 scripts/roco_dds_bridge.py --self-test
 scripts/roco --self-test
 python3 tools/sim-drive/mujoco_roco_bridge.py --self-test
-python3 scripts/regress.py                     # real bridge processes, about a minute; --live adds DDS cases (domain 42)
+python3 scripts/regress.py                     # real bridge processes, about 90 s; --live adds DDS cases (domain 42)
 python3 scripts/check_wheel.py                 # needs `pip install build`: builds the wheel, tries it in a clean environment
 ```
 
