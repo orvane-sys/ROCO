@@ -3,7 +3,7 @@
 # (`pipx install git+https://github.com/orvane-sys/ROCO`) has no page, so build it with `npm run build` in a clone, or use the wheel.
 # The page itself is not a Python package: it is built by Vite from src/ and is not published to npm (package.json is private).
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
