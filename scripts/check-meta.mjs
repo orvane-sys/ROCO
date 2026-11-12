@@ -172,6 +172,23 @@ for (const eco of ['npm', 'github-actions', 'pip']) {
   check(new RegExp(`- package-ecosystem: ${eco}\\n\\s+directory: /\\n`).test(dependabot), `.github/dependabot.yml updates ${eco} at the root`)
 }
 check(/ignore:\s*\n(?:\s*#.*\n)*\s*- dependency-name: cyclonedds\s*$/m.test(dependabot), '.github/dependabot.yml leaves cyclonedds alone')
+check(/^\s*- dependency-name: setuptools\s*$/m.test(dependabot), '.github/dependabot.yml leaves the setuptools build requirement alone')
+check(/- dependency-name: "@types\/node"\n\s+update-types: \["version-update:semver-major"\]/.test(dependabot),
+  '.github/dependabot.yml keeps @types/node on its major (CI runs Node 22)')
+
+// CI runs once per Dependabot pull request, and still on every other branch and on tags
+const ci = read('.github/workflows/ci.yml')
+check(/^on:\n  push:\n(?:\s*#.*\n)*    branches-ignore: \["dependabot\/\*\*"\]\n    tags: \["\*\*"\]\n  pull_request:\n/m.test(ci),
+  'ci.yml: a push runs CI on every branch but Dependabot\'s, and on every tag; pull requests run it')
+
+// CodeQL scans the page, the Python scripts and the workflows, and may only write its results
+const codeql = existsSync(join(root, '.github/workflows/codeql.yml')) ? read('.github/workflows/codeql.yml') : ''
+for (const lang of ['javascript-typescript', 'python', 'actions']) {
+  check(new RegExp(`- language: ${lang}\\n\\s+build-mode: none\\n`).test(codeql), `codeql.yml analyses ${lang}`)
+}
+check(/^permissions:\n  contents: read\n  security-events: write\n(?!  )/m.test(codeql), 'codeql.yml: contents read, security-events write, nothing else')
+check(/codeql-action\/init@/.test(codeql) && /codeql-action\/analyze@/.test(codeql) && /^\s+- cron: /m.test(codeql),
+  'codeql.yml runs init and analyze, and on a weekly schedule')
 
 console.log(`meta: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

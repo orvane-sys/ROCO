@@ -9,6 +9,10 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    ignore:
+      # CI and the release run Node 22: the Node types are not moved to a newer major
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-and-patch:
         applies-to: version-updates
@@ -37,6 +41,8 @@ updates:
     ignore:
       # unitree_sdk2py needs exactly 0.10.2 (pyproject.toml and ci.yml pin it, check-release.mjs compares them)
       - dependency-name: cyclonedds
+      # only the build requirement (setuptools>=77 reads the licence fields in pyproject.toml); a higher floor gains nothing
+      - dependency-name: setuptools
     groups:
       pip-minor-and-patch:
         applies-to: version-updates

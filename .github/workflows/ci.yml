@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+    # a Dependabot branch is checked by its pull request's run; with branches-ignore, tags must be named to keep running
+    branches-ignore: ["dependabot/**"]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 

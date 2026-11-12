@@ -18,11 +18,14 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
   watching from another PC. The page sends no referrer.
 - Dependabot proposes weekly updates for the npm packages, the GitHub Actions and the Python packages: one grouped pull
   request for minor and patch updates, one per major update, each release at least 7 days old. cyclonedds stays at 0.10.2,
-  which unitree_sdk2py needs.
+  which unitree_sdk2py needs. It leaves the setuptools build requirement alone, and keeps `@types/node` on its major
+  (CI runs Node 22).
+- CodeQL scans the page, the Python scripts and the workflows on every push and pull request to `main`, and weekly.
 
 ### Changed
 - The GitHub workflows run each action at a fixed commit (named by its release in a comment), so a moved tag cannot change what CI
   or a release runs. `npm run lint` fails on an action that is not pinned.
+- CI runs once for a Dependabot pull request, not a second time for the push to its branch.
 - The bridge finds the deploy folder on its own: `--deploy-dir` or `ROCO_DEPLOY_DIR`, else `~/unitree_rl_mjlab/deploy_lock`,
   else `~/unitree_rl_mjlab/deploy` (the folder Unitree's repository ships). It prints the folder it uses. Robot data uses
   `config.yaml` when there is no `config_hw.yaml`.
