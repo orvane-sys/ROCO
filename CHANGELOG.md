@@ -8,6 +8,8 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 ### Changed
 - The hosted demo is now 60 s of the simulated G1 (MuJoCo) driven by the real g1_ctrl controller: it stands and squats twice, with no
   stop limit crossed. It opens on the simulator checklist. `scripts/make_sim_demo.py` records the run.
+- The CI clone-size guard is now 40 MB (was 25 MB). Git keeps every past version of the demo and screenshots, so each refresh
+  adds about 4 MB to a full clone; it was 26 MB after this one.
 
 ## [0.1.0] - 2026-11-10
 

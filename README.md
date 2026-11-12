@@ -154,7 +154,7 @@ Checks: `npx tsc -b`, `npm run lint` (oxlint plus the colour, contrast, alert, p
 mesh and licence checks), `npm run check:layout` and `npm run check:a11y` (both drive Chrome on the built page: no layout jumps at any
 width, axe in three themes, reflow at 200 % and 400 % zoom, and a keyboard walk), `python3 -m pyflakes scripts tools`, `python3 scripts/roco_dds_bridge.py --self-test`, `scripts/roco --self-test`,
 `python3 tools/sim-drive/mujoco_roco_bridge.py --self-test`. CI (`.github/workflows/ci.yml`) runs all of them, `regress.py`
-and a check that a full clone stays under 25 MB. See `CONTRIBUTING.md`.
+and a check that a full clone stays under 40 MB. See `CONTRIBUTING.md`.
 
 Regression tests against real bridge processes (about 1 minute, Python and Node only, writes its own 60 s recording to a temporary folder):
 `python3 scripts/regress.py`. It starts bridges on free ports and checks that a client that stops reading does not hold up the others,

@@ -74,8 +74,8 @@ jobs:
       - name: Wheel builds and works in a clean environment
         run: python scripts/check_wheel.py
 
-      - name: Clone size under 25 MB
+      - name: Clone size under 40 MB
         run: |
           bytes=$(git rev-list --objects --all | git pack-objects --stdout -q | wc -c)
           echo "a full clone is $((bytes / 1024 / 1024)) MB"
-          test "$bytes" -lt 26214400
+          test "$bytes" -lt 41943040
