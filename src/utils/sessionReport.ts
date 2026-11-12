@@ -24,7 +24,8 @@ export interface ReportInput {
   procedure: ProcedureResult | null
 }
 
-const cell = (s: string): string => s.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim()
+// A backslash is escaped first: a name ending in `\` would otherwise turn the escaped pipe after it back into a column break.
+const cell = (s: string): string => s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim()
 const row = (...cells: string[]): string => `| ${cells.map(cell).join(' | ')} |`
 const table = (head: string[], rows: string[][]): string[] => [row(...head), row(...head.map(() => '---')), ...rows.map((r) => row(...r))]
 

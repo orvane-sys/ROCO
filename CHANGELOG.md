@@ -45,6 +45,9 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 - The launcher printed a `ConnectionResetError` traceback when a browser stopped a download part way.
 - The 3D view's badge while a replay is paused ("Paused at 82.5 s / 236.2 s") stays inside its box: the robot's name gives way
   first. It ran past the edge on recordings of a few minutes at 1366 and 1440 px.
+- Importing a robot file whose header repeats comments could freeze the tab for seconds (CodeQL). The file type is now read in
+  one pass, and a URDF that starts with a comment and has one before its `<mujoco>` block is no longer taken for MJCF.
+- A `\` before a `|` in a mark note or a name no longer breaks a table of the saved session report.
 
 ## [0.1.1] - 2026-11-12
 

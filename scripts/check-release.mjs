@@ -20,7 +20,7 @@ export function pyprojectVersion(text) {
 
 /** The CHANGELOG entry for a version: its heading text after the version, and its body. null when there is none. */
 export function changelogEntry(text, version) {
-  const heading = new RegExp(`^## \\[${version.replace(/\./g, '\\.')}\\](.*)$`, 'm')
+  const heading = new RegExp(`^## \\[${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\](.*)$`, 'm')
   const m = heading.exec(text)
   if (!m) return null
   const rest = text.slice(m.index + m[0].length)
@@ -66,6 +66,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const sample = '# Changelog\n\n## [1.0.0] - 2026-01-02\n\nfirst\n\n### Added\n- a\n\n## [0.9.0] - Unreleased\n\nold\n'
   check(changelogEntry(sample, '1.0.0')?.body.startsWith('first') && !changelogEntry(sample, '1.0.0')?.body.includes('old'), 'self-test: an entry ends at the next one')
   check(changelogEntry(sample, '1.0')=== null && changelogEntry(sample, '2.0.0') === null, 'self-test: only the exact version matches')
+  check(changelogEntry(sample, '1.0.0+') === null && changelogEntry(sample, '1.0.0|0.9.0') === null && changelogEntry(sample, '1.(0') === null && changelogEntry('## [1.0.0+b] - 2026-01-02\n\nbuild\n', '1.0.0+b')?.body === 'build', 'self-test: a version is matched as plain text, not as a pattern')
   check(hasDate('- 2026-01-02') && !hasDate('- Unreleased') && !hasDate(''), 'self-test: a date is told from "Unreleased"')
   check(hasPlaceholder('write to **CONTACT_EMAIL**.') && !hasPlaceholder('write to a@b.org'), 'self-test: the placeholder is found')
 

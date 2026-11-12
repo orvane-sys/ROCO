@@ -657,15 +657,40 @@ ${joints.join('\n\n')}
 </robot>`
 }
 
+/** isMuJoCoModel's prolog parts, sticky (`y`): each matches only where the scan stands. */
+const PROLOG = {
+  space: /\s*/y,
+  decl: /<\?xml[^>]*\?>/iy,
+  comment: /<!--[\s\S]*?-->/y,
+  doctype: /<!DOCTYPE[^>]*>/iy,
+  root: /<mujoco[\s>]/iy,
+}
+
 /**
  * Checks if the content is a MuJoCo MJCF XML document.
  */
 export function isMuJoCoModel(text: string): boolean {
   // Match the ROOT element only. Unitree/ROS URDFs embed a `<mujoco><compiler meshdir=.../></mujoco>`
   // extension block inside `<robot>`, which must not be mistaken for an MJCF document.
-  return /^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<mujoco[\s>]/i.test(
-    text
-  )
+  // A forward scan over the prolog (declaration, comments, DOCTYPE), each part taken once and never backtracked into: one
+  // regular expression for the whole prolog backtracked exponentially on a header of many comments (CodeQL js/redos, the tab
+  // froze on import), and its lazy comment could run on past a `-->` to a `<mujoco>` block deep inside a `<robot>`.
+  let i = 0
+  const eat = (re: RegExp): boolean => {
+    re.lastIndex = i
+    if (!re.test(text)) return false
+    PROLOG.space.lastIndex = re.lastIndex
+    PROLOG.space.test(text)
+    i = PROLOG.space.lastIndex
+    return true
+  }
+  eat(PROLOG.space)
+  eat(PROLOG.decl)
+  while (eat(PROLOG.comment));
+  eat(PROLOG.doctype)
+  while (eat(PROLOG.comment));
+  PROLOG.root.lastIndex = i
+  return PROLOG.root.test(text)
 }
 
 /**

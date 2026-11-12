@@ -423,6 +423,13 @@ const viewOf = ({ active = [], closed = [], info = [] } = {}) => ({
   check(lines.length > 10, 'tables are present')
   const tables = md.split('\n\n').filter((b) => b.startsWith('| '))
   check(tables.every((t) => { const rows = t.split('\n'); const cols = (r) => r.replace(/\\\|/g, '').split('|').length; return rows.every((r) => cols(r) === cols(rows[0])) }), 'every table row has the same number of columns')
+  {
+    // a backslash before a pipe: escaped on its own, the pipe after it would end the cell
+    const bs = report.buildReport({ state, profileName: 'x', generatedAt: new Date(), timeline: tl.buildTimeline(state, [], [{ id: 'm1', t: 130, note: 'back\\| slash' }], { first: 150, last: 200 }), alertTitle: () => '', abortChecks: abort, procedure: null })
+    const marks = bs.split('\n\n').filter((b) => b.startsWith('| ') && b.includes('back'))
+    const open = (r) => r.match(/(?<!\\)(?:\\\\)*\|/g).length // pipes not escaped by an odd run of backslashes
+    check(bs.includes('back\\\\\\| slash') && marks.length === 2 && marks.every((t) => t.split('\n').every((r, _, rows) => open(r) === open(rows[0]))), 'a backslash before a pipe in a note cannot break the timeline or the marks table')
+  }
   const noProc = report.buildReport({ state, profileName: 'x', generatedAt: new Date(), timeline: m, alertTitle: () => '', abortChecks: abort, procedure: null })
   check(!noProc.includes('Guided checks') && noProc.includes('## 5. Abort checks'), 'without a procedure the sections renumber')
   const rep = report.buildReport({ state: { ...state, replay: { file: 'stand_cal16', store: 's', t0: 100, t1: 200, t: 150, speed: 1, playing: false, ended: false, indexing: false, busy: null, speeds: [1] }, hello: { ...state.hello, source: 'replay', replay: { file: 'stand_cal16', store: 'z.zip', notes: [] } } }, profileName: 'x', generatedAt: new Date(), timeline: { ...m, replay: true, playedTo: 150 }, alertTitle: () => 'a', abortChecks: abort, procedure: null })
