@@ -151,5 +151,27 @@ for (const c of ['unix_t', 'tick', 'mode_pr', 'mode_machine', 'quat_w', 'gyro_x'
 }
 check(meta('referrer') === 'no-referrer', 'index.html sends no referrer (a bridge token never leaks in one)')
 
+// every action a workflow runs is pinned to a commit, with its release as a comment (a moved tag cannot change what CI runs);
+// Dependabot keeps the pins and the comments up to date. Local actions (./…) are this repository's own.
+const pinned = /^\s*(?:-\s+)?uses:\s+(?:\.\/\S+|[\w.-]+\/[\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+)\s*$/
+const workflows = readdirSync(join(root, '.github/workflows')).filter((f) => /\.ya?ml$/.test(f))
+let uses = 0
+for (const f of workflows) {
+  for (const line of read(join('.github/workflows', f)).split('\n')) {
+    if (!/^\s*(?:-\s+)?uses:/.test(line)) continue
+    uses++
+    check(pinned.test(line), `.github/workflows/${f}: "${line.trim()}" is pinned to a commit SHA with "# vX.Y.Z"`)
+  }
+}
+check(uses >= 10, `the workflows' actions are found (${uses} uses: lines)`)
+
+// Dependabot watches the three places dependencies live, and leaves cyclonedds at the version unitree_sdk2py needs
+const dependabot = existsSync(join(root, '.github/dependabot.yml')) ? read('.github/dependabot.yml') : ''
+check(/^version: 2$/m.test(dependabot), '.github/dependabot.yml exists (version 2)')
+for (const eco of ['npm', 'github-actions', 'pip']) {
+  check(new RegExp(`- package-ecosystem: ${eco}\\n\\s+directory: /\\n`).test(dependabot), `.github/dependabot.yml updates ${eco} at the root`)
+}
+check(/ignore:\s*\n(?:\s*#.*\n)*\s*- dependency-name: cyclonedds\s*$/m.test(dependabot), '.github/dependabot.yml leaves cyclonedds alone')
+
 console.log(`meta: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)

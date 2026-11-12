@@ -1,0 +1,44 @@
+# Dependabot: a weekly pull request per ecosystem for minor and patch updates, and one per major update.
+# A new release waits 7 days before it is proposed (a hijacked release is usually found and pulled within days); security
+# updates are not held back. scripts/check-meta.mjs (npm run lint) checks this file.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # the workflows pin each action to a commit with "# vX.Y.Z" after it; Dependabot updates both
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      # unitree_sdk2py needs exactly 0.10.2 (pyproject.toml and ci.yml pin it, check-release.mjs compares them)
+      - dependency-name: cyclonedds
+    groups:
+      pip-minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
