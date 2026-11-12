@@ -85,6 +85,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const pin = /cyclonedds==([\d.]+)/.exec(dds)?.[1]
   check(pin && read('.github/workflows/ci.yml').includes(`cyclonedds==${pin}`), `the dds extra and CI pin the same cyclonedds (${pin}), the one unitree_sdk2py requires`)
   check(existsSync(join(root, '.github/workflows/release.yml')) && /check-release\.mjs --release/.test(read('.github/workflows/release.yml')), 'release.yml runs this check with --release before it publishes')
+  const rel = read('.github/workflows/release.yml')
+  const publish = rel.split(/^\s*- name: Publish the release$/m)[1] ?? ''
+  check(/uses: actions\/attest@/.test(rel) && /subject-checksums: SHA256SUMS/.test(rel) && /id-token: write/.test(rel) && /attestations: write/.test(rel) && /^\s*if: github\.event_name == 'push'$/m.test(publish.split(/^\s*- /m)[0]) && /gh release create[^]*?\bSHA256SUMS\b[^]*?--verify-tag/.test(publish), 'release.yml attests the files in SHA256SUMS, publishes SHA256SUMS, and publishes only on a pushed tag (a run by hand is a dry run)')
+  check(/^on:[^]*?workflow_dispatch:/m.test(rel), 'release.yml can be run by hand as a dry run')
+  check(/sha256sum -c/.test(read('README.md')) && /gh attestation verify .*--repo orvane-sys\/ROCO/.test(read('README.md')), 'the README says how to check a downloaded wheel (SHA256SUMS and the attestation)')
 
   const i = args.indexOf('--release')
   if (i >= 0) {

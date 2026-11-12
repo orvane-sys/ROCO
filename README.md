@@ -114,6 +114,14 @@ pipx inject roco cyclonedds==0.10.2
 pipx runpip roco install -e <your clone of unitree_sdk2_python>
 ```
 
+To check a wheel before you install it, download it and `SHA256SUMS` from the same release, then:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing                          # the file is the one the release lists
+gh attestation verify roco-*.whl --repo orvane-sys/ROCO            # and was built by this repository's release workflow
+pipx install ./roco-*.whl
+```
+
 Install `unitree_sdk2py` from a clone, the way Unitree describes it (`git clone`, then `pip install -e .`). A plain
 `pip install git+https://…` build leaves out `unitree_sdk2py/b2`, which has no `__init__.py`, and the import then fails.
 

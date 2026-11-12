@@ -21,6 +21,9 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
   which unitree_sdk2py needs. It leaves the setuptools build requirement alone, and keeps `@types/node` on its major
   (CI runs Node 22).
 - CodeQL scans the page, the Python scripts and the workflows on every push and pull request to `main`, and weekly.
+- Each release lists `SHA256SUMS` and a signed build provenance attestation for the wheel and the page zip. The README shows
+  how to check a download with `sha256sum` and `gh attestation verify`. The release workflow can be run by hand as a dry run
+  that builds, checksums and attests, and publishes nothing.
 
 ### Changed
 - The GitHub workflows run each action at a fixed commit (named by its release in a comment), so a moved tag cannot change what CI

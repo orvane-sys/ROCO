@@ -2,15 +2,21 @@ name: Release
 
 # Runs when a version tag is pushed: git tag v0.1.0 && git push origin v0.1.0
 # It refuses a tag that does not match package.json, a CHANGELOG entry without a date, and a repo whose contact address is still a
-# placeholder (scripts/check-release.mjs). It then builds the page, packs it into a wheel with the bridge and the launcher, and
-# publishes a GitHub release with the CHANGELOG entry as its text, the wheel, and the page as a zip.
+# placeholder (scripts/check-release.mjs). It then builds the page, packs it into a wheel with the bridge and the launcher, writes
+# SHA256SUMS for the wheel and the page zip, signs a build provenance attestation for both, and publishes a GitHub release with the
+# CHANGELOG entry as its text, the wheel, the zip and SHA256SUMS.
+# Run it by hand (Actions > Release > Run workflow) for a dry run: it builds, checksums and attests, and publishes nothing. A
+# pushed v* tag cannot be moved or deleted, so a dry run first shows the release would go through.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: # a dry run from main: builds, checksums and attests, publishes nothing
 
 permissions:
-  contents: write # to create the release; nothing else in this workflow writes
+  contents: write # to create the release
+  id-token: write # to sign the attestation with this workflow's identity
+  attestations: write # to store the attestation in this repository
 
 jobs:
   release:
@@ -29,7 +35,12 @@ jobs:
           python-version: "3.10"
 
       - name: Check the tag, the CHANGELOG and the contact address
+        if: github.event_name == 'push'
         run: node scripts/check-release.mjs --release "$GITHUB_REF_NAME"
+
+      - name: Check the versions and the CHANGELOG (dry run)
+        if: github.event_name != 'push'
+        run: node scripts/check-release.mjs
 
       - name: Install, check and build the page
         run: |
@@ -45,18 +56,34 @@ jobs:
 
       - name: Zip the page
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./package.json').version")
           (cd dist && zip -qr "../roco-dist-${version}.zip" .)
           ls -l "roco-dist-${version}.zip"
 
+      - name: Checksums
+        run: |
+          version=$(node -p "require('./package.json').version")
+          sha256sum "roco-dist-${version}.zip" > SHA256SUMS
+          (cd dist-py && sha256sum *.whl) >> SHA256SUMS
+          # each file is read back against the list, where a downloader has it: side by side
+          sha256sum -c --ignore-missing SHA256SUMS
+          (cd dist-py && sha256sum -c --ignore-missing ../SHA256SUMS)
+          cat SHA256SUMS
+
+      - name: Attest the build provenance of the wheel and the zip
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: SHA256SUMS
+
       - name: Publish the release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./package.json').version")
           node scripts/check-release.mjs --notes > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" \
-            "roco-dist-${version}.zip" dist-py/*.whl \
+            "roco-dist-${version}.zip" dist-py/*.whl SHA256SUMS \
             --title "ROCO ${version}" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             --verify-tag
