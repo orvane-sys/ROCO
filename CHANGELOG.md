@@ -5,6 +5,10 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-13
+
+Upkeep: newer three.js and Vite, newer GitHub Actions, and lint that fails on any warning.
+
 ### Changed
 - three.js 0.187, Vite 8.3.6 and other minor updates.
 - `npm run lint` fails on any oxlint warning.
