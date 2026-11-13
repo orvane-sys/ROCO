@@ -71,6 +71,9 @@ jobs:
       - name: Simulator bridge self-test
         run: python tools/sim-drive/mujoco_roco_bridge.py --self-test
 
+      - name: Recorder self-test
+        run: python scripts/roco_record.py --self-test
+
       - name: Regression tests (real bridge processes)
         run: python scripts/regress.py
 

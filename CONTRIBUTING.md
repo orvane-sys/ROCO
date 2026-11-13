@@ -36,6 +36,7 @@ python3 -m pyflakes scripts tools
 python3 scripts/roco_dds_bridge.py --self-test
 scripts/roco --self-test
 python3 tools/sim-drive/mujoco_roco_bridge.py --self-test
+python3 scripts/roco_record.py --self-test
 python3 scripts/regress.py                     # real bridge processes, about 90 s; --live adds DDS cases (domain 42)
 python3 scripts/check_wheel.py                 # needs `pip install build`: builds the wheel, tries it in a clean environment
 ```
@@ -51,10 +52,11 @@ reflow at 200 % and 400 % zoom, and a keyboard walk.
 `python3 scripts/regress.py` runs real bridge processes (Python and Node only; it writes its own 60 s recording to a temporary
 folder). It starts bridges on free ports and checks that a client that stops reading does not hold up the others, that
 recordings cut off mid-write open and play to the end, that the session report after a jump equals the report of the played
-run, and that `roco demo` serves the page and the sample and stops cleanly. `--live` adds an old run's log (state stays
-unknown) and a bridge restart (new session, its own alert history); these use a synthetic LowState_ on DDS domain 42, so a
-simulator or robot on domain 0 never sees it. It prints PASS / FAIL / SKIP per case and exits 1 on a failure. It is not part
-of `npm run lint`.
+run, that `roco demo` serves the page and the sample and stops cleanly, and that the bridge sends 50 frames a second
+without drift. `--live` adds an old run's log (state stays unknown), a bridge restart (new session, its own alert history)
+and `roco record` (it writes what was published, the replay plays it to the end, and Ctrl-C leaves complete rows); these
+use a synthetic LowState_ on DDS domain 42, so a simulator or robot on domain 0 never sees it. It prints PASS / FAIL / SKIP
+per case and exits 1 on a failure. It is not part of `npm run lint`.
 
 ### Performance tools, run by hand
 

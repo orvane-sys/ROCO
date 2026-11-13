@@ -44,7 +44,7 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 - The bridge sends 50 frames a second, as set (it sent 47 to 48), with no frame dropped. It reads DDS every 10 ms instead of
   20 ms, so live data reaches the page sooner: about 5 ms, and 12 ms at worst for 99 % of frames (was 12 ms and 22 ms).
-  The bridge uses no more CPU than before.
+  Reading DDS twice as often costs a little CPU: about 3 to 4 points of one core on a slow, busy PC (25 % became 28.5 %).
 - The page's warnings about a robot model or controller config that could not be read showed the file's full path on this PC.
   They now show it as the rest of the page does (`deploy/...`, or only the file name).
 - The launcher printed a `ConnectionResetError` traceback when a browser stopped a download part way.
