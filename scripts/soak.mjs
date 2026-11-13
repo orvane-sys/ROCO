@@ -9,7 +9,7 @@
 // Pass: after the first 10 minutes the heap stays within +-20 % of its middle value and the frame rate of the last quarter is not
 // below 80 % of the first quarter's. Exit code 1 when it does not hold.
 import { writeFileSync } from 'node:fs'
-import { startBrowser } from './lib-browser.mjs'
+import { guardCsp, startBrowser } from './lib-browser.mjs'
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf('--' + name)
@@ -23,6 +23,7 @@ const warmupMin = Math.min(10, minutes / 4)
 
 const { url, browser, close } = await startBrowser('soak')
 const context = await browser.newContext({ viewport: { width, height } })
+await guardCsp(context)
 await context.addInitScript(() => {
   try {
     localStorage.setItem('roco.tour.v1', '1')

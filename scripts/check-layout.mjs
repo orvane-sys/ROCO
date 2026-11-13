@@ -4,7 +4,7 @@
 //
 //   npm run build && npm run check:layout        (CHROME_PATH=/path/to/chrome to choose a browser)
 import { readFileSync } from 'node:fs'
-import { PAGE_READY_MS, startBrowser, tally } from './lib-browser.mjs'
+import { PAGE_READY_MS, guardCsp, startBrowser, tally } from './lib-browser.mjs'
 
 const { url, browser, close } = await startBrowser('check-layout')
 const { check, finish } = tally()
@@ -15,6 +15,7 @@ async function open(width, height, prefs = SEEN_ALL) {
   const page = await browser.newPage({ viewport: { width, height } })
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
+  await guardCsp(page)
   await page.addInitScript(
     ([p]) => {
       try {
@@ -376,6 +377,27 @@ try {
     check(/On screen: Analyze/.test(where ?? ''), `the palette says where a command is on screen (${where})`)
     await page.keyboard.press('Escape')
     check(page.errors.length === 0, `actions: no page errors (${page.errors[0] ?? ''})`)
+    await page.close()
+  }
+
+  {
+    // the Content Security Policy is on and lets the page work: nothing is blocked while the sample plays and the robot's meshes
+    // load (WebAssembly), and a script added afterwards does not run and is reported, which shows the guard sees what it blocks
+    const page = await open(1366, 768)
+    await page.getByText('Loading robot model…').waitFor({ state: 'detached', timeout: PAGE_READY_MS }).catch(() => {})
+    await page.waitForTimeout(500)
+    const meta = (await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')) ?? ''
+    check(/script-src 'self' 'sha256-[A-Za-z0-9+/]+=*' 'wasm-unsafe-eval'/.test(meta) && /object-src 'none'/.test(meta), `CSP: the page has its policy (${meta})`)
+    check(page.errors.length === 0, `CSP: the page, its sample and the robot load with nothing blocked (${page.errors[0] ?? ''})`)
+    const ran = await page.evaluate(async () => {
+      const s = document.createElement('script')
+      s.textContent = 'window.__cspProbe = 1'
+      document.head.append(s)
+      await new Promise((r) => setTimeout(r, 300))
+      return window.__cspProbe === 1
+    })
+    await page.waitForTimeout(200)
+    check(!ran && page.errors.length === 1 && /CSP blocked inline \(script-src/.test(page.errors[0]), `CSP: a script added later does not run and is reported (ran: ${ran}; ${page.errors.join('; ')})`)
     await page.close()
   }
 } finally {

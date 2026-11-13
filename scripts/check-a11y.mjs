@@ -6,7 +6,7 @@
 //
 //   npm run build && npm run check:a11y
 import { readFileSync } from 'node:fs'
-import { PAGE_READY_MS, startBrowser, tally } from './lib-browser.mjs'
+import { PAGE_READY_MS, guardCsp, startBrowser, tally } from './lib-browser.mjs'
 
 const axeSource = readFileSync(new URL('../node_modules/axe-core/axe.min.js', import.meta.url), 'utf8')
 const { url, browser, close } = await startBrowser('check-a11y')
@@ -16,6 +16,7 @@ async function open(width, height, theme = 'dark') {
   const page = await browser.newPage({ viewport: { width, height } })
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
+  await guardCsp(page)
   await page.addInitScript(
     ([t]) => {
       try {

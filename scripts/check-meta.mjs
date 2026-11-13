@@ -45,6 +45,14 @@ check(/not\s+published/.test(readme), 'the README says the test manual behind th
 check(/`pip install roco`/.test(readme) && /unrelated/.test(readme), 'the README warns that pip install roco is another project')
 check(/license:\s*\{\s*fileName:\s*'THIRD-PARTY-LICENSES\.md'/.test(read('vite.config.ts')) && readme.includes('THIRD-PARTY-LICENSES.md'), 'the build writes THIRD-PARTY-LICENSES.md and the README names it')
 
+// the built page's Content Security Policy (vite.config.ts writes it; check-layout tests it in Chrome)
+const vite = read('vite.config.ts')
+const csp = /const policy = \[([^\]]*)\]/.exec(vite)?.[1] ?? ''
+check(/name: 'roco-csp',\s*apply: 'build'/.test(vite) && /plugins:[^\]]*contentSecurityPolicy\(\)/.test(vite), 'vite.config.ts adds the roco-csp plugin to the build')
+check(/"object-src 'none'"/.test(csp) && /"base-uri 'self'"/.test(csp) && /"form-action 'none'"/.test(csp) && /"default-src 'self'"/.test(csp) && /script-src 'self' 'sha256-\$\{hash\}' 'wasm-unsafe-eval'`/.test(csp),
+  'the policy: default-src self, scripts by origin and hash, WebAssembly, no plugins, no <base> or form elsewhere')
+check(csp.length > 0 && !/'unsafe-eval'/.test(csp) && !/script-src[^"`]*'unsafe-inline'/.test(csp) && !/(^|[\s"'`])\*/.test(csp), "the policy has no 'unsafe-eval', no inline scripts by default and no * source")
+
 // the logo: the README's two pictures hold the page's drawing, and the favicon is readable on a dark tab bar too
 const pathsOf = (text) => [...text.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]).sort()
 const pagePaths = pathsOf(read('src/components/RocoLogo.tsx'))

@@ -24,6 +24,8 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 - Each release lists `SHA256SUMS` and a signed build provenance attestation for the wheel and the page zip. The README shows
   how to check a download with `sha256sum` and `gh attestation verify`. The release workflow can be run by hand as a dry run
   that builds, checksums and attests, and publishes nothing.
+- The page has a Content Security Policy: it runs only its own scripts, connects only to itself and the bridge, and loads no
+  plugin. The browser checks fail on anything the policy blocks.
 
 ### Changed
 - The GitHub workflows run each action at a fixed commit (named by its release in a comment), so a moved tag cannot change what CI

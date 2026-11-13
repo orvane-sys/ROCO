@@ -51,6 +51,19 @@ export async function startBrowser(name) {
   }
 }
 
+/**
+ * Makes every Content Security Policy violation a page error, which the checks already fail on, so a policy that blocks something
+ * the page needs (a model, the sample, the meshes' WebAssembly, the bridge) cannot pass unseen. `target` is a page or a context.
+ */
+export const guardCsp = (target) =>
+  target.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (e) => {
+      setTimeout(() => {
+        throw new Error(`CSP blocked ${e.blockedURI || 'inline'} (${e.effectiveDirective})`)
+      })
+    })
+  })
+
 /** A tally for the checks: `check(ok, what)` counts, and `finish(name)` prints the totals and sets the exit code. */
 export function tally() {
   let failed = 0
