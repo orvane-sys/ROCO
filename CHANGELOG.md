@@ -5,6 +5,11 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-13
+
+`roco demo` and `roco record`, a Quick start for each way in, a bridge that keeps 50 frames a second, and releases with
+checksums and signed provenance.
+
 ### Added
 - `roco demo` plays the sample recording from your own PC, with no robot and no internet.
 - `roco record IFACE OUT` records `rt/lowstate` and `rt/lowcmd` to CSV files that `roco replay` plays. It only subscribes,
