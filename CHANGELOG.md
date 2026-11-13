@@ -5,6 +5,11 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+- three.js 0.187, Vite 8.3.6 and other minor updates.
+- `npm run lint` fails on any oxlint warning.
+- The workflows use actions/checkout 7, setup-node 7, setup-python 7, upload-pages-artifact 5 and deploy-pages 5.
+
 ## [0.1.2] - 2026-11-13
 
 `roco demo` and `roco record`, a Quick start for each way in, a bridge that keeps 50 frames a second, and releases with

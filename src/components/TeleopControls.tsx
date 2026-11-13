@@ -238,10 +238,10 @@ export function TeleopControls({
     const applyDeadzone = (val: number, threshold = 0.12) =>
       Math.abs(val) > threshold ? val : 0
 
-    let tick = 0
+    const counter = { tick: 0 }
 
     const dispatchInterval = setInterval(() => {
-      tick++
+      counter.tick++
 
       // Gamepad presence is polled, so a pad that was already connected at page load (no
       // gamepadconnected event) is still reported.
@@ -342,7 +342,7 @@ export function TeleopControls({
       lastDispatchedCmdRef.current = nextCmd
 
       // Mirror the commanded value into React at ~10 Hz (and immediately on a change to/from zero).
-      if (tick % 5 === 0 || (prev.vx === 0 && prev.vy === 0 && prev.vz === 0) !== (finalVx === 0 && finalVy === 0 && finalVz === 0)) {
+      if (counter.tick % 5 === 0 || (prev.vx === 0 && prev.vy === 0 && prev.vz === 0) !== (finalVx === 0 && finalVy === 0 && finalVz === 0)) {
         setCommanded((c) => (c.vx === nextCmd.vx && c.vy === nextCmd.vy && c.vz === nextCmd.vz ? c : nextCmd))
       }
     }, 20) // 50 Hz
