@@ -62,7 +62,7 @@ export function npmProblems(lock) {
 
 /** The package names in pyproject.toml's [project] dependencies and [project.optional-dependencies], lower case. */
 export function pythonDependencies(text) {
-  const table = (name) => text.split(new RegExp(`^\\[${name.replace(/\./g, '\\.')}\\]\\s*$`, 'm'))[1]?.split(/^\[/m)[0] ?? ''
+  const table = (name) => text.split(new RegExp(`^\\[${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\s*$`, 'm'))[1]?.split(/^\[/m)[0] ?? ''
   const strings = (s) => [...s.replace(/#.*$/gm, '').matchAll(/"([^"]+)"|'([^']+)'/g)].map((m) => m[1] ?? m[2])
   const project = table('project')
   const deps = /^dependencies\s*=\s*\[([\s\S]*?)\]/m.exec(project)?.[1] ?? ''
