@@ -1,0 +1,109 @@
+name: Install
+
+# Installs the wheel the way a user does, with each Ubuntu's own Python and pipx, and checks that the commands work.
+# Slow, so it runs weekly and by hand (Actions > Install > Run workflow), not on every push.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build the page
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build and check the wheel with this Ubuntu's own Python
+        # no setup-python on purpose: the point is the system python3
+        run: |
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/b"
+          "$RUNNER_TEMP/b/bin/pip" install --quiet build
+          "$RUNNER_TEMP/b/bin/python" scripts/check_wheel.py --out dist-py
+          ls dist-py/roco-*.whl
+
+      - name: pipx install and the launcher self-test
+        run: |
+          pipx --version
+          pipx install dist-py/roco-*.whl
+          roco --self-test
+
+      - name: The demo serves the page with its Content-Security-Policy
+        run: |
+          roco demo --web-port 18780 > "$RUNNER_TEMP/demo.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 50); do
+            curl -fsS -o "$RUNNER_TEMP/index.html" http://127.0.0.1:18780/ && break
+            sleep 0.2
+          done
+          kill "$pid"
+          wait "$pid" || true
+          cat "$RUNNER_TEMP/demo.log"
+          test -s "$RUNNER_TEMP/index.html"
+          grep -q '<meta http-equiv="Content-Security-Policy"' "$RUNNER_TEMP/index.html"
+
+      - name: A replay of a synthetic recording streams G1 frames
+        # the recording and the WebSocket client come from scripts/regress.py (standard library only)
+        run: |
+          python3 -c 'import sys; sys.path.insert(0, "scripts"); import regress; regress.write_recording(sys.argv[1])' "$RUNNER_TEMP/rec"
+          mkdir -p "$RUNNER_TEMP/deploy"
+          roco replay "$RUNNER_TEMP/rec/rec" --port 18765 --web-port 18780 --deploy-dir "$RUNNER_TEMP/deploy" > "$RUNNER_TEMP/replay.log" 2>&1 &
+          pid=$!
+          status=0
+          python3 - <<'EOF' || status=$?
+          import sys, time
+          sys.path.insert(0, "scripts")
+          import regress
+          deadline = time.time() + 30
+          while True:
+              try:
+                  ws = regress.Ws(18765)
+                  break
+              except OSError:
+                  if time.time() > deadline:
+                      raise
+                  time.sleep(0.3)
+          while True:
+              op, p = ws.frame()
+              if op == 0x1 and regress.is_type(p, "replay"):
+                  break
+          frames = [p for _, op, p in ws.json_frames(3.0) if op == 0x2]
+          ws.close()
+          sizes = sorted({len(p) for p in frames})
+          print(f"{len(frames)} binary frames in 3 s, sizes {sizes}")
+          sys.exit(0 if len(frames) >= 100 and sizes == [2092] else 1)
+          EOF
+          kill "$pid"
+          wait "$pid" || true
+          cat "$RUNNER_TEMP/replay.log"
+          exit "$status"
+
+      - name: The dds extra installs (information only)
+        # cyclonedds 0.10.2 has wheels for Python 3.7 to 3.10 only, so this is expected to fail on 24.04 and 26.04
+        continue-on-error: true
+        run: |
+          spec=$(grep -oE 'cyclonedds==[0-9.]+' pyproject.toml)
+          pipx inject roco "$spec"
+          pipx runpip roco show cyclonedds

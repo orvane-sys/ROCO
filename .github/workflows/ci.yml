@@ -74,6 +74,12 @@ jobs:
       - name: Recorder self-test
         run: python scripts/roco_record.py --self-test
 
+      - name: Privacy scan self-test
+        run: python tools/gate/privacy_scan.py --self-test
+
+      - name: Corpus fetch self-test
+        run: python tools/corpus/fetch.py --self-test
+
       - name: Regression tests (real bridge processes)
         run: python scripts/regress.py
 

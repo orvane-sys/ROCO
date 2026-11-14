@@ -41,3 +41,9 @@ soak*.csv
 dist-py/
 scripts/roco_page/*
 !scripts/roco_page/__init__.py
+
+# Private, never on GitHub: the privacy scan's word list (tools/gate/privacy_scan.py), local plans and notes
+/private/
+/plans/
+CLAUDE.local.md
+.claude/settings.local.json
