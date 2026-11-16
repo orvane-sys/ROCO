@@ -291,6 +291,14 @@ const BROWSER_CSP = 'Error: CSP blocked inline (style-src-attr)'
   addXml('doubling', { files: { 'robot/dbl.xacro': xacro('dbl', `  <xacro:property name="p0" value="${'x'.repeat(1000)}"/>\n` +
     [1, 2, 3, 4, 5].map((i) => `  <xacro:property name="p${i}" value="\${p${i - 1}}\${p${i - 1}}"/>`).join('\n') + `\n  <link name="\${p5}"/>\n  ${joint}`) } },
     [prefix('expression'), 'is 16000 characters'])
+  // macro params that a regex would backtrack on for hours (40 characters is enough) or rescan once per spec; they are read
+  // when the macro is defined, so these never-called macros are enough
+  addXml('params', { files: { 'robot/params.xacro': xacro('params', [
+    `  <xacro:macro name="bangs" params="x:=${'!'.repeat(100000)}'"/>`,
+    `  <xacro:macro name="quotes" params="x:=${"''".repeat(50000)}&quot;"/>`,
+    `  <xacro:macro name="many" params="${Array.from({ length: 100000 }, (_, i) => `a${i}:=1`).join(' ')}"/>`,
+    `  ${joint}`,
+  ].join('\n')) } }, ['Imported params (1 joint)!'], 15_000)
   addXml('big_text', { loose: { 'big.urdf': Buffer.alloc(33 * 2 ** 20, 0x20) } }, [why('too big', 'big.urdf: 33 MiB')])
   // 10^7 elements if nothing stopped it
   addXml('elements', { files: { 'robot/fan.xacro': fan('fan', 6, 10, '<link name="l"/>'.repeat(10)) } }, [prefix('elements')])

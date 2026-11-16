@@ -152,26 +152,108 @@ class MacroTable {
   }
 }
 
-// One parameter spec of a macro's `params`, as Python xacro reads it (its regex, kept as written: `.` stops at a newline).
-const MACRO_ARG = /^\s*([^\s:=]+?)\s*:?=\s*(\^\|?)?(\$\{.*?\}|\$\(.*?\)|(?:'.*?'|".*?"|[^\s'"]+)+|)(?:\s+|$)(.*)/
+// A macro's `params`, read as Python xacro reads them: it matches each spec with the regex
+//   ^\s*([^\s:=]+?)\s*:?=\s*(\^\|?)?(\$\{.*?\}|\$\(.*?\)|(?:'.*?'|".*?"|[^\s'"]+)+|)(?:\s+|$)(.*)
+// and goes on with the last group (`.` stops at a line end). That regex backtracks exponentially on a hostile value
+// (`a:=''''…` or `a:=!!!!…` with no end), and rescanning the rest for each spec is quadratic, so this reads it by hand in
+// linear time and gives the regex's own answer: for each value start, `valueEnd` is where the regex's first successful
+// try (in its backtracking order) ends the value, or -1.
+const isWs = (c: string) => /\s/.test(c)
+const isLineEnd = (c: string) => c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029'
+
+/** For each position, where the regex's value group would end if it started there, or -1 when no try succeeds. */
+function valueEnds(s: string): { at: (c: number) => number } {
+  const n = s.length
+  // best[e]: the value's end once one or more of its parts (a '…' or "…" string, or a run of other non-space characters)
+  // end at e. More parts are tried first (greedy), then stopping, which needs a space or the end next.
+  const best = new Int32Array(n + 1)
+  best[n] = n
+  // ${…} and $(…) values: the first closing bracket followed by a space or the end; -1 elsewhere (a typed array, not a Map:
+  // a hostile 32 MiB spec has 16M of them)
+  const dollar = new Int32Array(n).fill(-1)
+  let sq = -1 // the first success among '…' strings closing at a later ' on this line, nearest first (lazy .*?)
+  let dq = -1
+  let brace = -1 // the nearest } on this line followed by a space or the end
+  let paren = -1
+  let runEnd = n // the end of the run of other characters that position e is in
+  for (let e = n - 1; e >= 0; e--) {
+    const ch = s[e]
+    const endOk = e + 1 === n || isWs(s[e + 1])
+    if (ch === '$' && s[e + 1] === '{') dollar[e] = brace < 0 ? -1 : brace + 1
+    else if (ch === '$' && s[e + 1] === '(') dollar[e] = paren < 0 ? -1 : paren + 1
+    if (isWs(ch)) best[e] = e
+    else if (ch === "'") best[e] = sq
+    else if (ch === '"') best[e] = dq
+    else {
+      // a shorter run never helps: inside a run the next part is the rest of the run, and stopping needs a space
+      if (e + 1 === n || isWs(s[e + 1]) || s[e + 1] === "'" || s[e + 1] === '"') runEnd = e + 1
+      best[e] = best[runEnd]
+    }
+    if (isLineEnd(ch)) sq = dq = brace = paren = -1
+    else if (ch === "'") sq = best[e + 1] >= 0 ? best[e + 1] : sq
+    else if (ch === '"') dq = best[e + 1] >= 0 ? best[e + 1] : dq
+    else if (ch === '}' && endOk) brace = e
+    else if (ch === ')' && endOk) paren = e
+  }
+  return { at: (c) => (dollar[c] >= 0 ? dollar[c] : best[c]) }
+}
 
 function parseMacroParams(spec: string): Pick<Macro, 'params' | 'defaults'> {
   const params: string[] = []
   const defaults = new Map<string, [string | null, string | null]>()
-  let rest = spec
-  while (rest) {
-    const m = MACRO_ARG.exec(rest)
+  const s = spec
+  let ends: ReturnType<typeof valueEnds> | undefined
+  let pos = 0
+  let lim = s.length // after the first spec, the rest is the regex's (.*), which stops at a line end
+  let cut = false
+  const skipWs = (i: number) => {
+    while (i < lim && isWs(s[i])) i++
+    return i
+  }
+  /** One spec at `pos`: [name, forward, default, where the rest starts], or null where the regex finds no match. */
+  const match = (): [string, string, string, number] | null => {
+    let i = skipWs(pos)
+    const n0 = i
+    while (i < lim && !isWs(s[i]) && s[i] !== ':' && s[i] !== '=') i++
+    if (i === n0) return null
+    const name = s.slice(n0, i)
+    i = skipWs(i)
+    if (s[i] === ':') i++
+    if (i >= lim || s[i] !== '=') return null
+    const w0 = i + 1
+    const w1 = skipWs(w0)
+    ends ??= valueEnds(s)
+    const tries: [number, string][] = []
+    if (s[w1] === '^' && s[w1 + 1] === '|' && w1 + 1 < lim) tries.push([w1 + 2, '^|'])
+    if (s[w1] === '^' && w1 < lim) tries.push([w1 + 1, '^'])
+    tries.push([w1, ''])
+    for (const [c, fwd] of tries) {
+      const q = c >= lim ? c : ends.at(c)
+      if (q >= 0 && q <= lim) return [name, fwd, s.slice(c, q), q]
+    }
+    // the regex then gives back a space after `=`: an empty value, and the rest is what follows the spaces
+    return w1 > w0 ? [name, '', '', w1 - 1] : null
+  }
+  while (pos < lim) {
+    const m = match()
     if (m) {
-      const [, param, forward, def, more] = m
+      const [param, forward, def, q] = m
       params.push(param)
       defaults.set(param, [forward ? param : null, def || null])
-      rest = more
+      pos = skipWs(q)
+      if (!cut) {
+        let t = pos
+        while (t < lim && !isLineEnd(s[t])) t++
+        lim = t
+        cut = true
+      }
     } else {
-      const t = rest.trimStart()
-      if (!t) break
-      const sp = t.search(/\s/)
-      params.push(sp < 0 ? t : t.slice(0, sp))
-      rest = sp < 0 ? '' : t.slice(sp).trimStart()
+      const p = skipWs(pos)
+      if (p >= lim) break
+      let sp = p
+      while (sp < lim && !isWs(s[sp])) sp++
+      params.push(s.slice(p, sp))
+      pos = skipWs(sp)
     }
   }
   return { params, defaults }
