@@ -6,6 +6,11 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { parseRobotDescription } from './modelFormatParser'
+import { AssetIndex, type Resolved } from './assetResolver'
+import { ImportReport } from './importReport'
+import { LIMITS, TEXT_FILE, refuse, sizeLimitFor } from './importLimits'
+import { Deadline, parseXmlSafe } from './safeXml'
+import { isZip, unpackZip } from './zipBundle'
 import { buildProfileFromParsedRobot } from './autoProfileBuilder'
 import { motorOrderNote } from './motorMatch'
 import { getRobotProfile, unregisterRobotProfile, type RobotProfile } from '../config/robotRegistry'
@@ -166,82 +171,8 @@ function evictOldImports(keepId: string): void {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Path-aware asset lookup
-// -----------------------------------------------------------------------------
-/** Lower-cased, scheme/host-free, `.`/`..`-collapsed path. `package://pkg/a/../b.stl` -> `pkg/b.stl`. */
-export function normalizeAssetPath(raw: string): string {
-  let p = raw.split('?')[0].split('#')[0].replace(/\\/g, '/').replace(/^blob:/i, '')
-  try {
-    p = decodeURIComponent(p)
-  } catch {
-    // keep the undecoded path
-  }
-  const m = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i.exec(p)
-  if (m) {
-    p = /^https?$/i.test(m[1]) ? m[2].split('/').slice(1).join('/') : m[2] // drop host:port, keep package name
-  }
-  const out: string[] = []
-  for (const seg of p.split('/')) {
-    if (!seg || seg === '.') continue
-    if (seg === '..') out.pop()
-    else out.push(seg.toLowerCase())
-  }
-  return out.join('/')
-}
-
-interface AssetEntry {
-  segs: string[]
-  url: string
-  path: string
-}
-
-export interface AssetMatch {
-  url: string | null
-  /** Other files that matched equally well; non-empty means the choice was a guess. */
-  ambiguousWith: string[]
-}
-
-/** Number of trailing path segments two paths share. */
-function commonSuffix(a: string[], b: string[]): number {
-  let n = 0
-  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++
-  return n
-}
-
-class AssetIndex {
-  private byBase = new Map<string, AssetEntry[]>()
-  add(path: string, url: string): void {
-    const norm = normalizeAssetPath(path)
-    const segs = norm.split('/')
-    const base = segs[segs.length - 1]
-    const list = this.byBase.get(base) ?? []
-    list.push({ segs, url, path: norm })
-    this.byBase.set(base, list)
-  }
-  /** Picks the file sharing the most trailing path segments with the request. */
-  find(request: string): AssetMatch {
-    const segs = normalizeAssetPath(request).split('/')
-    const candidates = this.byBase.get(segs[segs.length - 1])
-    if (!candidates) return { url: null, ambiguousWith: [] }
-    let best = -1
-    let winners: AssetEntry[] = []
-    for (const c of candidates) {
-      const score = commonSuffix(segs, c.segs)
-      if (score > best) {
-        best = score
-        winners = [c]
-      } else if (score === best) {
-        winners.push(c)
-      }
-    }
-    const distinct = new Set(winners.map((w) => w.url))
-    return {
-      url: winners[0].url,
-      ambiguousWith: distinct.size > 1 ? winners.slice(1).map((w) => w.path) : [],
-    }
-  }
-}
+// Path-aware asset lookup lives in assetResolver.ts; re-exported so existing imports keep working.
+export { normalizeAssetPath, type AssetMatch } from './assetResolver'
 
 /**
  * Flattens a drag-and-drop payload into files. `dataTransfer.files` only yields a folder as an opaque
@@ -292,24 +223,44 @@ export interface ImportResult {
   profile: RobotProfile
   /** Problems the user should know about (missing meshes, ambiguous names, unsupported xacro/MJCF features). */
   warnings: string[]
+  /** Everything the import fixed, approximated, substituted or could not use. Its lines are also in `warnings`. */
+  report: ImportReport
 }
 
-const summarize = (names: string[], max = 5): string =>
-  names.length <= max ? names.join(', ') : `${names.slice(0, max).join(', ')} and ${names.length - max} more`
-
 /**
- * Picks the entry-point description. A `.urdf` wins; among xacro/xml files the one that no other
- * candidate includes is the top-level file.
+ * The files that could be the entry-point description, best first. A `.urdf` wins; among xacro/xml files a top-level
+ * file is one that no other candidate includes. More than one means the choice was a guess.
  */
-function pickMainFile(files: File[], texts: Map<File, string>): File | undefined {
+function pickMainFiles(files: File[], texts: Map<File, string>): File[] {
   const urdfs = files.filter((f) => /\.urdf$/i.test(f.name))
-  if (urdfs.length > 0) return urdfs[0]
+  if (urdfs.length > 0) return urdfs
   const candidates = files.filter((f) => /\.(xacro|xml)$/i.test(f.name))
   const xacros = candidates.filter((f) => /\.xacro$/i.test(f.name))
   const pool = xacros.length > 0 ? xacros : candidates
   const included = (f: File) =>
     pool.some((other) => other !== f && (texts.get(other) ?? '').toLowerCase().includes(f.name.toLowerCase()))
-  return pool.find((f) => !included(f)) ?? pool[0]
+  const top = pool.filter((f) => !included(f))
+  return top.length ? top : pool.slice(0, 1)
+}
+
+/**
+ * Points every `<mesh>` and `<texture>` filename in the URDF at the imported file it resolves to, written as that file's
+ * path in the import. The twin then finds each file by its full path instead of guessing from the name, so a
+ * relative path keeps its folder. References that resolve to nothing are left as written.
+ */
+function rewriteAssetRefs(urdf: string, doc: Document, resolve: (ref: string) => Resolved): { urdf: string; meshes: Map<string, Resolved> } {
+  const meshes = new Map<string, Resolved>()
+  let changed = false
+  for (const el of Array.from(doc.querySelectorAll('mesh[filename], texture[filename]'))) {
+    const ref = el.getAttribute('filename') ?? ''
+    const hit = resolve(ref)
+    if (el.tagName === 'mesh') meshes.set(ref, hit)
+    if (hit.path) {
+      el.setAttribute('filename', hit.path.split('/').map(encodeURIComponent).join('/'))
+      changed = true
+    }
+  }
+  return { urdf: changed ? new XMLSerializer().serializeToString(doc) : urdf, meshes }
 }
 
 /**
@@ -317,22 +268,52 @@ function pickMainFile(files: File[], texts: Map<File, string>): File | undefined
  * from a FileList, drag-and-drop event, or directory upload.
  * Builds a dynamic RobotProfile, registers it, and switches the active robot profile.
  */
-export async function importRobotFiles(files: FileList | File[]): Promise<ImportResult> {
-  const fileArray = Array.from(files)
-  if (fileArray.length === 0) {
+export interface ImportOptions {
+  /** The main description file, by its path in the import (as `webkitRelativePath` gives it); otherwise it is picked. */
+  mainFile?: string
+  /** Values for the xacro's `$(arg name)`. */
+  xacroArgs?: Record<string, string>
+}
+
+export async function importRobotFiles(files: FileList | File[], options: ImportOptions = {}): Promise<ImportResult> {
+  const given = Array.from(files)
+  if (given.length === 0) {
     throw new Error('No files provided for robot import.')
   }
+  // A zip is unpacked (in a worker, under its limits) into the files it holds; every file must be under its size cap
+  // before any of it is read.
+  const fileArray: File[] = []
+  for (const f of given) {
+    if (isZip(f)) fileArray.push(...(await unpackZip(f)))
+    else fileArray.push(f)
+  }
+  for (const f of fileArray) {
+    if (f.size > sizeLimitFor(f.name)) throw refuse('too big', `${filePath(f)}: ${Math.round(f.size / 2 ** 20)} MiB`)
+  }
+  // the time limit starts after unzipping, which has its own
+  const deadline = new Deadline()
   const warnings: string[] = []
 
   // 1. Read every description-like file once: xacro includes need the text synchronously.
   const texts = new Map<File, string>()
   await Promise.all(
     fileArray
-      .filter((f) => /\.(urdf|xacro|xml)$/i.test(f.name))
+      .filter((f) => TEXT_FILE.test(f.name))
       .map(async (f) => texts.set(f, await f.text()))
   )
 
-  const mainFile = pickMainFile(fileArray, texts)
+  const report = new ImportReport()
+  const tops = pickMainFiles(fileArray, texts)
+  let mainFile = tops[0]
+  if (options.mainFile !== undefined) {
+    mainFile = fileArray.find((f) => filePath(f) === options.mainFile) as File
+    if (!mainFile) throw new Error(`The main file ${options.mainFile} is not among the imported files.`)
+  } else if (tops.length > 1) {
+    report.add('substitution', `Several files could be the main robot description; ${filePath(mainFile)} was used.`, {
+      where: tops.slice(1, 4).map(filePath).join(', '),
+      hint: 'Import only the files of the robot you want.',
+    })
+  }
   if (!mainFile) {
     throw new Error(
       'Could not find a robot description file (.urdf, .xacro, or .xml) among the imported files.'
@@ -340,27 +321,74 @@ export async function importRobotFiles(files: FileList | File[]): Promise<Import
   }
 
   // 2. Parse first, so a bad file fails before any blob URL exists (nothing to leak or revoke).
+  const mainPath = filePath(mainFile)
   const textFileIndex = new AssetIndex()
   const textByUrl = new Map<string, string>()
   for (const [f, text] of texts) {
     textByUrl.set(filePath(f), text)
     textFileIndex.add(filePath(f), filePath(f))
   }
-  const processedUrdf = parseRobotDescription(texts.get(mainFile) ?? '', mainFile.name, {
+  const parsedUrdf = parseRobotDescription(texts.get(mainFile) ?? '', mainFile.name, {
     warnings,
-    resolveInclude: (filename) => {
-      const hit = textFileIndex.find(filename)
-      return hit.url ? textByUrl.get(hit.url) : undefined
+    deadline,
+    fileName: mainPath,
+    report,
+    xacroArgs: options.xacroArgs,
+    // MuJoCo looks for an include next to the file that includes it, then next to the main file
+    resolveInclude: (filename, from) => {
+      let hit = from && from !== mainPath ? textFileIndex.resolve(filename, { from }) : undefined
+      if (hit?.how !== 'exact') hit = textFileIndex.resolve(filename, { from: mainPath, report })
+      const text = hit.url ? textByUrl.get(hit.url) : undefined
+      return text === undefined || !hit.path ? undefined : { text, path: hit.path }
     },
   })
 
-  // 3. Parse the URDF for kinematics only. Meshes are loaded later by the digital twin, so skip them here
+  // 3. Resolve every mesh against the imported files and write its path into the URDF, so the twin loads exactly
+  // the file it resolved to. Problems show up in the dialog instead of as a half-empty robot later.
+  const index = new AssetIndex()
+  for (const f of fileArray) index.add(filePath(f), filePath(f))
+  // A plain URDF is checked here (entities, well-formed, with the line of any error); a converted one is checked again.
+  const urdfDoc = parseXmlSafe(parsedUrdf, mainPath, deadline)
+  const { urdf: processedUrdf, meshes } = rewriteAssetRefs(parsedUrdf, urdfDoc, (ref) => index.resolve(ref, { from: mainPath, report }))
+  for (const [ref, hit] of meshes) {
+    if (!hit.url) {
+      report.add('error', 'A mesh file the robot refers to was not imported, so that part is not drawn.', {
+        where: ref,
+        hint: 'Import the folder that holds the meshes.',
+      })
+    }
+  }
+
+  // Very large meshes draw slowly. A binary STL gives its triangle count in its header, so this reads 84 bytes a file;
+  // other formats are not counted here.
+  const byPath = new Map(fileArray.map((f) => [filePath(f), f]))
+  const count = (n: number) => n.toLocaleString('en-US')
+  let triangles = 0
+  for (const url of new Set(Array.from(meshes.values(), (h) => h.url))) {
+    deadline.check('counting mesh triangles')
+    const f = url ? byPath.get(url) : undefined
+    if (!f || !/\.stl$/i.test(f.name) || f.size < 84) continue
+    const n = new DataView(await f.slice(80, 84).arrayBuffer()).getUint32(0, true)
+    if (84 + 50 * n !== f.size) continue // an ASCII STL
+    triangles += n
+    if (n > LIMITS.trianglesMesh) {
+      report.add('limit', `A mesh has more than ${count(LIMITS.trianglesMesh)} triangles, so the robot may draw slowly.`, {
+        where: `${filePath(f)}: ${count(n)}`,
+        hint: 'A simplified copy of the mesh draws faster.',
+      })
+    }
+  }
+  if (triangles > LIMITS.trianglesTotal) {
+    report.add('limit', `The meshes have ${count(triangles)} triangles in all, more than ${count(LIMITS.trianglesTotal)}, so the robot may draw slowly.`)
+  }
+
+  // 4. Parse the URDF for kinematics only. Meshes are loaded later by the digital twin, so skip them here
   // instead of downloading every file twice into a robot that is thrown away.
   const kinematicsLoader = new URDFLoader(new THREE.LoadingManager())
   kinematicsLoader.loadMeshCb = (_path, _mgr, _material, done) => done(new THREE.Group())
   const parsedRobot: URDFRobot = kinematicsLoader.parse(processedUrdf)
 
-  // 4. Only now map files to blob URLs. Description files are included too (the twin may re-fetch them).
+  // 5. Only now map files to blob URLs. Description files are included too (the twin may re-fetch them).
   const urls: string[] = []
   const makeUrl = (blob: Blob): string => {
     const u = URL.createObjectURL(blob)
@@ -369,34 +397,16 @@ export async function importRobotFiles(files: FileList | File[]): Promise<Import
   }
   let profile: RobotProfile
   try {
-    const index = new AssetIndex()
-    for (const f of fileArray) index.add(filePath(f), makeUrl(f))
+    const blobIndex = new AssetIndex()
+    for (const f of fileArray) blobIndex.add(filePath(f), makeUrl(f))
     const urdfBlobUrl = makeUrl(new Blob([processedUrdf], { type: 'text/xml' }))
     const ownUrls = new Set(urls)
 
+    // The twin asks for "<urdf folder>/<path written in step 3>"; the URDF's own blob folder drops out in
+    // normalizeAssetPath, so the full path matches exactly. Anything else falls back to the name match.
     const resolveAsset = (url: string): string => {
       if (ownUrls.has(url) || /^data:/i.test(url)) return url
-      return index.find(url).url ?? url
-    }
-
-    // 5. Check every mesh the robot references now, so problems show up in the dialog instead of
-    // as a half-empty robot later.
-    const meshRefs = Array.from(processedUrdf.matchAll(/<mesh\b[^>]*\bfilename\s*=\s*["']([^"']+)["']/g), (m) => m[1])
-    const missing: string[] = []
-    const guessed: string[] = []
-    for (const ref of new Set(meshRefs)) {
-      const match = index.find(ref)
-      if (!match.url) missing.push(ref.split('/').pop() ?? ref)
-      else if (match.ambiguousWith.length > 0) guessed.push(ref)
-    }
-    if (missing.length > 0) {
-      warnings.push(`${missing.length} mesh file(s) referenced by the robot were not imported: ${summarize(missing)}.`)
-    }
-    if (guessed.length > 0) {
-      warnings.push(
-        `${guessed.length} mesh name(s) match several imported files and one was picked arbitrarily: ${summarize(guessed)}. ` +
-          'Import the whole robot folder so paths can disambiguate them.'
-      )
+      return blobIndex.exact(url).url ?? blobIndex.find(url).url ?? url
     }
 
     // 6. Build dynamic RobotProfile (throws if it has more joints than LowState_ has motor slots)
@@ -424,5 +434,6 @@ export async function importRobotFiles(files: FileList | File[]): Promise<Import
     )
   }
 
-  return { profile: getRobotProfile(profile.id), warnings }
+  warnings.push(...report.lines())
+  return { profile: getRobotProfile(profile.id), warnings, report }
 }

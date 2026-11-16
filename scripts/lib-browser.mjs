@@ -21,11 +21,6 @@ export async function startBrowser(name) {
     console.error(`${name}: no dist/, run npm run build first`)
     process.exit(1)
   }
-  const chromePath = [process.env.CHROME_PATH, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find((p) => p && existsSync(p))
-  if (!chromePath) {
-    console.error(`${name}: no Chrome or Chromium found; set CHROME_PATH`)
-    process.exit(1)
-  }
   const server = createServer((req, res) => {
     const file = normalize(join(dist, decodeURIComponent((req.url ?? '/').split('?')[0]).replace(/\/$/, '/index.html')))
     if (!file.startsWith(dist) || !existsSync(file) || !statSync(file).isFile()) {
@@ -36,11 +31,7 @@ export async function startBrowser(name) {
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const url = `http://127.0.0.1:${server.address().port}/?demo=1`
-  const browser = await chromium.launch({
-    executablePath: chromePath,
-    headless: true,
-    args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'],
-  })
+  const browser = await launchChrome(name)
   return {
     url,
     browser,
@@ -49,6 +40,20 @@ export async function startBrowser(name) {
       server.close()
     },
   }
+}
+
+/** Starts headless Chrome or Chromium from this PC (or CHROME_PATH). Exits with a message when there is none. */
+export async function launchChrome(name) {
+  const chromePath = [process.env.CHROME_PATH, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find((p) => p && existsSync(p))
+  if (!chromePath) {
+    console.error(`${name}: no Chrome or Chromium found; set CHROME_PATH`)
+    process.exit(1)
+  }
+  return chromium.launch({
+    executablePath: chromePath,
+    headless: true,
+    args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'],
+  })
 }
 
 /**

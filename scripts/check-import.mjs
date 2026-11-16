@@ -1,0 +1,649 @@
+// Checks the model importer's parts on small hand-made cases: the asset resolver (src/utils/assetResolver.ts), the import
+// report (src/utils/importReport.ts), and, in headless Chrome (the converters need DOMParser), MJCF conversion through the
+// page's own importer. Bundles the sources with rolldown in memory, like check-profiles.mjs.
+//
+//   node scripts/check-import.mjs [--dump-fixtures DIR]
+import { createServer } from 'node:http'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { rolldown } from 'rolldown'
+import { tally } from './lib-browser.mjs'
+
+// `--dump-fixtures DIR` writes the MJCF fixtures below as files, so MuJoCo itself can say where each body should be (the
+// expected poses in this check came from mujoco 3.17.0 reading exactly these files).
+const dumpAt = process.argv.indexOf('--dump-fixtures')
+if (dumpAt > 0) {
+  const dir = process.argv[dumpAt + 1]
+  for (const [name, fx] of Object.entries(mjcfFixtures())) {
+    for (const [path, body] of Object.entries(fx.files)) {
+      const out = join(dir, name, path)
+      mkdirSync(dirname(out), { recursive: true })
+      writeFileSync(out, body)
+    }
+  }
+  console.log(`check-import: fixtures written to ${dir}`)
+  process.exit(0)
+}
+
+const root = new URL('..', import.meta.url)
+const load = async (input) => {
+  const b = await rolldown({ input: fileURLToPath(new URL(input, root)), logLevel: 'silent' })
+  const { output } = await b.generate({ format: 'esm' })
+  await b.close()
+  return import('data:text/javascript;base64,' + Buffer.from(output[0].code).toString('base64'))
+}
+const { AssetIndex, normalizeAssetPath, joinBundlePath } = await load('src/utils/assetResolver.ts')
+const { ImportReport } = await load('src/utils/importReport.ts')
+const { check, finish } = tally()
+
+/** An index whose urls are `url:<path as given>`, so a result names the file it picked. */
+const indexOf = (paths) => {
+  const idx = new AssetIndex()
+  for (const p of paths) idx.add(p, `url:${p}`)
+  return idx
+}
+const run = (paths, ref, from) => {
+  const report = new ImportReport()
+  const r = indexOf(paths).resolve(ref, { from, report })
+  return { r, report, kinds: report.items.map((i) => i.kind).join(',') }
+}
+
+// --- relative paths --------------------------------------------------------------------------------------------------
+let t = run(['robot/urdf/r.urdf', 'robot/meshes/a.stl', 'other/meshes/a.stl'], '../meshes/a.stl', 'robot/urdf/r.urdf')
+check(t.r.url === 'url:robot/meshes/a.stl' && t.r.how === 'exact' && t.report.items.length === 0,
+  'a relative path is read against the referring file\'s folder, exactly, with nothing reported')
+t = run(['Robot/Meshes/A.STL'], 'meshes/a.stl', 'robot/r.urdf')
+check(t.r.how === 'exact' && t.r.url === 'url:Robot/Meshes/A.STL', 'paths match without regard to case')
+t = run(['robot/meshes/a b.stl'], 'meshes/a%20b.stl', 'robot/r.urdf')
+check(t.r.how === 'exact', 'a percent-encoded reference matches the file name it encodes')
+t = run(['meshes/a.stl'], '../meshes/a.stl', 'r.urdf')
+check(t.kinds === 'limit,substitution' && t.r.how === 'substituted' && t.r.path === 'meshes/a.stl',
+  '`..` above the top of the import is refused (reported as a limit) and only a file inside the import is used, reported')
+check(!t.r.path.includes('..'), 'a refused climb never yields a path with `..`')
+t = run(['meshes/a.stl'], '../../../../etc/passwd', 'r.urdf')
+check(t.r.how === 'missing' && t.r.url === null && t.kinds === 'limit', 'a climb to a file that is not imported resolves to nothing')
+t = run(['robot/meshes/a.stl'], 'parts/a.stl', 'robot/r.urdf')
+check(t.r.how === 'substituted' && t.kinds === 'substitution' && t.report.items[0].where[0] === 'parts/a.stl → robot/meshes/a.stl',
+  'a relative path that leads nowhere falls back to the name, and the report says which file was used')
+t = run(['robot/meshes/a.stl'], 'nope.stl', 'robot/r.urdf')
+check(t.r.how === 'missing' && t.r.url === null && t.report.items.length === 0, 'an unknown file is missing; the resolver reports nothing (the importer does)')
+
+// --- package://, model://, $(find) ----------------------------------------------------------------------------------
+t = run(['ws/src/h1_description/meshes/a.stl', 'ws/src/h1_description/urdf/h1.urdf'], 'package://h1_description/meshes/a.stl', 'ws/src/h1_description/urdf/h1.urdf')
+check(t.r.how === 'exact' && t.report.items.length === 0, 'package:// finds the package folder anywhere in the import, with nothing reported')
+{
+  const report = new ImportReport()
+  const idx = indexOf(['unitree_h1/meshes/a.stl', 'unitree_h1/meshes/b.stl', 'unitree_h1/h1.urdf'])
+  const a = idx.resolve('package://h1_description/meshes/a.stl', { from: 'unitree_h1/h1.urdf', report })
+  const b = idx.resolve('package://h1_description/meshes/b.stl', { from: 'unitree_h1/h1.urdf', report })
+  check(a.how === 'substituted' && b.url === 'url:unitree_h1/meshes/b.stl', 'a package that is not a folder in the import is read from the folder its files are in')
+  check(report.items.length === 1 && report.items[0].count === 2 && /package:\/\/h1_description is not a folder in the import; it was read from unitree_h1\//.test(report.items[0].message),
+    'the substitution is reported once per package, with a count')
+}
+t = run(['meshes/a.stl'], 'package://pkg/meshes/a.stl', 'r.urdf')
+check(/read from the top of the import/.test(t.report.items[0]?.message ?? ''), 'a package read from the top of the import says so')
+t = run(['m/x/a.stl'], 'model://pkg/meshes/a.stl', 'm/model.sdf')
+check(t.r.how === 'substituted' && /model:\/\/pkg files were matched by name/.test(t.report.items[0]?.message ?? ''), 'model:// matched by name only is reported as such')
+t = run(['pkg/meshes/a.stl'], 'model://pkg/meshes/a.stl', 'pkg/model.sdf')
+check(t.r.how === 'exact', 'model:// resolves like package://')
+t = run(['ws/pkg/meshes/a.stl'], '$(find pkg)/meshes/a.stl', 'ws/pkg/r.xml')
+check(t.r.how === 'exact' && t.r.url === 'url:ws/pkg/meshes/a.stl', '$(find pkg) resolves like package://')
+t = run(['ws/pkg/meshes/a.stl'], 'package://pkg', 'ws/pkg/r.urdf')
+check(t.r.how === 'missing', 'a package with no file path resolves to nothing')
+
+// --- absolute paths and other schemes -------------------------------------------------------------------------------
+t = run(['robot/meshes/a.stl'], 'file:///opt/ws/robot/meshes/a.stl', 'robot/r.urdf')
+check(t.r.how === 'substituted' && /absolute file path/.test(t.report.items[0]?.message ?? ''), 'file:// is matched by the end of its path and reported')
+t = run(['robot/meshes/a.stl'], '/opt/ws/robot/meshes/a.stl', 'robot/r.urdf')
+check(t.r.how === 'substituted' && t.r.url === 'url:robot/meshes/a.stl', 'a POSIX absolute path is matched by its end')
+t = run(['robot/meshes/a.stl'], 'D:\\ws\\robot\\meshes\\a.stl', 'robot/r.urdf')
+check(t.r.how === 'substituted' && t.r.url === 'url:robot/meshes/a.stl', 'a Windows absolute path is matched by its end')
+t = run(['robot/meshes/a.stl'], 'https://example.com/robot/meshes/a.stl', 'robot/r.urdf')
+check(t.r.how === 'substituted' && t.r.url === 'url:robot/meshes/a.stl' && /never fetched/.test(t.report.items[0]?.message ?? ''),
+  'a web address is never fetched: only an imported file is used, and that is reported')
+t = run(['robot/meshes/a.stl'], 'https://example.com/other.stl', 'robot/r.urdf')
+check(t.r.url === null && t.r.how === 'missing', 'a web address with no imported file of that name resolves to nothing')
+t = run([], 'data:model/stl;base64,AAAA', 'r.urdf')
+check(t.r.url === 'data:model/stl;base64,AAAA' && t.r.how === 'exact', 'a data: URI is used as it is')
+
+// --- ambiguity ------------------------------------------------------------------------------------------------------
+t = run(['a/meshes/x.stl', 'b/meshes/x.stl'], 'meshes/x.stl', 'c/r.urdf')
+check(t.r.ambiguousWith.length === 1 && t.report.items.some((i) => /several imported files/.test(i.message) && i.hint),
+  'a name that matches two files equally is reported as a guess, with a hint')
+t = run(['a/meshes/x.stl', 'b/meshes/x.stl'], 'package://p/meshes/x.stl', 'b/urdf/r.urdf')
+check(t.r.url === 'url:b/meshes/x.stl' && t.r.ambiguousWith.length === 0 && !t.report.items.some((i) => /several/.test(i.message)),
+  'a tie goes to the file nearest the referring file, and is then not a guess')
+
+// --- the helpers, and the twin's request ----------------------------------------------------------------------------
+check(normalizeAssetPath('package://pkg/a/../b.stl') === 'pkg/b.stl', 'normalizeAssetPath keeps its v1 behaviour')
+check(normalizeAssetPath('blob:http://127.0.0.1:5173/unitree_h1/meshes/a%20b.STL') === 'unitree_h1/meshes/a b.stl', 'the twin\'s blob-folder prefix drops out')
+check(joinBundlePath(['a'], '../../x') === null && joinBundlePath(['a', 'b'], '../x/./y') === 'a/x/y', 'joinBundlePath refuses a climb above the top')
+{
+  const idx = indexOf(['unitree_h1/meshes/a b.stl', 'other/unitree_h1/meshes/a b.stl'])
+  const hit = idx.exact('blob:https://example.github.io/unitree_h1/meshes/a%20b.stl')
+  check(hit.url === 'url:unitree_h1/meshes/a b.stl' && hit.ambiguousWith.length === 0, 'the twin\'s request for a rewritten path finds exactly that file')
+}
+
+// --- the report -----------------------------------------------------------------------------------------------------
+{
+  const r = new ImportReport()
+  for (let i = 0; i < 15; i++) r.add('approx', 'Ball joint shown fixed.', { where: `j${i}` })
+  r.add('approx', 'Ball joint shown fixed.', { where: 'j0' })
+  r.add('error', 'A mesh is missing.', { where: 'a.stl', hint: 'Import the meshes folder.' })
+  const ball = r.items[0]
+  check(r.items.length === 2 && ball.count === 16 && ball.where.length === 10, 'repeats are counted once, with at most 10 example places')
+  const lines = r.lines()
+  check(lines[0].startsWith('error: A mesh is missing. (a.stl) Import the meshes folder.') && lines[1].startsWith('approx ×16: Ball joint shown fixed. (j0,') && lines[1].endsWith(', …)'),
+    'lines put the most serious kind first and mark cut example lists')
+  const json = r.toJson()
+  json.items[0].where.push('changed')
+  check(json.version === 1 && json.items.length === 2 && r.items[0].where.length === 10, 'toJson is a copy')
+  check(new ImportReport().toText() === 'Nothing to report.\n' && r.toText().split('\n').length === 3, 'toText of an empty and a full report')
+  check(r.byKind('fix').length === 0 && r.byKind('approx').length === 1, 'byKind filters')
+}
+
+// MuJoCo 3.17.0 reading these fixtures (mj_kinematics at qpos0): each body's xpos and xquat (w, x, y, z), to 9 decimals.
+const EXPECTED = {
+  orient: {
+    base: { xyz: [0, 0, 0], quat: [1, 0, 0, 0] },
+    b_quat: { xyz: [1, 0, 0], quat: [0.707106781, 0, 0, 0.707106781] },
+    b_axisangle: { xyz: [0, 1, 0], quat: [0.707106781, 0, 0.707106781, 0] },
+    b_euler: { xyz: [0, 0, 0], quat: [0.5, 0.5, 0.5, 0.5] },
+    b_xyaxes: { xyz: [0, 0, 0], quat: [0.707106781, 0, 0, 0.707106781] },
+    b_zaxis: { xyz: [0, 0, 0], quat: [0.707106781, 0, 0.707106781, 0] },
+    b_zaxis_down: { xyz: [0, 0, 0], quat: [0, 1, 0, 0] },
+    b_near_lock: { xyz: [0.1, 0.2, 0.3], quat: [0.500003, 0.5, -0.5, 0.499997] },
+    b_after_lock: { xyz: [-0.4000012, -0.399997, 0.700003], quat: [0.500003, 0.5, -0.5, 0.499997] },
+  },
+  orient_extrinsic: {
+    base: { xyz: [0, 0, 0], quat: [1, 0, 0, 0] },
+    b_euler: { xyz: [0, 0, 0], quat: [0.5, 0.5, 0.5, -0.5] },
+    b_lock: { xyz: [0, 0, 0], quat: [0.706223082, 0.03534061, 0.706223082, -0.03534061] },
+    b_after_lock: { xyz: [0.646919207, 0.437602033, -0.4], quat: [0.706223082, 0.03534061, 0.706223082, -0.03534061] },
+  },
+  features: {
+    deg_body: { xyz: [0, 0, 2], quat: [1, 0, 0, 0] },
+    torso: { xyz: [0, 0, 1], quat: [1, 0, 0, 0] },
+    upper: { xyz: [0, 0.7, 1], quat: [0.707106781, 0, 0, 0.707106781] },
+    lower: { xyz: [0, 1, 1], quat: [0.43528575, -0.072547625, 0.217642875, 0.8705715] },
+    wrist: { xyz: [-0.122105263, 1.145263158, 0.936842105], quat: [0.43528575, -0.072547625, 0.217642875, 0.8705715] },
+    finger: { xyz: [-0.152631579, 1.181578947, 0.921052632], quat: [0.461690258, 0.564288094, -0.153896753, 0.666885929] },
+  },
+}
+
+// --- MJCF conversion, through the page's importer in Chrome ------------------------------------------------------------
+{
+  const bundle = await rolldown({ input: fileURLToPath(new URL('scripts/import-harness.ts', root)), logLevel: 'silent',
+    transform: { define: { 'import.meta.env.BASE_URL': '"/"', 'import.meta.env.DEV': 'false', 'import.meta.env.PROD': 'true', 'import.meta.env.VITE_HOSTED': 'undefined' } } })
+  const harness = (await bundle.generate({ format: 'iife' })).output[0].code
+  await bundle.close()
+  const server = createServer((req, res) => {
+    if (req.url === '/') return res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><meta charset="utf-8"><script src="/harness.js"></script>')
+    if (req.url === '/harness.js') return res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(harness)
+    res.writeHead(404).end()
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const { launchChrome } = await import('./lib-browser.mjs')
+  const browser = await launchChrome('check-import')
+  const errors = []
+  const importFixture = async (name, want = {}) => {
+    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name]
+    const page = await browser.newPage()
+    page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`))
+    // the importer's module graph starts the telemetry client; give it a socket that never connects
+    await page.addInitScript(() => {
+      window.WebSocket = class { constructor() { this.readyState = 3 } send() {} close() {} addEventListener() {} removeEventListener() {} }
+    })
+    await page.goto(`http://127.0.0.1:${server.address().port}/`)
+    await page.waitForFunction(() => !!window.__rocoImport, null, { timeout: 30000 })
+    const list = Object.entries(fx.files).map(([path, body]) => ({ path: `${name}/${path}`, url: 'data:application/octet-stream;base64,' + Buffer.from(body).toString('base64') }))
+    const got = await page.evaluate(([l, o, w]) => window.__rocoImport.run(l, o, w), [list, { mainFile: `${name}/${fx.main}`, ...fx.options }, want])
+    await page.close()
+    return got
+  }
+  const near = (a, b, tol = 1e-9) => a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) <= tol)
+  /** Same rotation: q and -q are one rotation. */
+  const sameRot = (a, b, tol = 1e-9) => near(a, b, tol) || near(a, b.map((c) => -c), tol)
+  const posesMatch = (got, expected, what) => {
+    const bad = Object.entries(expected).filter(([n, e]) => !got.poses?.[n] || !near(got.poses[n].xyz, e.xyz, 1e-7) || !sameRot(got.poses[n].quat, e.quat, 1e-7))
+    check(bad.length === 0, `${what}: every body is where MuJoCo puts it${bad.length ? ` (off: ${bad.map(([n]) => `${n} got ${JSON.stringify(got.poses?.[n])}`).join('; ')})` : ''}`)
+  }
+  try {
+    let got = await importFixture('orient')
+    check(got.ok, `orient imports (${got.error ?? ''})`)
+    posesMatch(got, EXPECTED.orient, 'quat, axisangle, intrinsic euler, xyaxes, zaxis (also straight down), a near-gimbal-lock quat')
+    check(got.joints?.deg?.type === 'revolute' && near([got.joints.deg.lower, got.joints.deg.upper], [-Math.PI / 2, Math.PI / 4]), 'a hinge range in degrees (the default) is converted to radians')
+    got = await importFixture('orient_extrinsic')
+    check(got.ok, `orient_extrinsic imports (${got.error ?? ''})`)
+    posesMatch(got, EXPECTED.orient_extrinsic, 'extrinsic euler (eulerseq XYZ, radians) and an exact 90° pitch')
+
+    got = await importFixture('features', { urdf: true })
+    check(got.ok, `features imports (${got.error ?? ''})`)
+    posesMatch(got, EXPECTED.features, 'frame, childclass, include, multi-joint body with offset joints, ball, slide, free')
+    const j = got.joints ?? {}
+    const jointIs = (n, type, axis, lower, upper) =>
+      j[n]?.type === type && (!axis || near(j[n].axis, axis)) && (lower === undefined || (near([j[n].lower], [lower]) && near([j[n].upper], [upper])))
+    check(jointIs('root', 'floating'), 'a freejoint is a floating joint')
+    check(jointIs('shoulder', 'revolute', [1, 0, 0], -1, 1), 'a joint takes axis and range from the childclass a <frame> sets')
+    check(jointIs('elbow_y', 'revolute', [0, 1, 0], -1, 1) && jointIs('elbow_z', 'revolute', [0, 0, 1], -0.5, 0.5), 'two joints on one body: both kept, own attributes over the class')
+    check(jointIs('wrist_ball', 'fixed'), 'a ball joint is shown fixed')
+    check(jointIs('slide', 'prismatic', [1, 0, 0], 0, 0.04), 'a slide joint is prismatic with its range in metres (not scaled as an angle)')
+    check(jointIs('spin', 'continuous', [1, 0, 0]), 'limited="false" with a range is not limited')
+    check(jointIs('deg_rad', 'revolute', [0, 0, 1], -1.5, 0.75), 'a body from an include found next to the main file keeps its joint')
+    check(!('lower__j1' in j) && !('finger__j1' in j) && j['lower__anchor']?.type === 'fixed', 'helper links carry no joint of their own; the offset anchor is fixed')
+    const visuals = (link) => {
+      const m = new RegExp(`<link name="${link}">([\\s\\S]*?)</link>`).exec(got.urdf ?? '')
+      return m ? m[1] : ''
+    }
+    check(/<mesh filename="features\/assets\/t\.stl" scale="2 2 2"\/>/.test(visuals('lower')), 'a mesh is found under meshdir with its asset scale')
+    check(!/<box/.test(visuals('lower')), 'a group 3 (collision) geom is not drawn')
+    check(/<mesh filename="features\/assets\/sub\/t\.stl" scale="3 3 3"\/>/.test(visuals('finger')), 'a mesh asset takes its scale from its class')
+    const upper = visuals('upper')
+    check((upper.match(/<visual>/g) ?? []).length === 3 && /<cylinder radius="0.03" length="0.3"\/>/.test(upper) && (upper.match(/<sphere radius="0.03"\/>/g) ?? []).length === 2,
+      'a capsule placed with fromto is a cylinder of its length with a sphere on each end')
+    check(/rgba="1 0 0 1"/.test(upper), 'a class rgba wins over the material')
+    const torso = visuals('torso')
+    check((torso.match(/<visual>/g) ?? []).length === 1 && /rgba="0 1 0 1"/.test(torso), 'a geom with only a material takes its colour; an rgba alpha of 0 is not drawn')
+    check(/<sphere radius="0.03"\/>/.test(visuals('wrist')), 'an ellipsoid is a sphere of its largest radius')
+    const w = got.warnings ?? []
+    const has = (text) => w.some((l) => l.includes(text))
+    check(has('A ball joint is shown fixed.') && has('A free joint is shown as a floating base.') && has('An ellipsoid geom is drawn as a sphere'),
+      'the ball joint, the free joint and the ellipsoid are reported')
+    check(!w.some((l) => l.startsWith('error')) && !has('scenery'), 'nothing in features is reported as an error, and a floor plane is not scenery')
+
+    got = await importFixture('missing_include')
+    check(got.ok && (got.warnings ?? []).some((l) => l.startsWith('error') && l.includes('An included file was not imported') && l.includes('not_here.xml')),
+      'a missing include is reported as an error, and the rest still imports')
+    got = await importFixture('circular')
+    check(!got.ok && /^The description nests too deeply \(circular include of 'main.xml'\)/.test(got.error ?? ''), `a circular include is refused (${got.error ?? 'imported'})`)
+    got = await importFixture('include_depth')
+    check(!got.ok && /^The description nests too deeply \(include 'd9.xml' is 9 includes deep\)/.test(got.error ?? ''), `includes 9 deep are refused (${got.error ?? 'imported'})`)
+    got = await importFixture('ambiguous')
+    check(got.ok && got.robotName === 'right', 'the main file the import names is the one used')
+    // --- xacro: the expression table against Python xacro 2.1.1, then each error it reports and goes on past ---
+    const unxml = (v) => v.replace(/&(lt|gt|quot|apos|amp);/g, (_, e) => ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' })[e])
+    const xs = (urdf) => Array.from((urdf ?? '').matchAll(/<x n="([^"]*)" v="([^"]*)"\/>/g), (m) => [m[1], unxml(m[2])])
+    got = await importFixture('xacro', { urdf: true })
+    check(got.ok, `xacro imports (${got.error ?? ''})`)
+    {
+      const table = xs(got.urdf)
+      const off = xacroExpected().table.map(([n, v], i) => (table[i]?.[0] === n && table[i]?.[1] === v ? null : `${n}: got ${JSON.stringify(table[i])}, Python xacro ${JSON.stringify(v)}`)).filter(Boolean)
+      check(off.length === 0 && table.length === xacroExpected().table.length, `xacro: every expression, substitution, property, yaml and macro value equals Python xacro's (${table.length}/${xacroExpected().table.length}${off.length ? `; ${off.slice(0, 6).join('; ')}` : ''})`)
+      const flat = (got.urdf ?? '').replace(/>\s+</g, '><')
+      check(flat.includes(xacroExpected().tail), 'xacro: blocks, nested macros, scopes, xacro:element, xacro:attribute, if/unless and eval-comments give Python xacro\'s elements')
+      check(got.joints?.j_left?.type === 'revolute' && Math.abs(got.joints.j_left.lower + Math.PI / 2) < 1e-12 && Math.abs(got.joints.j_left.upper - Math.PI / 4) < 1e-12,
+        'xacro: a joint named from a property set by $(arg), with limits from pi and radians()')
+      check(!(got.warnings ?? []).some((l) => l.startsWith('error')), `xacro: nothing in the fixture is reported as an error (${(got.warnings ?? []).filter((l) => l.startsWith('error')).join(' | ')})`)
+    }
+    got = await importFixture('xacro_errors', { urdf: true })
+    check(got.ok, `xacro_errors still imports (${got.error ?? ''})`)
+    {
+      const ew = got.warnings ?? []
+      for (const [text, what] of [
+        ['circular variable definition: a -> b -> a', 'a circular property'],
+        ['unknown macro name: xacro:nope', 'an unknown macro'],
+        ['Property names must be valid python identifiers: 1x', 'a property name that is not an identifier'],
+        ['Property names must not start with double underscore: __x', 'a property name starting with __'],
+        ['__class__', 'a double-underscore name in an expression'],
+        ['$(eval ...) may not contain double underscore expressions', 'a double underscore in $(eval)'],
+        ["needs the argument 'nothere'", 'a $(arg) with no value'],
+        ["name 'abs' is not defined", 'abs() outside python. (Python xacro has none)'],
+        ['Excessive alias count', 'a yaml alias bomb'],
+        ['Undefined parameters [p]', 'a macro call missing a parameter'],
+        ['Invalid parameter "zz"', 'a macro call with an unknown parameter'],
+        ['not a boolean expression', 'a xacro:if that is neither true nor false'],
+      ]) check(ew.some((l) => l.startsWith('error') && l.includes(text)), `xacro reports ${what}`)
+      const table = Object.fromEntries(xs(got.urdf))
+      check(table.circ === '${a}' && table.dunder === "${'a'.__class__}" && table.method === '${ok.items[0]}' && table.noarg === '',
+        `an expression that fails is left as written; a missing $(arg) is empty; a yaml dict's method wins over its key, as in Python (${JSON.stringify(table)})`)
+      check(table.after === 'still here' && !('maybe' in table) && !('needs' in table), 'after the errors the rest expands, without the failed elements')
+    }
+    got = await importFixture('xacro_fatal')
+    check(!got.ok && (got.error ?? '').includes('The xacro stopped itself with xacro.fatal: stop here'), `xacro.fatal stops the import (${got.error ?? 'imported'})`)
+    got = await importFixture('xacro_eval_cap')
+    check(!got.ok && /^A xacro expression or its value is over 10,000 characters/.test(got.error ?? ''), `a $(eval) value over the cap is refused (${got.error ?? 'imported'})`)
+    check(errors.length === 0, `no page errors (${errors.join('; ')})`)
+  } finally {
+    await browser.close()
+    server.close()
+  }
+}
+
+finish('check-import')
+
+/** A binary STL tetrahedron, small enough to inline. */
+function stl() {
+  // wound so every face points outward (MuJoCo rejects a mesh whose volume comes out negative)
+  const tris = [[[0, 0, 0], [0, 1, 0], [1, 0, 0]], [[0, 0, 0], [0, 0, 1], [0, 1, 0]], [[0, 0, 0], [1, 0, 0], [0, 0, 1]], [[1, 0, 0], [0, 1, 0], [0, 0, 1]]]
+  const b = Buffer.alloc(84 + 50 * tris.length)
+  b.writeUInt32LE(tris.length, 80)
+  tris.forEach((t, i) => t.flat().forEach((v, k) => b.writeFloatLE(v, 84 + 50 * i + 12 + 4 * k)))
+  return b
+}
+
+/**
+ * The MJCF fixtures: each is a folder of files and its main file. MuJoCo 3.17.0 compiles each one except missing_include and
+ * circular (it refuses both); include_depth it compiles, but the importer stops includes 8 deep.
+ */
+function mjcfFixtures() {
+  const joint = '<joint name="j0"/><geom size="0.1"/>'
+  return {
+    orient: { main: 'orient.xml', files: { 'orient.xml': `<mujoco model="orient">
+  <worldbody>
+    <body name="base">
+      <joint name="deg" axis="0 0 1" range="-90 45"/>
+      <geom size="0.1"/>
+      <body name="b_quat" pos="1 0 0" quat="0.7071068 0 0 0.7071068"/>
+      <body name="b_axisangle" pos="0 1 0" axisangle="0 1 0 90"/>
+      <body name="b_euler" euler="90 90 0"/>
+      <body name="b_xyaxes" xyaxes="0 1 0 -1 0 0"/>
+      <body name="b_zaxis" zaxis="1 0 0"/>
+      <body name="b_zaxis_down" zaxis="0 0 -1"/>
+      <body name="b_near_lock" pos="0.1 0.2 0.3" quat="0.500003 0.5 -0.5 0.499997">
+        <body name="b_after_lock" pos="0.4 0.5 0.6"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+` } },
+    orient_extrinsic: { main: 'm.xml', files: { 'm.xml': `<mujoco model="orient_extrinsic">
+  <compiler angle="radian" eulerseq="XYZ"/>
+  <worldbody>
+    <body name="base">
+      ${joint}
+      <body name="b_euler" euler="1.5707963267948966 1.5707963267948966 0"/>
+      <body name="b_lock" euler="0.3 1.5707963267948966 0.2">
+        <body name="b_after_lock" pos="0.4 0.5 0.6"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+` } },
+    features: { main: 'main.xml', files: {
+      'main.xml': `<mujoco model="features">
+  <compiler angle="radian" meshdir="assets" autolimits="true"/>
+  <include file="parts/defaults.xml"/>
+  <asset>
+    <mesh file="t.stl" scale="2 2 2"/>
+    <mesh name="m2" class="big" file="sub/t.stl"/>
+  </asset>
+  <worldbody>
+    <geom type="plane" size="1 1 0.1"/>
+    <body name="torso" pos="0 0 1">
+      <freejoint name="root"/>
+      <geom size="0.1" material="green"/>
+      <geom size="0.05" rgba="1 1 1 0"/>
+      <frame pos="0 0.5 0" euler="0 0 1.5707963267948966" childclass="arm">
+        <body name="upper" pos="0.2 0 0">
+          <joint name="shoulder"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" material="green"/>
+          <body name="lower" pos="0.3 0 0" quat="0.9 0.1 0.2 0.3">
+            <joint name="elbow_y" axis="0 1 0" pos="0.01 0 0"/>
+            <joint name="elbow_z" axis="0 0 1" pos="0.02 0.01 0" range="-0.5 0.5"/>
+            <geom type="mesh" mesh="t"/>
+            <geom type="box" size="0.1 0.1 0.1" group="3"/>
+            <body name="wrist" pos="0.2 0 0">
+              <joint name="wrist_ball" type="ball" range="0 1"/>
+              <geom type="ellipsoid" size="0.01 0.02 0.03"/>
+              <body name="finger" pos="0.05 0 0" xyaxes="0 0 1 0 1 0">
+                <joint name="slide" type="slide" range="0 0.04"/>
+                <joint name="spin" limited="false" range="-1 1"/>
+                <geom class="big" type="mesh" mesh="m2"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+`,
+      'parts/defaults.xml': `<mujoco>
+  <default>
+    <joint damping="1"/>
+    <default class="arm">
+      <joint axis="1 0 0" range="-1 1"/>
+      <geom rgba="1 0 0 1"/>
+      <default class="big">
+        <mesh scale="3 3 3"/>
+      </default>
+    </default>
+  </default>
+  <include file="more.xml"/>
+</mujoco>
+`,
+      'parts/more.xml': `<mujoco>
+  <asset>
+    <material name="green" rgba="0 1 0 1"/>
+  </asset>
+  <include file="deg.xml"/>
+</mujoco>
+`,
+      // found next to the main file, not next to parts/more.xml (MuJoCo looks in both)
+      'deg.xml': `<mujoco>
+  <worldbody>
+    <body name="deg_body" pos="0 0 2">
+      <joint name="deg_rad" axis="0 0 1" range="-1.5 0.75"/>
+      <geom size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+`,
+      'assets/t.stl': stl(),
+      'assets/sub/t.stl': stl(),
+    } },
+    missing_include: { main: 'm.xml', files: { 'm.xml': `<mujoco model="missing_include"><include file="not_here.xml"/><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n` } },
+    circular: { main: 'main.xml', files: {
+      'main.xml': `<mujoco model="circular"><include file="a.xml"/><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
+      'a.xml': '<mujoco><include file="main.xml"/></mujoco>\n',
+    } },
+    include_depth: { main: 'main.xml', files: {
+      'main.xml': `<mujoco model="include_depth"><include file="d1.xml"/><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
+      ...Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`d${i + 1}.xml`, i < 8 ? `<mujoco><include file="d${i + 2}.xml"/></mujoco>\n` : '<mujoco><worldbody/></mujoco>\n'])),
+    } },
+    ambiguous: { main: 'right.xml', files: {
+      'left.xml': `<mujoco model="left"><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
+      'right.xml': `<mujoco model="right"><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
+    } },
+  }
+}
+
+/**
+ * What Python xacro 2.1.1 gives for the `xacro` fixture: its <x n v> elements in order ($(find pkg) gives a path there,
+ * package://pkg here), and its output from the first macro call to the end with no whitespace between elements.
+ */
+function xacroExpected() {
+  return {
+    table: [["int", "3"], ["div", "0.5"], ["floordiv", "3"], ["pow", "1024"], ["neg", "-0.0015"], ["pi", "3.141592653589793"], ["third", "0.3333333333333333"], ["big", "1e+20"], ["small", "1e-07"], ["str", "ab"], ["upper", "ABC"], ["cond", "yes"], ["cmp", "True"], ["list", "[1, 2.5, 'a']"], ["index", "2.5"], ["slice", "[2.5, 'a']"], ["dict", "two"], ["len", "3"], ["minmax", "1 9"], ["round", "2.67"], ["intf", "3 2.0 5"], ["math", "1.4142135623730951 4.0 2"], ["abs", "4"], ["bool", "True"], ["none", "None"], ["lazy", "1.0"], ["eager", "2.0"], ["default", "0.5"], ["quoted", "7"], ["under", "1_0"], ["mix", "a0.5b2c"], ["escape", "${w} $(arg n)"], ["arg", "left 3 yes"], ["argexpr", "3"], ["eval", "7"], ["evalstr", "False"], ["find", "package://pkg"], ["optenv", "fallback"], ["tok", "['a', 'b', 'c', 'd']"], ["yaml-f", "1.5"], ["yaml-sub", "hip"], ["yaml-deg", "1.5707963267948966"], ["yaml-mm", "0.25"], ["yaml-bool", "True y"], ["yaml-num", "1e3 16 8"], ["yaml-list", "b 3"], ["ns", "1.0"], ["ns-macro", "t1 1.0"], ["m-a", "0.5"], ["m-b", "2"], ["m-c", "5"], ["m-a", "x"], ["m-b", "2"], ["m-c", "7"], ["m-a", "called"], ["m-b", "2"], ["m-c", "7"], ["inner", "kk"], ["parent", "42 g"], ["if-true", "1"], ["unless-0", "1"], ["if-1", "1"]],
+    tail: "<x n=\"m-a\" v=\"0.5\"/><x n=\"m-b\" v=\"2\"/><x n=\"m-c\" v=\"5\"/><f n=\"first\"/><g><r1/><r2/></g><x n=\"m-a\" v=\"x\"/><x n=\"m-b\" v=\"2\"/><x n=\"m-c\" v=\"7\"/><f n=\"first2\"/><g/><x n=\"m-a\" v=\"called\"/><x n=\"m-b\" v=\"2\"/><x n=\"m-c\" v=\"7\"/><f n=\"first3\"/><g><r3/></g><x n=\"inner\" v=\"kk\"/><x n=\"parent\" v=\"42 g\"/><origin xyz=\"1 2 3\"/><made_left k=\"v\"><child/></made_left><y attr_left=\"w=0.5\"/><x n=\"if-true\" v=\"1\"/><x n=\"unless-0\" v=\"1\"/><x n=\"if-1\" v=\"1\"/><!-- w is 0.5 --><z/><!-- not evaluated ${w} -->",
+  }
+}
+
+/**
+ * The xacro fixtures. `xacro` covers what the expression table above checks; Python xacro 2.1.1 expands it (args
+ * given:=yes) to xacroExpected(). `xacro_errors` holds one of each error the importer reports and goes on past; Python
+ * xacro stops at the first. `xacro_fatal` and `xacro_eval_cap` stop the import.
+ */
+function xacroFixtures() {
+  const joint = '<link name="base"/><link name="arm"/><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>'
+  const robot = (name, body) => `<robot name="${name}" xmlns:xacro="http://www.ros.org/wiki/xacro">${joint}${body}</robot>`
+  return {
+    xacro: { main: 'pkg/urdf/main.xacro', options: { xacroArgs: { given: 'yes' } }, files: {
+      'pkg/urdf/main.xacro': `<?xml version="1.0"?>
+<robot name="xt" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="side" default="left"/>
+  <xacro:arg name="n" default="3"/>
+  <xacro:arg name="given" default="unset"/>
+  <xacro:property name="side" value="$(arg side)"/>
+  <xacro:property name="w" value="0.5"/>
+  <xacro:property name="lazy" value="\${w * 2}"/>
+  <xacro:property name="eager" value="\${w * 4}" lazy_eval="false"/>
+  <xacro:property name="w" default="9"/>
+  <xacro:property name="gone" value="1"/>
+  <xacro:property name="gone" remove="true"/>
+  <xacro:property name="lst" value="\${[1, 2.5, 'a']}"/>
+  <xacro:property name="d" value="\${dict(a=1, b='two')}"/>
+  <xacro:property name="quoted" value="'007'"/>
+  <xacro:property name="under" value="1_0"/>
+  <xacro:property name="blk"><origin xyz="1 2 3"/></xacro:property>
+  <xacro:property name="cfg" value="\${xacro.load_yaml('../config/p.yaml')}"/>
+  <xacro:include filename="$(find pkg)/urdf/parts.xacro" ns="parts"/>
+
+  <xacro:macro name="m" params="a b:=2 c:=^|7 *first **rest">
+    <x n="m-a" v="\${a}"/>
+    <x n="m-b" v="\${b}"/>
+    <x n="m-c" v="\${c}"/>
+    <xacro:insert_block name="first"/>
+    <g><xacro:insert_block name="rest"/></g>
+  </xacro:macro>
+  <xacro:macro name="outer" params="k">
+    <xacro:macro name="inner" params="">
+      <x n="inner" v="\${k}"/>
+    </xacro:macro>
+    <xacro:inner/>
+  </xacro:macro>
+  <xacro:macro name="setp" params="">
+    <xacro:property name="fromparent" value="\${42}" scope="parent"/>
+    <xacro:property name="fromglobal" value="g" scope="global"/>
+  </xacro:macro>
+
+  <link name="base"/>
+  <link name="arm_\${side}"/>
+  <joint name="j_\${side}" type="revolute">
+    <parent link="base"/><child link="arm_\${side}"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="\${-pi/2}" upper="\${radians(45)}" effort="1" velocity="1"/>
+  </joint>
+  <x n="int" v="\${1+2}"/>
+  <x n="div" v="\${1/2}"/>
+  <x n="floordiv" v="\${7//2}"/>
+  <x n="pow" v="\${2**10}"/>
+  <x n="neg" v="\${-1.5e-3}"/>
+  <x n="pi" v="\${pi}"/>
+  <x n="third" v="\${1/3}"/>
+  <x n="big" v="\${1e20}"/>
+  <x n="small" v="\${1e-7}"/>
+  <x n="str" v="\${'a' + 'b'}"/>
+  <x n="upper" v="\${'abc'.upper()}"/>
+  <x n="cond" v="\${'yes' if w > 0.1 else 'no'}"/>
+  <x n="cmp" v="\${1 &lt; 2 &lt; 3}"/>
+  <x n="list" v="\${lst}"/>
+  <x n="index" v="\${lst[1]}"/>
+  <x n="slice" v="\${lst[-2:]}"/>
+  <x n="dict" v="\${d['b']}"/>
+  <x n="len" v="\${len(lst)}"/>
+  <x n="minmax" v="\${min(3, 1, 2)} \${max([4, 9])}"/>
+  <x n="round" v="\${round(2.675, 2)}"/>
+  <x n="intf" v="\${int(3.9)} \${float(2)} \${str(5)}"/>
+  <x n="math" v="\${math.sqrt(2)} \${sqrt(16)} \${floor(2.5)}"/>
+  <x n="abs" v="\${python.abs(-4)}"/>
+  <x n="bool" v="\${True and not False}"/>
+  <x n="none" v="\${None}"/>
+  <x n="lazy" v="\${lazy}"/>
+  <x n="eager" v="\${eager}"/>
+  <x n="default" v="\${w}"/>
+  <x n="quoted" v="\${quoted}"/>
+  <x n="under" v="\${under}"/>
+  <x n="mix" v="a\${w}b\${1+1}c"/>
+  <x n="escape" v="$\${w} $$(arg n)"/>
+  <x n="arg" v="$(arg side) $(arg n) $(arg given)"/>
+  <x n="argexpr" v="\${xacro.arg('n')}"/>
+  <x n="eval" v="$(eval 2 * n + 1)"/>
+  <x n="evalstr" v="$(eval side == 'right')"/>
+  <x n="find" v="$(find pkg)"/>
+  <x n="optenv" v="$(optenv ROCO_NOT_SET fallback)"/>
+  <x n="tok" v="\${xacro.tokenize('a b,c;d')}"/>
+  <x n="yaml-f" v="\${cfg.joint.limit}"/>
+  <x n="yaml-sub" v="\${cfg['joint']['name']}"/>
+  <x n="yaml-deg" v="\${cfg.joint.angle}"/>
+  <x n="yaml-mm" v="\${cfg.joint.len}"/>
+  <x n="yaml-bool" v="\${cfg['flags'][True]} \${cfg.flags.y}"/>
+  <x n="yaml-num" v="\${cfg.flags.exp} \${cfg.flags.hex} \${cfg.flags.lead}"/>
+  <x n="yaml-list" v="\${cfg['items'][1]} \${len(cfg.keys())}"/>
+  <x n="ns" v="\${parts.size}"/>
+  <xacro:parts.thing name="t1"/>
+  <xacro:m a="\${w}" c="5"><f n="first"/><r><r1/><r2/></r></xacro:m>
+  <xacro:m a="x"><f n="first2"/><r/></xacro:m>
+  <xacro:call macro="m" a="called"><f n="first3"/><r><r3/></r></xacro:call>
+  <xacro:outer k="kk"/>
+  <xacro:setp/>
+  <x n="parent" v="\${fromparent} \${fromglobal}"/>
+  <xacro:insert_block name="blk"/>
+  <xacro:element xacro:name="made_\${side}" k="v"><child/></xacro:element>
+  <y><xacro:attribute name="attr_\${side}" value="w=\${w}"/></y>
+  <xacro:if value="\${w > 0}"><x n="if-true" v="1"/></xacro:if>
+  <xacro:if value="false"><x n="if-false" v="1"/></xacro:if>
+  <xacro:unless value="0"><x n="unless-0" v="1"/></xacro:unless>
+  <xacro:if value="1"><x n="if-1" v="1"/></xacro:if>
+  <!-- xacro:eval-comments -->
+  <!-- w is \${w} -->
+  <z/>
+  <!-- not evaluated \${w} -->
+</robot>
+`,
+      'pkg/urdf/parts.xacro': `<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property name="size" value="\${0.25 * 4}"/>
+  <xacro:macro name="thing" params="name">
+    <x n="ns-macro" v="\${name} \${size}"/>
+  </xacro:macro>
+</robot>
+`,
+      'pkg/config/p.yaml': `joint:
+  name: hip
+  limit: 1.5
+  angle: !degrees 90
+  len: !millimeters 250
+flags:
+  on: on
+  y: y
+  exp: 1e3
+  hex: 0x10
+  lead: 010
+items: [a, b, c]
+`,
+    } },
+    xacro_errors: { main: 'errs.xacro', files: {
+      'errs.xacro': `<?xml version="1.0"?>
+<robot name="errs" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property name="a" value="\${b}"/>
+  <xacro:property name="b" value="\${a}"/>
+  <xacro:property name="1x" value="1"/>
+  <xacro:property name="__x" value="1"/>
+  <xacro:property name="bomb" value="\${xacro.load_yaml('bomb.yaml')}"/>
+  <xacro:property name="ok" value="\${xacro.load_yaml('ok.yaml')}"/>
+  <xacro:macro name="needs" params="p q:=1"><x n="needs" v="\${p}"/></xacro:macro>
+  <link name="base"/>
+  <link name="arm"/>
+  <joint name="j" type="revolute">
+    <parent link="base"/><child link="arm"/><axis xyz="0 0 1"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+  <x n="circ" v="\${a}"/>
+  <xacro:nope/>
+  <x n="dunder" v="\${'a'.__class__}"/>
+  <x n="evaldunder" v="$(eval __import__('os'))"/>
+  <x n="noarg" v="$(arg nothere)"/>
+  <x n="abs" v="\${abs(-1)}"/>
+  <x n="method" v="\${ok.items[0]}"/>
+  <x n="bomb" v="\${bomb}"/>
+  <xacro:needs q="2"/>
+  <xacro:needs p="1" zz="3"/>
+  <xacro:if value="maybe"><x n="maybe" v="1"/></xacro:if>
+  <x n="after" v="still here"/>
+</robot>
+`,
+      'ok.yaml': `items: [a, b]
+`,
+      'bomb.yaml': `a: &a [x, x, x, x, x, x, x, x, x]
+b: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a]
+c: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b]
+d: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c]
+e: [*d, *d, *d, *d, *d, *d, *d, *d, *d]
+`,
+    } },
+    xacro_fatal: { main: 'f.xacro', files: { 'f.xacro': robot('f', '<link name="${xacro.fatal(\'stop here\')}"/>') } },
+    xacro_eval_cap: { main: 'e.xacro', files: { 'e.xacro': robot('e', '<link name="$(eval \'x\' * 20000)"/>') } },
+  }
+}

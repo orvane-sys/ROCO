@@ -61,7 +61,8 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess }: ImportRo
         <p className="text-xs text-ink-soft leading-relaxed">
           Upload a robot description (<strong>.urdf</strong>, <strong>.xacro</strong>, or MuJoCo{' '}
           <strong>.xml</strong>) along with its visual meshes (<strong>.stl</strong>, <strong>.dae</strong>,{' '}
-          <strong>.obj</strong>, <strong>.glb</strong>) to see the model in 3D. Live data comes only from a ROCO bridge,
+          <strong>.obj</strong>, <strong>.glb</strong>), or one <strong>.zip</strong> of the robot folder, to see the
+          model in 3D. Live data comes only from a ROCO bridge,
           which reads Unitree LowState, so another robot shows its model with no data.
         </p>
 
@@ -159,7 +160,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess }: ImportRo
             ref={filesInputRef}
             type="file"
             multiple
-            accept=".urdf,.xacro,.xml,.stl,.dae,.obj,.glb,.gltf"
+            accept=".zip,.urdf,.xacro,.xml,.stl,.dae,.obj,.glb,.gltf"
             className="hidden"
             onChange={(e) => {
               if (e.target.files && e.target.files.length > 0) {

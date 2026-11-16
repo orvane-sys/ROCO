@@ -91,6 +91,9 @@ function main() {
   add('tailwindcss', `tailwindcss - ${tailwind.version} (MIT)`, 'Its base styles are in the page\'s CSS.', read('node_modules/tailwindcss/LICENSE'))
   // gltfpack is part of meshoptimizer and carries the same licence
   add('meshoptimizer', 'meshoptimizer - decoder inside three (MIT)', 'three.js includes this decoder, which reads the robot\'s meshes.', read('node_modules/gltfpack/LICENSE.md'))
+  // the zip worker is bundled on its own, and Vite's notices file covers only the page's bundle
+  const fflate = JSON.parse(read('node_modules/fflate/package.json'))
+  add('fflate', `fflate - ${fflate.version} (${fflate.license})`, 'Its code is in the zip worker, which unpacks imported zips.', read('node_modules/fflate/LICENSE'))
   copyFileSync(join(root, 'LICENSE'), join(root, 'dist/LICENSE'))
 
   const text = readFileSync(file, 'utf8')
