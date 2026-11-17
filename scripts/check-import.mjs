@@ -1,21 +1,21 @@
 // Checks the model importer's parts on small hand-made cases: the asset resolver (src/utils/assetResolver.ts), the import
-// report (src/utils/importReport.ts), and, in headless Chrome (the converters need DOMParser), MJCF conversion through the
-// page's own importer. Bundles the sources with rolldown in memory, like check-profiles.mjs.
+// report (src/utils/importReport.ts), and, in headless Chrome (the converters need DOMParser), MJCF, xacro and SDF conversion
+// through the page's own importer. Bundles the sources with rolldown in memory, like check-profiles.mjs.
 //
 //   node scripts/check-import.mjs [--dump-fixtures DIR]
 import { createServer } from 'node:http'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { rolldown } from 'rolldown'
 import { tally } from './lib-browser.mjs'
 
-// `--dump-fixtures DIR` writes the MJCF fixtures below as files, so MuJoCo itself can say where each body should be (the
-// expected poses in this check came from mujoco 3.17.0 reading exactly these files).
+// `--dump-fixtures DIR` writes the MJCF and SDF fixtures below as files, so MuJoCo itself can say where each body should be
+// (the expected poses in this check came from mujoco 3.17.0 reading exactly these files), and gz sdf -k can check the SDF.
 const dumpAt = process.argv.indexOf('--dump-fixtures')
 if (dumpAt > 0) {
   const dir = process.argv[dumpAt + 1]
-  for (const [name, fx] of Object.entries(mjcfFixtures())) {
+  for (const [name, fx] of Object.entries({ ...mjcfFixtures(), ...sdfFixtures() })) {
     for (const [path, body] of Object.entries(fx.files)) {
       const out = join(dir, name, path)
       mkdirSync(dirname(out), { recursive: true })
@@ -181,14 +181,19 @@ const EXPECTED = {
   const server = createServer((req, res) => {
     if (req.url === '/') return res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><meta charset="utf-8"><script src="/harness.js"></script>')
     if (req.url === '/harness.js') return res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(harness)
+    // the shipped G1 files, for the units check's negative case; only the files listed are served
+    const g1 = decodeURIComponent(req.url.slice('/g1/'.length))
+    if (req.url.startsWith('/g1/') && G1_FILES.includes(g1)) return res.writeHead(200).end(readFileSync(fileURLToPath(new URL(`public/models/g1_description/${g1}`, root))))
     res.writeHead(404).end()
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const { launchChrome } = await import('./lib-browser.mjs')
   const browser = await launchChrome('check-import')
+  const G1_URDF = 'g1_29dof.urdf'
+  const G1_FILES = [G1_URDF, ...new Set(Array.from(readFileSync(fileURLToPath(new URL(`public/models/g1_description/${G1_URDF}`, root)), 'utf8').matchAll(/filename="([^"]+)"/g), (m) => m[1]))]
   const errors = []
   const importFixture = async (name, want = {}) => {
-    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name]
+    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name] ?? sdfFixtures()[name] ?? heightFixtures()[name]
     const page = await browser.newPage()
     page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`))
     // the importer's module graph starts the telemetry client; give it a socket that never connects
@@ -197,8 +202,10 @@ const EXPECTED = {
     })
     await page.goto(`http://127.0.0.1:${server.address().port}/`)
     await page.waitForFunction(() => !!window.__rocoImport, null, { timeout: 30000 })
-    const list = Object.entries(fx.files).map(([path, body]) => ({ path: `${name}/${path}`, url: 'data:application/octet-stream;base64,' + Buffer.from(body).toString('base64') }))
-    const got = await page.evaluate(([l, o, w]) => window.__rocoImport.run(l, o, w), [list, { mainFile: `${name}/${fx.main}`, ...fx.options }, want])
+    const list = fx.g1
+      ? G1_FILES.map((f) => ({ path: `${name}/${f}`, url: `http://127.0.0.1:${server.address().port}/g1/${encodeURIComponent(f)}` }))
+      : Object.entries(fx.files).map(([path, body]) => ({ path: `${name}/${path}`, url: 'data:application/octet-stream;base64,' + Buffer.from(body).toString('base64') }))
+    const got = await page.evaluate(([l, o, w]) => window.__rocoImport.run(l, o, w), [list, { ...(fx.main ? { mainFile: `${name}/${fx.main}` } : {}), ...fx.options }, want])
     await page.close()
     return got
   }
@@ -303,6 +310,116 @@ const EXPECTED = {
     check(!got.ok && (got.error ?? '').includes('The xacro stopped itself with xacro.fatal: stop here'), `xacro.fatal stops the import (${got.error ?? 'imported'})`)
     got = await importFixture('xacro_eval_cap')
     check(!got.ok && /^A xacro expression or its value is over 10,000 characters/.test(got.error ?? ''), `a $(eval) value over the cap is refused (${got.error ?? 'imported'})`)
+
+    // --- SDFormat: frames, joints, nested and included models, then what is reported or refused ---
+    const c = Math.SQRT1_2
+    const at = (xyz, quat = [1, 0, 0, 0]) => ({ xyz, quat })
+    const sdfJoint = (g, n, type, axis, lower, upper) => {
+      const jj = g.joints?.[n]
+      return jj?.type === type && (!axis || near(jj.axis, axis)) && (lower === undefined || (near([jj.lower], [lower]) && near([jj.upper], [upper])))
+    }
+    const said = (g, kind, text) => (g.warnings ?? []).some((l) => l.startsWith(kind) && l.includes(text))
+    const linkVisuals = (g, link) => (new RegExp(`<link name="${link}">([\\s\\S]*?)</link>`).exec(g.urdf ?? '') ?? [])[1] ?? ''
+
+    got = await importFixture('sdf_frames', { urdf: true })
+    check(got.ok && got.robotName === 'arm', `sdf_frames imports (${got.error ?? ''})`)
+    posesMatch(got, {
+      base: at([0, 0, 0]), upper: at([0, 1, 1], [c, 0, 0, c]), upper__joint: at([0, 1, 1.5], [c, 0, 0, c]), deg: at([0, 1, 1], [0, 0, 0, 1]),
+      q: at([0, 1, 1.2], [0, 0, 0, 1]), b: at([0, 1, 1.2], [0, 0, 0, 1]), u__j1: at([0, 1, 1.3], [0, 0, 0, 1]), u: at([0, 1, 1.3], [0, 0, 0, 1]), lost: at([1, 2, 3]),
+    }, 'SDF: relative_to a frame, a link and a joint offset from its child; degrees; quat_xyzw; the model pose is the origin')
+    check(!('world' in (got.poses ?? {})), 'one free link where the model frame is is the URDF root, with no world link')
+    check(sdfJoint(got, 'shoulder', 'revolute', [0, -1, 0], -1, 2), 'an axis expressed_in __model__ is turned into the joint frame')
+    check(sdfJoint(got, 'spin', 'continuous', [0, 0, 1]), 'a revolute joint with no limit is continuous, its axis +z by default')
+    check(sdfJoint(got, 'slide', 'prismatic', [0, 1, 0], 0, 0.04), 'a prismatic joint keeps its limits in metres')
+    check(sdfJoint(got, 'wrist_ball', 'fixed') && said(got, 'approx', 'A ball joint is shown fixed.'), 'a ball joint is shown fixed and reported')
+    check(sdfJoint(got, 'uni', 'revolute', [1, 0, 0], -0.5, 0.5) && sdfJoint(got, 'uni__2', 'revolute', [0, 1, 0], -0.25, 0.25) && !said(got, 'approx', 'universal'),
+      'a universal joint is two revolute joints, axis then axis2, each with its own limits')
+    check(sdfJoint(got, 'upper__anchor', 'fixed') && !('upper__joint' in (got.joints ?? {})), 'a joint away from its child ends at a helper link, anchored to the child')
+    check(said(got, 'error', 'refers to a frame that does not exist') && said(got, 'error', 'lost → nowhere'), 'a pose relative_to a missing frame is reported and read from the model frame')
+    {
+      const up = linkVisuals(got, 'upper')
+      check((up.match(/<visual>/g) ?? []).length === 4 && /<box size="0.1 0.2 0.3"\/>/.test(up) && /rgba="1 0 0 1"/.test(up) && (up.match(/<sphere radius="0.03"\/>/g) ?? []).length === 2,
+        'SDF visuals: a box with its diffuse colour, a capsule as a cylinder and two spheres, a fully transparent one not drawn')
+      check(/<sphere radius="0.03"\/>/.test(linkVisuals(got, 'u')) && said(got, 'approx', 'An ellipsoid is drawn as a sphere'), 'an ellipsoid is a sphere of its largest radius, reported')
+    }
+
+    got = await importFixture('sdf_nested', { urdf: true })
+    check(got.ok && got.robotName === 'rover' && !(got.warnings ?? []).some((l) => l.includes('Several files')), `sdf_nested imports, its main file picked over the model it includes (${got.error ?? ''})`)
+    posesMatch(got, {
+      chassis: at([0, 0, 0]), 'arm::l1': at([1, 0, 1]), 'arm::l2': at([1, 0, 1.5]),
+      'wheel_left::rim': at([0, 1, 0], [c, -c, 0, 0]), 'wheel_left::cap': at([0, 1.1, 0], [0.5, -0.5, 0.5, 0.5]),
+      'wheel_right::rim': at([0, -1, 0], [c, c, 0, 0]), 'wheel_right::cap': at([0, -1.1, 0], [0.5, 0.5, -0.5, 0.5]),
+    }, 'SDF: a nested model and one model included twice, each under its own name and pose')
+    check(sdfJoint(got, 'arm::j', 'revolute', [0, 1, 0], -0.5, 0.5) && sdfJoint(got, 'mount', 'fixed'), 'a nested model\'s joint keeps its scoped name; a joint reaches into it with ::')
+    check(sdfJoint(got, 'axle_left', 'continuous', [0, 0, 1]) && sdfJoint(got, 'axle_right', 'continuous', [0, 0, 1]), 'joints into included models, one axis expressed_in __model__')
+    check(sdfJoint(got, 'wheel_left::cap_j', 'revolute', [0, -1, 0], -1, 1) && sdfJoint(got, 'wheel_right::cap_j', 'revolute', [0, -1, 0], -1, 1),
+      'SDF 1.6 use_parent_model_frame reads the axis in the model frame')
+    check(/<mesh filename="sdf_nested\/rover\/meshes\/t\.stl" scale="2 2 2"\/>/.test(linkVisuals(got, 'chassis')) && /<mesh filename="sdf_nested\/wheel\/meshes\/tire\.stl"/.test(linkVisuals(got, 'wheel_left::rim')),
+      'a model:// mesh, and a relative mesh in an included file read from that file\'s folder')
+    check(got.meshes?.total === 3 && got.meshes?.resolved === 3, `every SDF mesh resolves (${JSON.stringify(got.meshes)})`)
+    check(!(got.warnings ?? []).some((l) => l.startsWith('error')), `nothing in sdf_nested is an error (${(got.warnings ?? []).filter((l) => l.startsWith('error')).join(' | ')})`)
+
+    got = await importFixture('sdf_world')
+    check(got.ok && got.robotName === 'bot', `sdf_world imports its model with the most joints (${got.error ?? ''})`)
+    posesMatch(got, { world: at([0, 0, 0]), base: at([0, 0, 0], [c, 0, 0, c]) }, 'SDF world: the robot model at the origin')
+    check(sdfJoint(got, 'hinge', 'revolute', [0, -1, 0], -1, 1), 'SDF 1.4 reads the axis in the model frame; a joint to world hangs from a world link')
+    check(said(got, 'substitution', 'holds 2 models; bot') && said(got, 'unsupported', 'model://sun'), 'the other model and the missing sun are reported')
+    check(!('o' in (got.poses ?? {})) && !(got.warnings ?? []).some((l) => /matched by name/.test(l)), 'model://sun is never read from another model folder')
+
+    got = await importFixture('sdf_broken')
+    check(got.ok, `sdf_broken still imports (${got.error ?? ''})`)
+    {
+      const jn = Object.keys(got.joints ?? {})
+      check(['j_ab', 'j_bc', 'j_ad'].every((n) => jn.includes(n)) && !['j_ca', 'j_bd', 'j_ghost'].some((n) => jn.includes(n)), `a joint closing a loop, a second parent and a missing link are left out (${jn.join(',')})`)
+      for (const [text, what] of [
+        ['Joints form a closed loop', 'a loop of joints'],
+        ['child of two joints', 'a link with two parents'],
+        ['does not exist, so it is left out', 'a joint to a missing link'],
+        ['Poses refer to each other in a loop', 'frames relative to each other'],
+        ['An included model was not imported', 'a missing include inside the model'],
+      ]) check(said(got, 'error', text), `SDF reports ${what}`)
+      check(sdfJoint(got, 'j_ae', 'continuous') && said(got, 'approx', 'screw joint'), 'a screw joint turns and is reported')
+      posesMatch(got, { a: at([0, 0, 0]), e: at([0, 0, 1]) }, 'SDF: a pose through a frame loop falls back to the model frame')
+    }
+    got = await importFixture('sdf_circular')
+    check(!got.ok && /^The description nests too deeply \(circular include of 'model:\/\/a'\)/.test(got.error ?? ''), `a circular SDF include is refused (${got.error ?? 'imported'})`)
+    got = await importFixture('sdf_depth')
+    check(!got.ok && /^The description nests too deeply \(include 'model:\/\/m9' is 9 includes deep\)/.test(got.error ?? ''), `SDF includes 9 deep are refused (${got.error ?? 'imported'})`)
+    got = await importFixture('sdf_frame_chain')
+    check(got.ok, `sdf_frame_chain imports (${got.error ?? ''})`)
+    posesMatch(got, { arm: at([1, 0.9999, 0], [Math.SQRT1_2, 0, 0, Math.SQRT1_2]) }, 'SDF: a link placed through a chain of 10 000 frames, each in the one before')
+
+    // the profile's standing height: base origin above the lowest point, a sole inside a foot mesh below the ankle's origin
+    for (const [name, want, what] of [
+      ['height_stl', 1, 'an STL foot mesh below the ankle'],
+      ['height_obj', 1, 'an OBJ foot mesh (the loader picks the format by the path, not the blob URL)'],
+      ['height_missing', 0.9, 'a foot mesh that was not imported: the ankle, and the import still works'],
+    ]) {
+      got = await importFixture(name)
+      check(got.ok && got.profile?.category === 'biped' && got.profile.nominalPelvisHeight === want,
+        `standing height from ${what}: ${want} m, not the 3 m width of the body (got ${JSON.stringify(got.profile ?? got.error)})`)
+    }
+    got = await importFixture('height_arm')
+    check(got.ok && got.profile?.category === 'fixed_manipulator' && got.profile.nominalPelvisHeight === 0.45, `an arm keeps the fixed 0.45 m (got ${JSON.stringify(got.profile ?? got.error)})`)
+
+    // a robot file in millimetres or Y-up (src/utils/unitsCheck.ts): found on the loaded meshes, offered, and right once fixed
+    const isAbout = (a, b) => Math.abs(a - b) <= 1e-6
+    for (const [name, fix, what] of [
+      ['units_mm', { scale: 0.001, upY: 0 }, 'a biped in millimetres with STL feet'],
+      ['units_yup', { scale: 1, upY: 1 }, 'a Y-up biped with OBJ feet'],
+      ['units_ydown', { scale: 1, upY: -1 }, 'a biped standing along minus Y'],
+      ['units_mm_yup', { scale: 0.001, upY: 1 }, 'a Y-up biped in millimetres'],
+    ]) {
+      got = await importFixture(name, { units: true })
+      const u = got.units
+      check(got.ok && JSON.stringify(u?.offer?.fix) === JSON.stringify(fix) && isAbout(u.size[1], 1.1) && u.size[0] < 0.5 && u.size[2] < 0.5 && u.groundAtBottom,
+        `units: ${what} is found and, fixed, stands 1.1 m tall on its feet (got ${JSON.stringify(u ?? got.error)})`)
+    }
+    for (const [name, what] of [['height_stl', 'a Z-up biped in metres'], ['height_arm', 'an arm reaching 2 m down'], ['units_g1', 'the G1 sample'],
+      ['units_33m', 'a biped 33 m tall (3.3 cm at 1/1000, too small for millimetres)'], ['units_6600m', 'a biped 6600 m tall (6.6 m at 1/1000, too big)']]) {
+      got = await importFixture(name, { units: true })
+      check(got.ok && got.units && got.units.offer === null, `units: ${what} is not flagged (got ${JSON.stringify(got.units?.offer ?? got.error)})`)
+    }
     check(errors.length === 0, `no page errors (${errors.join('; ')})`)
   } finally {
     await browser.close()
@@ -311,6 +428,49 @@ const EXPECTED = {
 }
 
 finish('check-import')
+
+/**
+ * Bipeds for the standing height: a base 3 m wide in Y, legs whose ankle origin is 0.9 m below the base, and a foot mesh (the
+ * unit tetrahedron scaled to 0.1 m) reaching 0.1 m lower, so the height is 1.0 m only if the mesh is loaded and measured on Z.
+ */
+function heightFixtures() {
+  const obj = 'v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n'
+  const limit = '<axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="1"/>'
+  const biped = (mesh) => `<robot name="hb">
+  <link name="base_link"><visual><geometry><box size="0.2 3 0.2"/></geometry></visual></link>
+${['left', 'right'].map((side, i) => `  <joint name="${side}_hip_joint" type="revolute"><parent link="base_link"/><child link="${side}_leg"/><origin xyz="0 ${i ? -0.1 : 0.1} -0.5"/>${limit}</joint>
+  <link name="${side}_leg"/>
+  <joint name="${side}_ankle_joint" type="revolute"><parent link="${side}_leg"/><child link="${side}_foot"/><origin xyz="0 0 -0.4"/>${limit}</joint>
+  <link name="${side}_foot"><visual><origin xyz="0 0 -0.1"/><geometry><mesh filename="meshes/${mesh}" scale="0.1 0.1 0.1"/></geometry></visual></link>`).join('\n')}
+</robot>`
+  // the same biped standing along Y (or minus Y), in millimetres or not; its legs are 0.2 m apart along X
+  const along = (mesh, k, up) => {
+    const at = (d) => (up === 'z' ? `0 0 ${-d * k}` : `0 ${up === 'y' ? -d * k : d * k} 0`)
+    const s = 0.1 * k
+    return `<robot name="units">
+  <link name="base_link"><visual><geometry><box size="${0.2 * k} ${0.2 * k} ${0.2 * k}"/></geometry></visual></link>
+${['left', 'right'].map((side, i) => `  <joint name="${side}_hip_joint" type="revolute"><parent link="base_link"/><child link="${side}_leg"/><origin xyz="${(i ? -0.1 : 0.1) * k} ${at(0.5).split(' ').slice(1).join(' ')}"/>${limit}</joint>
+  <link name="${side}_leg"/>
+  <joint name="${side}_ankle_joint" type="revolute"><parent link="${side}_leg"/><child link="${side}_foot"/><origin xyz="${at(0.4)}"/>${limit}</joint>
+  <link name="${side}_foot"><visual><origin xyz="${at(up === 'ydown' ? 0 : 0.1)}"/><geometry><mesh filename="meshes/${mesh}" scale="${s} ${s} ${s}"/></geometry></visual></link>`).join('\n')}
+</robot>`
+  }
+  return {
+    units_mm: { main: 'r.urdf', files: { 'r.urdf': along('foot.stl', 1000, 'z'), 'meshes/foot.stl': stl() } },
+    units_yup: { main: 'r.urdf', files: { 'r.urdf': along('foot.obj', 1, 'y'), 'meshes/foot.obj': obj } },
+    units_ydown: { main: 'r.urdf', files: { 'r.urdf': along('foot.obj', 1, 'ydown'), 'meshes/foot.obj': obj } },
+    units_mm_yup: { main: 'r.urdf', files: { 'r.urdf': along('foot.stl', 1000, 'y'), 'meshes/foot.stl': stl() } },
+    units_33m: { main: 'r.urdf', files: { 'r.urdf': along('foot.stl', 30, 'z'), 'meshes/foot.stl': stl() } },
+    units_6600m: { main: 'r.urdf', files: { 'r.urdf': along('foot.stl', 6000, 'z'), 'meshes/foot.stl': stl() } },
+    units_g1: { main: 'g1_29dof.urdf', g1: true },
+    height_stl: { main: 'r.urdf', files: { 'r.urdf': biped('foot.stl'), 'meshes/foot.stl': stl() } },
+    height_obj: { main: 'r.urdf', files: { 'r.urdf': biped('foot.obj'), 'meshes/foot.obj': obj } },
+    height_missing: { main: 'r.urdf', files: { 'r.urdf': biped('foot.stl') } },
+    height_arm: { main: 'r.urdf', files: { 'meshes/foot.stl': stl(), 'r.urdf': `<robot name="arm"><link name="base_link"/>
+  <joint name="joint_1" type="revolute"><parent link="base_link"/><child link="l1"/><origin xyz="0 0 -2"/>${limit}</joint>
+  <link name="l1"><visual><geometry><mesh filename="meshes/foot.stl"/></geometry></visual></link></robot>` } },
+  }
+}
 
 /** A binary STL tetrahedron, small enough to inline. */
 function stl() {
@@ -645,5 +805,133 @@ e: [*d, *d, *d, *d, *d, *d, *d, *d, *d]
     } },
     xacro_fatal: { main: 'f.xacro', files: { 'f.xacro': robot('f', '<link name="${xacro.fatal(\'stop here\')}"/>') } },
     xacro_eval_cap: { main: 'e.xacro', files: { 'e.xacro': robot('e', '<link name="$(eval \'x\' * 20000)"/>') } },
+  }
+}
+
+/**
+ * The SDFormat fixtures. Each pose below is worked out by hand from the SDFormat specification (gz sdf -k, libsdformat 9.7,
+ * accepts the 1.4-1.7 ones); `sdf_frames` is 1.9, for degrees, quat_xyzw and expressed_in. A `main` of null leaves the
+ * importer to pick the main file.
+ */
+function sdfFixtures() {
+  const link = (name, pose = '') => `<link name="${name}">${pose}</link>`
+  const limit = (lo, hi) => `<limit><lower>${lo}</lower><upper>${hi}</upper></limit>`
+  return {
+    sdf_frames: { main: 'frames.sdf', files: { 'frames.sdf': `<?xml version="1.0"?>
+<!-- a comment before the root -->
+<sdf version="1.9">
+  <model name="arm">
+    <pose>5 0 0 0 0 0</pose>
+    <frame name="mount" attached_to="__model__"><pose>0 0 1 0 0 1.5707963267948966</pose></frame>
+    ${link('base')}
+    <link name="upper">
+      <pose relative_to="mount">1 0 0 0 0 0</pose>
+      <visual name="v"><geometry><box><size>0.1 0.2 0.3</size></box></geometry><material><diffuse>1 0 0 1</diffuse></material></visual>
+      <visual name="cap"><pose>0 0 1 0 0 0</pose><geometry><capsule><radius>0.03</radius><length>0.3</length></capsule></geometry></visual>
+      <visual name="hidden"><transparency>1</transparency><geometry><sphere><radius>1</radius></sphere></geometry><material><diffuse>0 0 1 1</diffuse></material></visual>
+    </link>
+    <joint name="shoulder" type="revolute">
+      <parent>base</parent><child>upper</child>
+      <pose>0 0 0.5 0 0 0</pose>
+      <axis><xyz expressed_in="__model__">1 0 0</xyz>${limit(-1, 2)}</axis>
+    </joint>
+    ${link('deg', '<pose degrees="true" relative_to="upper">0 0 0 0 0 90</pose>')}
+    <joint name="spin" type="revolute"><parent>upper</parent><child>deg</child></joint>
+    ${link('q', '<pose rotation_format="quat_xyzw" relative_to="upper">0 0 0.2 0 0 0.7071067811865476 0.7071067811865476</pose>')}
+    <joint name="slide" type="prismatic"><parent>upper</parent><child>q</child><axis><xyz>0 1 0</xyz>${limit(0, 0.04)}</axis></joint>
+    ${link('b', '<pose relative_to="q"/>')}
+    <joint name="wrist_ball" type="ball"><parent>q</parent><child>b</child></joint>
+    <link name="u">
+      <pose relative_to="b">0 0 0.1 0 0 0</pose>
+      <visual name="e"><geometry><ellipsoid><radii>0.01 0.03 0.02</radii></ellipsoid></geometry></visual>
+    </link>
+    <joint name="uni" type="universal"><parent>b</parent><child>u</child><axis><xyz>1 0 0</xyz>${limit(-0.5, 0.5)}</axis><axis2><xyz>0 1 0</xyz>${limit(-0.25, 0.25)}</axis2></joint>
+    ${link('lost', '<pose relative_to="nowhere">1 2 3 0 0 0</pose>')}
+    <joint name="to_lost" type="fixed"><parent>base</parent><child>lost</child></joint>
+  </model>
+</sdf>
+` } },
+    sdf_nested: { main: null, files: {
+      'rover/model.config': '<?xml version="1.0"?><model><name>rover</name><sdf version="1.7">model.sdf</sdf></model>\n',
+      'rover/model.sdf': `<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="rover">
+    <link name="chassis"><visual name="v"><geometry><mesh><uri>model://rover/meshes/t.stl</uri><scale>2 2 2</scale></mesh></geometry></visual></link>
+    <model name="arm">
+      <pose>1 0 0 0 0 0</pose>
+      ${link('l1', '<pose>0 0 1 0 0 0</pose>')}
+      <joint name="j" type="revolute"><parent>l1</parent><child>l2</child><axis><xyz>0 1 0</xyz>${limit(-0.5, 0.5)}</axis></joint>
+      ${link('l2', '<pose relative_to="l1">0 0 0.5 0 0 0</pose>')}
+    </model>
+    <joint name="mount" type="fixed"><parent>chassis</parent><child>arm::l1</child></joint>
+    <include><uri>model://wheel</uri><name>wheel_left</name><pose>0 1 0 -1.5707963267948966 0 0</pose></include>
+    <joint name="axle_left" type="continuous"><parent>chassis</parent><child>wheel_left::rim</child><axis><xyz expressed_in="__model__">0 1 0</xyz></axis></joint>
+    <include><uri>model://wheel</uri><name>wheel_right</name><pose>0 -1 0 1.5707963267948966 0 0</pose></include>
+    <joint name="axle_right" type="revolute"><parent>chassis</parent><child>wheel_right::rim</child><axis><xyz>0 0 1</xyz></axis></joint>
+  </model>
+</sdf>
+`,
+      'rover/meshes/t.stl': stl(),
+      'wheel/model.config': '<?xml version="1.0"?><model><name>wheel</name><sdf version="1.5">old.sdf</sdf><sdf version="1.6">wheel.sdf</sdf></model>\n',
+      'wheel/wheel.sdf': `<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="wheel">
+    <link name="rim"><visual name="v"><geometry><mesh><uri>meshes/tire.stl</uri></mesh></geometry></visual></link>
+    ${link('cap', '<pose>0 0 0.1 0 0 1.5707963267948966</pose>')}
+    <joint name="cap_j" type="revolute"><parent>rim</parent><child>cap</child><axis><xyz>1 0 0</xyz><use_parent_model_frame>true</use_parent_model_frame>${limit(-1, 1)}</axis></joint>
+  </model>
+</sdf>
+`,
+      'wheel/meshes/tire.stl': stl(),
+    } },
+    sdf_world: { main: 'world.sdf', files: {
+      'world.sdf': `<?xml version="1.0"?>
+<sdf version="1.4">
+  <world name="w">
+    <include><uri>model://sun</uri></include>
+    <model name="crate">${link('c')}</model>
+    <model name="bot">
+      <pose>0 0 1 0 0 0</pose>
+      ${link('base', '<pose>0 0 0 0 0 1.5707963267948966</pose>')}
+      <joint name="hinge" type="revolute"><parent>world</parent><child>base</child><axis><xyz>1 0 0</xyz>${limit(-1, 1)}</axis></joint>
+    </model>
+  </world>
+</sdf>
+`,
+      // a model folder that is not the sun: model://sun must never be read from it
+      'other/model.config': '<?xml version="1.0"?><model><name>other</name><sdf version="1.4">model.sdf</sdf></model>\n',
+      'other/model.sdf': `<?xml version="1.0"?><sdf version="1.4"><model name="other">${link('o')}</model></sdf>\n`,
+    } },
+    sdf_broken: { main: 'broken.sdf', files: { 'broken.sdf': `<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="broken">
+    ${link('a')}${link('b')}${link('c')}${link('d')}
+    <joint name="j_ab" type="revolute"><parent>a</parent><child>b</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint>
+    <joint name="j_bc" type="revolute"><parent>b</parent><child>c</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint>
+    <joint name="j_ca" type="revolute"><parent>c</parent><child>a</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint>
+    <joint name="j_ad" type="fixed"><parent>a</parent><child>d</child></joint>
+    <joint name="j_bd" type="fixed"><parent>b</parent><child>d</child></joint>
+    <joint name="j_ghost" type="fixed"><parent>a</parent><child>ghost</child></joint>
+    <frame name="f1"><pose relative_to="f2"/></frame>
+    <frame name="f2"><pose relative_to="f1"/></frame>
+    <link name="e"><pose relative_to="f1">0 0 1 0 0 0</pose></link>
+    <joint name="j_ae" type="screw"><parent>a</parent><child>e</child></joint>
+    <include><uri>model://absent</uri></include>
+  </model>
+</sdf>
+` } },
+    sdf_circular: { main: 'a/model.sdf', files: {
+      'a/model.sdf': `<sdf version="1.7"><model name="a">${link('l')}<include><uri>model://b</uri></include></model></sdf>\n`,
+      'b/model.sdf': `<sdf version="1.7"><model name="b">${link('l')}<include><uri>model://a</uri></include></model></sdf>\n`,
+    } },
+    sdf_depth: { main: 'm0/model.sdf', files: Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`m${i}/model.sdf`,
+      `<sdf version="1.7"><model name="m${i}">${link('l')}${i < 9 ? `<include><uri>model://m${i + 1}</uri></include>` : ''}</model></sdf>\n`])) },
+    // f1 is turned 90° about z; each of the 9 999 frames after it is 0.1 mm along the x of the one before, so along world y
+    sdf_frame_chain: { main: 'chain.sdf', files: { 'chain.sdf': `<sdf version="1.7"><model name="chain"><frame name="f0"/>
+<frame name="f1"><pose relative_to="f0">1 0 0 0 0 1.5707963267948966</pose></frame>
+${Array.from({ length: 9999 }, (_, i) => `<frame name="f${i + 2}"><pose relative_to="f${i + 1}">0.0001 0 0 0 0 0</pose></frame>`).join('\n')}
+${link('base')}${link('arm', '<pose relative_to="f10000">0 0 0 0 0 0</pose>')}
+<joint name="j" type="revolute"><parent>base</parent><child>arm</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint></model></sdf>
+` } },
   }
 }

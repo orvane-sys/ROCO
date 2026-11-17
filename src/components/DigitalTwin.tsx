@@ -30,6 +30,7 @@ import {
   importRobotFiles,
 } from '../utils/robotImporter'
 import { parseRobotDescription } from '../utils/modelFormatParser'
+import { acceptUnitsFix, acceptedUnitsFix, applyUnitsFix, checkUnits, type UnitsFix, type UnitsOffer } from '../utils/unitsCheck'
 
 // Standard/physical materials expose `emissive`; others (basic, line) do not, which the code checks at runtime.
 type EmissiveMaterial = THREE.Material & { emissive: THREE.Color; emissiveIntensity: number }
@@ -131,6 +132,9 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
   // Bumped by Retry and after a WebGL context restore to rebuild the whole scene from scratch.
   const [reloadKey, setReloadKey] = useState(0)
   const [robotLoaded, setRobotLoaded] = useState(0)
+  // a robot file that seems to be in millimetres or Y-up: the fix is offered, and applied only when the user says so
+  const [unitsOffer, setUnitsOffer] = useState<UnitsOffer | null>(null)
+  const unitsFixRef = useRef<((fix: UnitsFix) => void) | null>(null)
   const [hudPose, setHudPose] = useState<{ x: number; y: number; yaw: number }>({ x: 0, y: 0, yaw: 0 })
 
   const controlsRef = useRef<OrbitControls | null>(null)
@@ -149,6 +153,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     if (!container || !webglSupported || !enabled) return
     setIsLoading(true)
     setLoadProgress({ loaded: 0, total: 0 })
+    setUnitsOffer(null)
     const highlightedMeshes = highlightedMeshesRef.current
 
     // Everything below is owned by this effect run. React StrictMode mounts → unmounts → remounts,
@@ -402,16 +407,31 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       robot.rotation.set(-Math.PI / 2, 0, 0)
       pelvisGroup.add(robot)
 
-      // Initial ground contact calibration: measure sole height at nominal standing posture
-      pelvisGroup.position.set(0, nominalPelvis, 0)
-      pelvisGroup.rotation.set(0, 0, 0)
-      pelvisGroup.updateMatrixWorld(true)
+      // A file in millimetres or Y-up: a fix the user accepted before is applied again, else one is offered (src/utils/unitsCheck.ts)
+      const acceptedFix = acceptedUnitsFix(profile.id)
+      if (acceptedFix) applyUnitsFix(robot, acceptedFix)
+      else setUnitsOffer(checkUnits(robot, profile.groundContactLinks ?? []))
 
-      const initialLowestSole = lowestSoleHeight()
-      if (Number.isFinite(initialLowestSole)) {
-        calibratedPelvisHeight = nominalPelvis - initialLowestSole
-        pelvisGroup.position.y = calibratedPelvisHeight
+      // Ground contact calibration: measure sole height at nominal standing posture (again after a units fix)
+      const calibrate = () => {
+        pelvisGroup.position.set(0, nominalPelvis, 0)
+        pelvisGroup.rotation.set(0, 0, 0)
         pelvisGroup.updateMatrixWorld(true)
+
+        const initialLowestSole = lowestSoleHeight()
+        if (Number.isFinite(initialLowestSole)) {
+          calibratedPelvisHeight = nominalPelvis - initialLowestSole
+          pelvisGroup.position.y = calibratedPelvisHeight
+          pelvisGroup.updateMatrixWorld(true)
+        }
+      }
+      calibrate()
+      const fixed = robot
+      unitsFixRef.current = (fix) => {
+        acceptUnitsFix(profile.id, fix)
+        applyUnitsFix(fixed, fix)
+        calibrate()
+        setUnitsOffer(null)
       }
 
       if (failedMeshes > 0) {
@@ -646,6 +666,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     return () => {
       disposed = true
       sceneThemeRef.current = null
+      unitsFixRef.current = null
       activeRobotRef.current = null
       highlightedMeshes.clear()
       cancelAnimationFrame(animationFrameId)
@@ -940,6 +961,32 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
             onClick={() => (webglSupported ? setLoadError(null) : undefined)}
             aria-label="Dismiss message"
             className="p-1 rounded-md text-crit-ink hover:bg-crit-soft shrink-0"
+          >
+            <X className="w-4 h-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      {/* Units offer: shown only when there is no load error, which takes the same place */}
+      {unitsOffer && !displayedError && (
+        <div
+          role="status"
+          className="absolute top-16 left-3 right-3 bg-warn-soft/95 border border-warn-line p-3 rounded-xl flex items-start gap-3 text-warn-ink z-10 text-sm shadow-xl"
+        >
+          <AlertCircle className="w-5 h-5 text-warn shrink-0 mt-0.5" aria-hidden="true" />
+          <span className="flex-1">{unitsOffer.text}</span>
+          <button
+            type="button"
+            onClick={() => unitsFixRef.current?.(unitsOffer.fix)}
+            className="px-2.5 py-1 rounded-md bg-warn-ink text-warn-soft font-semibold hover:bg-warn-ink/85 shrink-0"
+          >
+            Fix
+          </button>
+          <button
+            type="button"
+            onClick={() => setUnitsOffer(null)}
+            aria-label="Dismiss the units message"
+            className="p-1 rounded-md text-warn-ink hover:bg-warn-soft shrink-0"
           >
             <X className="w-4 h-4" aria-hidden="true" />
           </button>

@@ -285,6 +285,46 @@ const BROWSER_CSP = 'Error: CSP blocked inline (style-src-attr)'
     for (let i = 1; i <= 9; i++) files[`robot/i${i}.xacro`] = xacro(`i${i}`, i < 9 ? `  <xacro:include filename="i${i + 1}.xacro"/>` : '')
     addXml('include_depth', { files }, [why('depth', "xacro:include 'i9.xacro' is 9 includes deep")])
   }
+  // SDF: `model://name` is the folder `name`, whose model.config names its .sdf file
+  const sdf = (inner) => Buffer.from(`${XML}<sdf version="1.7">\n<model name="m">\n${inner}\n</model>\n</sdf>\n`)
+  const inc = (name, times = 1) => Array.from({ length: times }, (_, i) => `<include><uri>model://${name}</uri><name>${name}_${i}</name></include>`).join('')
+  const folder = (files, name, inner) => {
+    files[`robot/${name}/model.config`] = Buffer.from(`${XML}<model><name>${name}</name><sdf version="1.7">model.sdf</sdf></model>\n`)
+    files[`robot/${name}/model.sdf`] = sdf(inner)
+  }
+  const sdfJoint = '<link name="base"/><link name="arm"/><joint name="j1" type="revolute"><parent>base</parent><child>arm</child><axis><xyz>0 0 1</xyz></axis></joint>'
+  addXml('entity_sdf', { files: { 'robot/lol.sdf': lol('sdf') } }, [why('entity', 'robot/lol.sdf')])
+  {
+    const files = { 'robot/main.sdf': sdf(`${inc('a')}${sdfJoint}`) }
+    folder(files, 'a', inc('b'))
+    folder(files, 'b', inc('a'))
+    addXml('sdf_circular', { files }, [why('depth', "circular include of 'model://a'")])
+  }
+  {
+    const files = { 'robot/main.sdf': sdf(`${inc('i1')}${sdfJoint}`) }
+    for (let i = 1; i <= 9; i++) folder(files, `i${i}`, i < 9 ? inc(`i${i + 1}`) : '<link name="l"/>')
+    addXml('sdf_depth', { files }, [why('depth', "include 'model://i9' is 9 includes deep")])
+  }
+  {
+    // each level includes the next ten times: 10^7 links if nothing stopped it
+    const files = { 'robot/main.sdf': sdf(`${inc('f1', 10)}${sdfJoint}`) }
+    for (let i = 1; i <= 6; i++) folder(files, `f${i}`, i < 6 ? inc(`f${i + 1}`, 10) : '<link name="l"/>'.repeat(10))
+    addXml('sdf_fan', { files }, [prefix('elements')])
+  }
+  // 100 000 frames, each placed relative to the one before; the arm's pose is relative to the last one
+  addXml('sdf_frames', { files: { 'robot/frames.sdf': Buffer.from(`${XML}<sdf version="1.7">\n<model name="frames">\n<frame name="f0"/>\n` +
+    Array.from({ length: 100_000 }, (_, i) => `<frame name="f${i + 1}"><pose relative_to="f${i}">0 0 0.00001 0 0 0</pose></frame>`).join('\n') +
+    `\n<link name="base"/><link name="arm"><pose relative_to="f100000">0 0 0 0 0 0</pose></link><joint name="j1" type="revolute"><parent>base</parent><child>arm</child><axis><xyz>0 0 1</xyz></axis></joint>\n</model>\n</sdf>\n`) } },
+    ['Imported frames (1 joint)!'])
+  // a chain of fixed links: 2 000 imports and draws; 5 000 is past what three.js walks (recursively), and is refused (where
+  // between them the stack runs out depends on the browser)
+  const chain = (name, n) => Buffer.from(`${XML}<robot name="${name}">${joint}<link name="c0"/><joint name="c" type="fixed"><parent link="arm"/><child link="c0"/></joint>` +
+    Array.from({ length: n }, (_, i) => `<link name="c${i + 1}"/><joint name="c${i + 1}" type="fixed"><parent link="c${i}"/><child link="c${i + 1}"/><origin xyz="0 0 0.0001"/></joint>`).join('') + '</robot>\n')
+  addXml('long_chain', { files: { 'robot/long.urdf': chain('long', 5000) } }, [why('depth', 'its links or bodies chain thousands deep')])
+  addXml('chain', { files: { 'robot/chain.urdf': chain('chain', 2000) } }, ['Imported chain (1 joint)!'])
+  // MuJoCo bodies 4 900 deep (Chrome's XML parser stops at 5 000)
+  addXml('mjcf_nested', { files: { 'robot/deep.xml': Buffer.from('<mujoco model="deep"><worldbody><body name="b0"><joint name="j0" type="hinge"/><geom type="sphere" size="0.1"/>' +
+    '<body><geom type="sphere" size="0.1"/>'.repeat(4900) + '</body>'.repeat(4900) + '</body></worldbody></mujoco>\n') } }, [why('depth', 'its links or bodies chain thousands deep')])
   addXml('broken_urdf', { files: { 'robot/broken.urdf': Buffer.from(`${XML}<robot name="b">\n  <link name="a">\n</robot>\n`) }, browserCsp: true },
     [prefix('xml'), 'robot/broken.urdf, line '])
   // a value that doubles at each property: the fifth is 16 000 characters (properties are lazy, so a link uses it)

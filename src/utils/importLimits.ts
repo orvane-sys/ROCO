@@ -27,8 +27,9 @@ export const LIMITS = {
   trianglesMesh: 500_000,
 } as const
 
-/** Description files, read as text: the 32 MiB cap. Every other file (meshes, textures) has the mesh cap. */
-export const TEXT_FILE = /\.(urdf|xacro|xml|sdf|ya?ml)$/i
+/** Description files, read as text: the 32 MiB cap. Every other file (meshes, textures) has the mesh cap. A Gazebo model's
+ * model.config names its .sdf file. */
+export const TEXT_FILE = /\.(urdf|xacro|xml|sdf|config|ya?ml)$/i
 
 export const sizeLimitFor = (name: string): number => (TEXT_FILE.test(name) ? LIMITS.textFile : LIMITS.meshFile)
 

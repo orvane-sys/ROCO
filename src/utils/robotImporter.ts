@@ -11,10 +11,83 @@ import { ImportReport } from './importReport'
 import { LIMITS, TEXT_FILE, refuse, sizeLimitFor } from './importLimits'
 import { Deadline, parseXmlSafe } from './safeXml'
 import { isZip, unpackZip } from './zipBundle'
-import { buildProfileFromParsedRobot } from './autoProfileBuilder'
+import { buildProfileFromParsedRobot, robotCategory } from './autoProfileBuilder'
 import { motorOrderNote } from './motorMatch'
 import { getRobotProfile, unregisterRobotProfile, type RobotProfile } from '../config/robotRegistry'
 import { telemetryService } from '../services/telemetryStream'
+
+type MeshStub = { path: string; group: THREE.Group }
+
+/** How long the meshes measured at import may take to load; a slow one is left out and the twin measures it later. */
+const LOW_MESH_MS = 10_000
+
+/**
+ * Loads, into the kinematics-only robot of step 4, the meshes of the links in the lower half of the robot (by link origin,
+ * every joint at zero), the way the twin's loader places them. Returns what was added, to dispose after measuring.
+ */
+async function loadLowMeshes(robot: URDFRobot, stubs: MeshStub[], resolve: (url: string) => string, deadline: Deadline): Promise<THREE.Object3D[]> {
+  if (stubs.length === 0) return []
+  robot.updateMatrixWorld(true)
+  // a robot hung from a bare `world` link by a floating joint: the world link's origin is not part of the robot
+  const floating = Object.values(robot.joints || {}).some((j) => j.jointType === 'floating')
+  const at = new THREE.Vector3()
+  const linkZ = new Map<THREE.Object3D, number>()
+  let lowest = Infinity
+  let highest = -Infinity
+  // from matrixWorld, updated above: getWorldPosition climbs the whole parent chain, too deep for a long chain of links
+  for (const link of Object.values(robot.links || {})) {
+    if (floating && link === robot) continue
+    const z = at.setFromMatrixPosition(link.matrixWorld).z
+    linkZ.set(link, z)
+    lowest = Math.min(lowest, z)
+    highest = Math.max(highest, z)
+  }
+  if (linkZ.size === 0) return []
+  const middle = (lowest + highest) / 2
+  const low = stubs.filter((s) => {
+    let p: THREE.Object3D | null = s.group
+    while (p && !linkZ.has(p)) p = p.parent
+    return p !== null && (linkZ.get(p) as number) <= middle
+  })
+  // the loader picks the format by the file's extension, so it gets the path and the manager swaps in the blob URL
+  const manager = new THREE.LoadingManager()
+  manager.setURLModifier(resolve)
+  const loader = new URDFLoader(manager)
+  configureMultiFormatMeshLoader(loader, manager)
+  const material = new THREE.MeshBasicMaterial() // only measured, never drawn
+  const added: THREE.Object3D[] = []
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const all = Promise.all(
+    low.map(
+      (s) =>
+        new Promise<void>((done) =>
+          loader.loadMeshCb(s.path, manager, material, (obj: THREE.Object3D, err?: Error) => {
+            // a mesh that fails to load is reported by the twin; here it is only left out of the measurement
+            if (!err && obj) {
+              obj.position.set(0, 0, 0)
+              obj.quaternion.identity()
+              s.group.add(obj)
+              added.push(obj)
+            }
+            done()
+          })
+        )
+    )
+  )
+  await Promise.race([all, new Promise<void>((done) => (timer = setTimeout(done, LOW_MESH_MS)))])
+  clearTimeout(timer)
+  deadline.check('measuring the robot height')
+  return added
+}
+
+function disposeObject(root: THREE.Object3D): void {
+  root.removeFromParent()
+  root.traverse((o) => {
+    const m = o as THREE.Mesh
+    m.geometry?.dispose()
+    for (const mat of Array.isArray(m.material) ? m.material : m.material ? [m.material] : []) mat.dispose()
+  })
+}
 
 /**
  * Configures URDFLoader to support .stl, .dae, .obj, .glb, and .gltf mesh loading.
@@ -228,17 +301,25 @@ export interface ImportResult {
 }
 
 /**
- * The files that could be the entry-point description, best first. A `.urdf` wins; among xacro/xml files a top-level
- * file is one that no other candidate includes. More than one means the choice was a guess.
+ * The files that could be the entry-point description, best first. A `.urdf` wins; among xacro/xml/sdf files a top-level
+ * file is one that no other candidate includes (an SDF model is included as `model://<its folder>`). More than one means
+ * the choice was a guess.
  */
 function pickMainFiles(files: File[], texts: Map<File, string>): File[] {
   const urdfs = files.filter((f) => /\.urdf$/i.test(f.name))
   if (urdfs.length > 0) return urdfs
-  const candidates = files.filter((f) => /\.(xacro|xml)$/i.test(f.name))
+  const candidates = files.filter((f) => /\.(xacro|xml|sdf)$/i.test(f.name))
   const xacros = candidates.filter((f) => /\.xacro$/i.test(f.name))
   const pool = xacros.length > 0 ? xacros : candidates
-  const included = (f: File) =>
-    pool.some((other) => other !== f && (texts.get(other) ?? '').toLowerCase().includes(f.name.toLowerCase()))
+  const included = (f: File) => {
+    const names = [f.name.toLowerCase()]
+    const folder = filePath(f).split('/').slice(-2, -1)[0]
+    if (/\.sdf$/i.test(f.name) && folder) names.push(`model://${folder.toLowerCase()}`)
+    return pool.some((other) => {
+      const t = other === f ? '' : (texts.get(other) ?? '').toLowerCase()
+      return names.some((n) => t.includes(n))
+    })
+  }
   const top = pool.filter((f) => !included(f))
   return top.length ? top : pool.slice(0, 1)
 }
@@ -264,7 +345,7 @@ function rewriteAssetRefs(urdf: string, doc: Document, resolve: (ref: string) =>
 }
 
 /**
- * Imports robot description files (.urdf, .xacro, MuJoCo .xml) and associated meshes
+ * Imports robot description files (.urdf, .xacro, MuJoCo .xml, SDFormat .sdf) and associated meshes
  * from a FileList, drag-and-drop event, or directory upload.
  * Builds a dynamic RobotProfile, registers it, and switches the active robot profile.
  */
@@ -276,6 +357,17 @@ export interface ImportOptions {
 }
 
 export async function importRobotFiles(files: FileList | File[], options: ImportOptions = {}): Promise<ImportResult> {
+  try {
+    return await importFiles(files, options)
+  } catch (e) {
+    // the converters and three.js walk the link tree recursively: a chain thousands of links long overflows the stack
+    // (Chrome's RangeError, Firefox's InternalError "too much recursion")
+    if (e instanceof Error && /call stack size|too much recursion/i.test(e.message)) throw refuse('depth', 'its links or bodies chain thousands deep')
+    throw e
+  }
+}
+
+async function importFiles(files: FileList | File[], options: ImportOptions): Promise<ImportResult> {
   const given = Array.from(files)
   if (given.length === 0) {
     throw new Error('No files provided for robot import.')
@@ -316,7 +408,7 @@ export async function importRobotFiles(files: FileList | File[], options: Import
   }
   if (!mainFile) {
     throw new Error(
-      'Could not find a robot description file (.urdf, .xacro, or .xml) among the imported files.'
+      'Could not find a robot description file (.urdf, .xacro, .sdf or .xml) among the imported files.'
     )
   }
 
@@ -335,9 +427,10 @@ export async function importRobotFiles(files: FileList | File[], options: Import
     report,
     xacroArgs: options.xacroArgs,
     // MuJoCo looks for an include next to the file that includes it, then next to the main file
-    resolveInclude: (filename, from) => {
+    resolveInclude: (filename, from, opts) => {
       let hit = from && from !== mainPath ? textFileIndex.resolve(filename, { from }) : undefined
-      if (hit?.how !== 'exact') hit = textFileIndex.resolve(filename, { from: mainPath, report })
+      if (hit?.how !== 'exact') hit = textFileIndex.resolve(filename, { from: mainPath, report: opts?.exact ? undefined : report })
+      if (opts?.exact && hit.how !== 'exact') return undefined
       const text = hit.url ? textByUrl.get(hit.url) : undefined
       return text === undefined || !hit.path ? undefined : { text, path: hit.path }
     },
@@ -384,8 +477,14 @@ export async function importRobotFiles(files: FileList | File[], options: Import
 
   // 4. Parse the URDF for kinematics only. Meshes are loaded later by the digital twin, so skip them here
   // instead of downloading every file twice into a robot that is thrown away.
+  // Each mesh gets an empty group, kept with its path so step 5 can fill in the few needed to measure the robot's height.
   const kinematicsLoader = new URDFLoader(new THREE.LoadingManager())
-  kinematicsLoader.loadMeshCb = (_path, _mgr, _material, done) => done(new THREE.Group())
+  const meshStubs: MeshStub[] = []
+  kinematicsLoader.loadMeshCb = (path, _mgr, _material, done) => {
+    const group = new THREE.Group()
+    meshStubs.push({ path, group })
+    done(group)
+  }
   const parsedRobot: URDFRobot = kinematicsLoader.parse(processedUrdf)
 
   // 5. Only now map files to blob URLs. Description files are included too (the twin may re-fetch them).
@@ -409,9 +508,15 @@ export async function importRobotFiles(files: FileList | File[], options: Import
       return blobIndex.exact(url).url ?? blobIndex.find(url).url ?? url
     }
 
-    // 6. Build dynamic RobotProfile (throws if it has more joints than LowState_ has motor slots)
+    // 6. Build dynamic RobotProfile (throws if it has more joints than LowState_ has motor slots). Its standing height needs
+    // the robot's lowest point, which is often inside a mesh (a sole below the ankle, a foot inside a calf mesh).
     const modelName = parsedRobot.robotName || mainFile.name.replace(/\.[^.]+$/, '')
-    profile = buildProfileFromParsedRobot(parsedRobot, modelName, urdfBlobUrl)
+    const lowMeshes = robotCategory(parsedRobot) === 'fixed_manipulator' ? [] : await loadLowMeshes(parsedRobot, meshStubs, resolveAsset, deadline)
+    try {
+      profile = buildProfileFromParsedRobot(parsedRobot, modelName, urdfBlobUrl)
+    } finally {
+      for (const m of lowMeshes) disposeObject(m)
+    }
     importedAssets.set(profile.id, { urls, resolve: resolveAsset })
   } catch (err) {
     for (const u of urls) URL.revokeObjectURL(u)

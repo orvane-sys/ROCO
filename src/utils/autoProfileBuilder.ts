@@ -70,6 +70,19 @@ function classifyJoint(id: string): { group: string; label: string; friendlyName
   return { group: 'actuators', label: 'Actuators', friendlyName: formatJointName(id) }
 }
 
+const isActuated = (jointType: string) => jointType === 'revolute' || jointType === 'continuous' || jointType === 'prismatic'
+
+function categoryOf(groupIds: Set<string>): RobotCategory {
+  if (groupIds.has('front_left') && groupIds.has('front_right')) return 'quadruped'
+  if (groupIds.has('left_leg') && groupIds.has('right_leg')) return 'biped'
+  return 'fixed_manipulator'
+}
+
+/** The category the profile will get, from the joint names alone: only a biped or quadruped needs its height measured. */
+export function robotCategory(robot: URDFRobot): RobotCategory {
+  return categoryOf(new Set(Object.entries(robot.joints || {}).filter(([, j]) => isActuated(j.jointType)).map(([id]) => classifyJoint(id).group)))
+}
+
 /**
  * Automatically inspects a parsed URDFRobot and builds a strongly-typed RobotProfile.
  * Classifies joints into anatomical groups, determines robot category, estimates
@@ -82,13 +95,7 @@ export function buildProfileFromParsedRobot(
   packages: Record<string, string> = {}
 ): RobotProfile {
   const jointEntries = Object.entries(robot.joints || {})
-  const activeJoints = jointEntries.filter(([, joint]) => {
-    return (
-      joint.jointType === 'revolute' ||
-      joint.jointType === 'continuous' ||
-      joint.jointType === 'prismatic'
-    )
-  })
+  const activeJoints = jointEntries.filter(([, joint]) => isActuated(joint.jointType))
 
   // The binary LowState_ frame has a fixed number of motor slots; extra joints would be dropped silently.
   if (activeJoints.length > MOTOR_COUNT) {
@@ -133,22 +140,25 @@ export function buildProfileFromParsedRobot(
   })
 
   // Detect category
-  const groupIds = new Set(jointDefs.map((j) => j.group))
-  let category: RobotCategory = 'fixed_manipulator'
-  if (groupIds.has('front_left') && groupIds.has('front_right')) {
-    category = 'quadruped'
-  } else if (groupIds.has('left_leg') && groupIds.has('right_leg')) {
-    category = 'biped'
-  }
+  const category = categoryOf(new Set(jointDefs.map((j) => j.group)))
 
-  // Calculate bounding box to estimate nominal base height
+  // Standing height of the base: how far the root link's origin is above the robot's lowest point with every joint at zero.
+  // URDF is Z-up and this robot is not turned into the scene yet. robotImporter loads the meshes of a biped's or quadruped's
+  // lower links before this runs; without them link origins and primitive shapes give an ankle rather than a sole.
+  // A robot hung from a bare `world` link by a floating joint (an MJCF free body) stands on the floating joint's child instead.
+  robot.updateMatrixWorld(true)
+  const floating = Object.values(robot.joints || {}).find((j) => j.jointType === 'floating')
+  const base = (floating?.children.find((c) => (c as { isURDFLink?: boolean }).isURDFLink) as THREE.Object3D | undefined) ?? robot
   const box = new THREE.Box3().setFromObject(robot)
-  const height = box.max.y - box.min.y
+  const at = new THREE.Vector3()
+  // from matrixWorld, updated above: getWorldPosition climbs the whole parent chain, too deep for a long chain of links
+  for (const link of Object.values(robot.links || {})) if (link !== robot || base === robot) box.expandByPoint(at.setFromMatrixPosition(link.matrixWorld))
+  const standing = at.setFromMatrixPosition(base.matrixWorld).z - box.min.z
   let nominalPelvisHeight = 0.5
   if (category === 'biped') {
-    nominalPelvisHeight = Number.isFinite(height) && height > 0.2 ? Number((height * 0.55).toFixed(3)) : 0.793
+    nominalPelvisHeight = Number.isFinite(standing) ? Number(standing.toFixed(3)) : 0.793
   } else if (category === 'quadruped') {
-    nominalPelvisHeight = Number.isFinite(height) && height > 0.2 ? Number((height * 0.8).toFixed(3)) : 0.4
+    nominalPelvisHeight = Number.isFinite(standing) ? Number(standing.toFixed(3)) : 0.4
   } else {
     nominalPelvisHeight = 0.45
   }

@@ -7,34 +7,34 @@ import type { ReportKind } from './importReport'
 import { parseXmlSafe } from './safeXml'
 import type { ParseContext } from './modelFormatParser'
 
-type Vec3 = [number, number, number]
+export type Vec3 = [number, number, number]
 /** w, x, y, z, as MuJoCo writes it. */
-type Quat = [number, number, number, number]
-interface Pose {
+export type Quat = [number, number, number, number]
+export interface Pose {
   p: Vec3
   q: Quat
 }
 
-const IDENTITY: Pose = { p: [0, 0, 0], q: [1, 0, 0, 0] }
+export const IDENTITY: Pose = { p: [0, 0, 0], q: [1, 0, 0, 0] }
 
-const qmul = (a: Quat, b: Quat): Quat => [
+export const qmul = (a: Quat, b: Quat): Quat => [
   a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
   a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
   a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
   a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
 ]
 
-function qnorm(q: Quat): Quat {
+export function qnorm(q: Quat): Quat {
   const n = Math.hypot(...q)
   return n > 0 ? [q[0] / n, q[1] / n, q[2] / n, q[3] / n] : [1, 0, 0, 0]
 }
 
-function rotate(q: Quat, v: Vec3): Vec3 {
+export function rotate(q: Quat, v: Vec3): Vec3 {
   const r = qmul(qmul(q, [0, v[0], v[1], v[2]]), [q[0], -q[1], -q[2], -q[3]])
   return [r[1], r[2], r[3]]
 }
 
-const compose = (a: Pose, b: Pose): Pose => {
+export const compose = (a: Pose, b: Pose): Pose => {
   const r = rotate(a.q, b.p)
   return { p: [a.p[0] + r[0], a.p[1] + r[1], a.p[2] + r[2]], q: qnorm(qmul(a.q, b.q)) }
 }
@@ -43,7 +43,7 @@ const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const isZero = (v: Vec3) => v.every((c) => Math.abs(c) < 1e-12)
 const translate = (p: Vec3): Pose => ({ p, q: [1, 0, 0, 0] })
 
-function axisAngle(axis: Vec3, angle: number): Quat {
+export function axisAngle(axis: Vec3, angle: number): Quat {
   const n = Math.hypot(...axis)
   if (!(n > 0)) return [1, 0, 0, 0]
   const s = Math.sin(angle / 2) / n
@@ -71,14 +71,14 @@ function fromAxes(x: Vec3, y: Vec3): Quat {
   return qnorm([q.w, q.x, q.y, q.z])
 }
 
-const fmt = (v: readonly number[]) => v.map((n) => String(Math.abs(n) < 1e-15 ? 0 : n)).join(' ')
+export const fmt = (v: readonly number[]) => v.map((n) => String(Math.abs(n) < 1e-15 ? 0 : n)).join(' ')
 
 /**
  * URDF roll, pitch, yaw: R = Rz(yaw) Ry(pitch) Rx(roll), which urdf-loader applies as a THREE Euler in 'ZYX' order. Not
  * THREE's own setFromQuaternion: it snaps pitch to ±90° once |sin pitch| > 0.9999999, an error of up to 5e-4 rad that real
  * models hit (leap_hand's near-quarter-turn quats). Pitch from atan2 over a hypot of matrix entries stays exact there.
  */
-function rpy(q: Quat): string {
+export function rpy(q: Quat): string {
   const [w, x, y, z] = qnorm(q)
   const r00 = 1 - 2 * (y * y + z * z)
   const r10 = 2 * (x * y + w * z)
@@ -90,16 +90,16 @@ function rpy(q: Quat): string {
   return fmt([Math.atan2(2 * (y * z + w * x), 1 - 2 * (x * x + y * y)), pitch, Math.atan2(r10, r00)])
 }
 
-const origin = (pose: Pose) => `<origin xyz="${fmt(pose.p)}" rpy="${rpy(pose.q)}"/>`
+export const origin = (pose: Pose) => `<origin xyz="${fmt(pose.p)}" rpy="${rpy(pose.q)}"/>`
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-function nums(text: string | null | undefined): number[] {
+export function nums(text: string | null | undefined): number[] {
   if (!text) return []
   return text.trim().split(/\s+/).map(Number).map((n) => (Number.isFinite(n) ? n : 0))
 }
 
-const vec3 = (text: string | null | undefined, fallback: Vec3): Vec3 => {
+export const vec3 = (text: string | null | undefined, fallback: Vec3): Vec3 => {
   const n = nums(text)
   return n.length >= 3 ? [n[0], n[1], n[2]] : fallback
 }

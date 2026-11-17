@@ -1,19 +1,21 @@
 import type { Deadline } from './safeXml'
 import type { ImportReport } from './importReport'
 import { convertMjcfToUrdf } from './mjcfConverter'
+import { convertSdfToUrdf } from './sdfConverter'
 import { preprocessXacro } from './xacro'
 
-export { convertMjcfToUrdf, preprocessXacro }
+export { convertMjcfToUrdf, convertSdfToUrdf, preprocessXacro }
 
 /** Shared by every converter: collects non-fatal problems so the UI can show them instead of hiding them. */
 export interface ParseContext {
   warnings?: string[]
   /**
    * Resolves an included file's name (a `xacro:include` after `$(find pkg)` substitution, e.g. `package://pkg/urdf/a.xacro`,
-   * or an MJCF `<include file>`) to its text and imported path. `from` is the file the include is written in. Browsers
-   * cannot fetch it themselves, so the importer supplies the dropped files.
+   * an MJCF `<include file>` or an SDF `model://` file) to its text and imported path. `from` is the file the include is
+   * written in. Browsers cannot fetch it themselves, so the importer supplies the dropped files. `exact` takes only the file
+   * the name means, never one matched by name elsewhere (nothing is then reported).
    */
-  resolveInclude?: (filename: string, from?: string) => { text: string; path: string } | undefined
+  resolveInclude?: (filename: string, from?: string, options?: { exact?: boolean }) => { text: string; path: string } | undefined
   /** Where converters record what they changed, approximated or could not use (the import dialog lists it). */
   report?: ImportReport
   /** The import's time limit, checked by every converter loop. */
@@ -24,13 +26,12 @@ export interface ParseContext {
   xacroArgs?: Record<string, string>
 }
 
-/** isMuJoCoModel's prolog parts, sticky (`y`): each matches only where the scan stands. */
+/** The prolog parts rootIs skips, sticky (`y`): each matches only where the scan stands. */
 const PROLOG = {
   space: /\s*/y,
   decl: /<\?xml[^>]*\?>/iy,
   comment: /<!--[\s\S]*?-->/y,
   doctype: /<!DOCTYPE[^>]*>/iy,
-  root: /<mujoco[\s>]/iy,
 }
 
 /**
@@ -39,6 +40,18 @@ const PROLOG = {
 export function isMuJoCoModel(text: string): boolean {
   // Match the ROOT element only. Unitree/ROS URDFs embed a `<mujoco><compiler meshdir=.../></mujoco>`
   // extension block inside `<robot>`, which must not be mistaken for an MJCF document.
+  return rootIs(text, /<mujoco[\s>]/iy)
+}
+
+/**
+ * Checks if the content is an SDFormat document (root `<sdf>`).
+ */
+export function isSdfModel(text: string): boolean {
+  return rootIs(text, /<sdf[\s>]/iy)
+}
+
+/** Whether the document's root element, after its prolog, matches the sticky `root`. */
+function rootIs(text: string, root: RegExp): boolean {
   // A forward scan over the prolog (declaration, comments, DOCTYPE), each part taken once and never backtracked into: one
   // regular expression for the whole prolog backtracked exponentially on a header of many comments (CodeQL js/redos, the tab
   // froze on import), and its lazy comment could run on past a `-->` to a `<mujoco>` block deep inside a `<robot>`.
@@ -56,8 +69,8 @@ export function isMuJoCoModel(text: string): boolean {
   while (eat(PROLOG.comment));
   eat(PROLOG.doctype)
   while (eat(PROLOG.comment));
-  PROLOG.root.lastIndex = i
-  return PROLOG.root.test(text)
+  root.lastIndex = i
+  return root.test(text)
 }
 
 /**
@@ -68,13 +81,18 @@ export function isXacroModel(text: string): boolean {
 }
 
 /**
- * Parses and converts any robot description format (.urdf, .xacro, .xml/MJCF)
+ * Parses and converts any robot description format (.urdf, .xacro, .xml/MJCF, .sdf)
  * into a standard, fully resolved URDF XML string ready for URDFLoader.
  */
 export function parseRobotDescription(rawText: string, filenameOrUrl = '', ctx: ParseContext = {}): string {
   if (isMuJoCoModel(rawText)) {
     const modelName = filenameOrUrl.split('/').pop()?.replace(/\.[^.]+$/, '') || 'mujoco_robot'
     return convertMjcfToUrdf(rawText, modelName, ctx)
+  }
+
+  if (isSdfModel(rawText)) {
+    const modelName = filenameOrUrl.split('/').pop()?.replace(/\.[^.]+$/, '') || 'sdf_robot'
+    return convertSdfToUrdf(rawText, modelName, ctx)
   }
 
   if (isXacroModel(rawText) || /\.xacro$/i.test(filenameOrUrl)) {

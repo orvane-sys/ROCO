@@ -107,6 +107,17 @@ for (const n of [24, 100000]) {
   const ms = performance.now() - t0
   check(res === false && ms < (n === 24 ? 5 : 100), `a header of ${t.length} comment characters is read in ${ms.toFixed(2)} ms`)
 }
+// SDFormat is told apart the same way, by an <sdf> root
+for (const [t, what] of Object.entries({
+  '<?xml version="1.0"?>\n<!-- a -->\n<sdf version="1.9">': 'a declaration and a comment before the root',
+  '﻿<SDF version="1.6">': 'a byte order mark, the root in any case',
+})) check(fmt.isSdfModel(t) && !fmt.isMuJoCoModel(t), `SDF: ${what}`)
+for (const [t, what] of Object.entries({
+  '<robot name="r"><gazebo><sdf version="1.6"/></gazebo></robot>': 'a URDF with an <sdf> block inside',
+  '<sdfx>': 'an <sdfx> root',
+  '<!-- <sdf> -->\n<mujoco>': 'an MJCF with <sdf> in a comment',
+  '': 'an empty file',
+})) check(!fmt.isSdfModel(t), `not SDF: ${what}`)
 
 console.log(`profiles: ${passed} checks passed${failed ? `, ${failed} FAILED` : ''}`)
 process.exit(failed ? 1 : 0)
