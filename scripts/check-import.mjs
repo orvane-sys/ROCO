@@ -35,6 +35,7 @@ const load = async (input) => {
 }
 const { AssetIndex, normalizeAssetPath, joinBundlePath } = await load('src/utils/assetResolver.ts')
 const { ImportReport } = await load('src/utils/importReport.ts')
+const { countTriangles, countGltfJson, countDae, countObjFaces } = await load('src/utils/meshTriangles.ts')
 const { check, finish } = tally()
 
 /** An index whose urls are `url:<path as given>`, so a result names the file it picked. */
@@ -143,6 +144,32 @@ check(joinBundlePath(['a'], '../../x') === null && joinBundlePath(['a', 'b'], '.
   check(r.byKind('fix').length === 0 && r.byKind('approx').length === 1, 'byKind filters')
 }
 
+// --- triangle counts (src/utils/meshTriangles.ts) -------------------------------------------------------------------
+{
+  const tri = async (bytes, name) => countTriangles(new Blob([bytes]), name)
+  const same = (got, triangles, exact = true) => got !== null && got.triangles === triangles && got.exact === exact
+  check(same(await tri(stl(), 'a.STL'), 4), 'a binary STL is counted from its header (any case of extension)')
+  const facet = 'facet normal 0 0 1\n outer loop\n  vertex 0 0 0\n  vertex 1 0 0\n  vertex 0 1 0\n endloop\nendfacet\n'
+  check(same(await tri(`solid a\n${facet.repeat(3)}endsolid a\n`, 'a.stl'), 3), 'an ASCII STL is counted by its facets')
+  check(same(await tri(glb({ accessors: [{ count: 1_500_003 }], meshes: [{ primitives: [{ indices: 0 }] }] }), 'g.glb'), 500_001), 'a GLB: indexed triangles are a third of the indices')
+  check(same(countGltfJson(JSON.stringify({ accessors: [{ count: 10 }, { count: 9 }, { count: 7 }], meshes: [{ primitives: [{ mode: 5, indices: 0 }, { attributes: { POSITION: 1 } }] }, { primitives: [{ mode: 6, attributes: { POSITION: 2 } }, { mode: 1, indices: 0 }] }] })), 8 + 3 + 5),
+    'glTF: a strip and a fan are n - 2, unindexed triangles count POSITION, lines draw none')
+  check(await tri(Buffer.from('not a glb at all, twenty+ bytes'), 'g.glb') === null, 'a GLB with the wrong magic is not counted')
+  {
+    const bad = glb({ meshes: [] })
+    bad.writeUInt32LE(2 ** 30, 12) // a JSON chunk longer than the file
+    check(await tri(bad, 'g.glb') === null, 'a GLB whose JSON chunk runs past the end of the file is not read')
+  }
+  check(countGltfJson('{"meshes": [') === null && same(countGltfJson('{"meshes":[{"primitives":[{"indices":5}]}]}'), 0), 'broken glTF JSON is not counted; a missing accessor counts nothing')
+  check(same(countDae('<mesh><triangles material="m" count="600000"><input/></triangles><lines count="900"/></mesh>'), 600_000), 'COLLADA: <triangles> counts exactly, lines draw none')
+  check(same(countDae('<triangles count="2"/><polylist count="5"><vcount>3 4 4 3 5</vcount></polylist><polygons count=\'1\'>'), 8, false),
+    'COLLADA: polylist and polygons give a lower bound (one triangle each)')
+  check(same(countDae(`<trianglesX count="9"/><triangles${' '.repeat(2100)}count="9">`), 0), 'COLLADA: another tag, or a start tag with no `>` near it, is not counted')
+  check(countObjFaces('f 1 2 3 4\n  f\t1 2 3\r\nfo 1 2 3\n#f 1 2 3\nf 1 2\nvt 0 0\nf 1/1/1 2/2/2 3/3/3 4/4/4 5/5/5') === 2 + 1 + 3,
+    'OBJ: a face of k vertices is k - 2 triangles; other lines and short faces count nothing; the last line needs no newline')
+  check(same(await tri('v 0 0 0\nf 1 2 3\n', 'm.obj'), 1) && await tri('x', 'm.ply') === null, 'an OBJ is counted; another format is not')
+}
+
 // MuJoCo 3.17.0 reading these fixtures (mj_kinematics at qpos0): each body's xpos and xquat (w, x, y, z), to 9 decimals.
 const EXPECTED = {
   orient: {
@@ -192,10 +219,21 @@ const EXPECTED = {
   const G1_URDF = 'g1_29dof.urdf'
   const G1_FILES = [G1_URDF, ...new Set(Array.from(readFileSync(fileURLToPath(new URL(`public/models/g1_description/${G1_URDF}`, root)), 'utf8').matchAll(/filename="([^"]+)"/g), (m) => m[1]))]
   const errors = []
+  const strays = []
   const importFixture = async (name, want = {}) => {
-    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name] ?? sdfFixtures()[name] ?? heightFixtures()[name]
+    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name] ?? sdfFixtures()[name] ?? heightFixtures()[name] ?? meshFixtures()[name]
     const page = await browser.newPage()
     page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`))
+    // every request the import makes: only the page, the harness and the G1 files it was given may reach a server
+    const origin = `http://127.0.0.1:${server.address().port}`
+    const stray = []
+    page.on('request', (r) => {
+      const u = r.url()
+      if (/^(blob|data):/i.test(u)) return
+      const path = u.startsWith(`${origin}/`) ? u.slice(origin.length) : null
+      if (path === '/' || path === '/harness.js' || path?.startsWith('/g1/')) return
+      stray.push(u)
+    })
     // the importer's module graph starts the telemetry client; give it a socket that never connects
     await page.addInitScript(() => {
       window.WebSocket = class { constructor() { this.readyState = 3 } send() {} close() {} addEventListener() {} removeEventListener() {} }
@@ -207,7 +245,8 @@ const EXPECTED = {
       : Object.entries(fx.files).map(([path, body]) => ({ path: `${name}/${path}`, url: 'data:application/octet-stream;base64,' + Buffer.from(body).toString('base64') }))
     const got = await page.evaluate(([l, o, w]) => window.__rocoImport.run(l, o, w), [list, { ...(fx.main ? { mainFile: `${name}/${fx.main}` } : {}), ...fx.options }, want])
     await page.close()
-    return got
+    if (stray.length) strays.push(`${name}: ${stray.slice(0, 3).join(', ')}`)
+    return { ...got, stray }
   }
   const near = (a, b, tol = 1e-9) => a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) <= tol)
   /** Same rotation: q and -q are one rotation. */
@@ -420,6 +459,48 @@ const EXPECTED = {
       got = await importFixture(name, { units: true })
       check(got.ok && got.units && got.units.offer === null, `units: ${what} is not flagged (got ${JSON.stringify(got.units?.offer ?? got.error)})`)
     }
+    // --- the report as the dialog gets it: items, notes, xacro arguments, and what a failed import got to ---
+    const items = (g, kind) => (g.report ?? []).filter((i) => i.kind === kind)
+    got = await importFixture('tri_formats')
+    {
+      const lim = items(got, 'limit')
+      const per = lim.find((i) => /^A mesh has more than 500,000 triangles/.test(i.message))
+      const where = [...(per?.where ?? [])].sort()
+      const want = ['tri_formats/meshes/g.glb: 500,001', 'tri_formats/meshes/p.dae: at least 500,001', 'tri_formats/meshes/q.obj: 500,002', 'tri_formats/meshes/t.dae: 600,000']
+      check(got.ok && JSON.stringify(where) === JSON.stringify(want), `each mesh over 500,000 triangles is named with its count, in every format (got ${JSON.stringify(per?.where ?? got.error)})`)
+      check(lim.some((i) => i.message === 'The meshes have at least 2,100,004 triangles in all, more than 2,000,000, so the robot may draw slowly.'),
+        `the total says "at least" when a COLLADA file gives only a lower bound (got ${JSON.stringify(lim.map((i) => i.message))})`)
+      check(got.warnings.length === got.notes.length + got.report.length && got.notes.every((n) => got.warnings.includes(n)),
+        'the warnings are the notes and one line per report item')
+    }
+    got = await importFixture('tri_small')
+    check(got.ok && items(got, 'limit').length === 0, `meshes under the limits, lines and other tags are not warned about (got ${JSON.stringify(items(got, 'limit'))})`)
+
+    // a mesh the import does not have is never asked of a server (the path could name the user's own folders)
+    got = await importFixture('missing_refs', { units: true })
+    check(got.ok && got.stray.length === 0, `missing meshes (package://, file://, https://, relative) make no request (got ${JSON.stringify(got.stray ?? got.error)})`)
+    check(items(got, 'error').length > 0, 'the missing meshes are still reported')
+
+    // xacro arguments: declared ones with their defaults, needed ones with none, then the import again with a value
+    got = await importFixture('xacro_args')
+    check(got.ok && JSON.stringify(got.xacroArgs) === JSON.stringify([{ name: 'side', value: 'left' }, { name: 'prefix' }]) && got.mainFile === 'xacro_args/a.xacro',
+      `the xacro's arguments come back in order, a needed one with no value (got ${JSON.stringify(got.xacroArgs)}, ${got.mainFile})`)
+    check(!!got.joints?.j_left && got.warnings.some((l) => l.includes("needs the argument 'prefix'")), 'with no value the argument is empty and reported')
+    got = await importFixture('xacro_args_set')
+    check(got.ok && JSON.stringify(got.xacroArgs) === JSON.stringify([{ name: 'side', value: 'right' }, { name: 'prefix', value: 'p_' }]) && !!got.joints?.p_j_right,
+      `given values replace the defaults and fill the needed one (got ${JSON.stringify(got.xacroArgs)}, joints ${Object.keys(got.joints ?? {})})`)
+    got = await importFixture('xacro_args_late')
+    check(got.ok && JSON.stringify(got.xacroArgs) === JSON.stringify([{ name: 'late' }]) && !!got.joints?.j_x,
+      `an argument used before it is declared stays needed in the list, as it was where it failed (got ${JSON.stringify(got.xacroArgs)}, joints ${Object.keys(got.joints ?? {})})`)
+    got = await importFixture('xacro_args_fail')
+    check(!got.ok && /stop a/.test(got.error ?? '') && got.failure?.mainFile === 'xacro_args_fail/f.xacro' &&
+      JSON.stringify(got.failure?.xacroArgs) === JSON.stringify([{ name: 'mode', value: 'a' }, { name: 'need' }]) &&
+      got.failure.report.some((i) => i.kind === 'error' && i.message.includes("needs the argument 'need'")),
+      `a failed import still gives its report, main file and arguments (got ${JSON.stringify(got.failure ?? got.error)})`)
+    got = await importFixture('xacro_fatal')
+    check(!got.ok && got.failure && JSON.stringify(got.failure.xacroArgs) === '[]', 'a xacro with no arguments fails with an empty list')
+
+    check(strays.length === 0, `no fixture made a request outside the page and its files (${strays.join('; ')})`)
     check(errors.length === 0, `no page errors (${errors.join('; ')})`)
   } finally {
     await browser.close()
@@ -480,6 +561,51 @@ function stl() {
   b.writeUInt32LE(tris.length, 80)
   tris.forEach((t, i) => t.flat().forEach((v, k) => b.writeFloatLE(v, 84 + 50 * i + 12 + 4 * k)))
   return b
+}
+
+/** A GLB of just a JSON chunk (no binary chunk: only the JSON is read for counting). */
+function glb(json) {
+  const text = Buffer.from(JSON.stringify(json))
+  const body = Buffer.concat([text, Buffer.alloc((4 - (text.length % 4)) % 4, 0x20)])
+  const head = Buffer.alloc(20)
+  head.writeUInt32LE(0x46546c67, 0) // 'glTF'
+  head.writeUInt32LE(2, 4)
+  head.writeUInt32LE(20 + body.length, 8)
+  head.writeUInt32LE(body.length, 12)
+  head.writeUInt32LE(0x4e4f534a, 16) // 'JSON'
+  return Buffer.concat([head, body])
+}
+
+/**
+ * Robots for the triangle counts and for meshes the import does not have. A link per mesh; the meshes are only counted, never
+ * drawn (except in missing_refs, loaded as the twin loads it), so they need not be whole files.
+ */
+function meshFixtures() {
+  const limit = '<axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="10" velocity="1"/>'
+  const robot = (name, meshes) => `<robot name="${name}">
+  <link name="base_link"><visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual></link>
+${meshes.map((m, i) => `  <joint name="j${i}" type="revolute"><parent link="base_link"/><child link="l${i}"/><origin xyz="0 0 -0.5"/>${limit}</joint>
+  <link name="l${i}"><visual><geometry><mesh filename="${m}"/></geometry></visual></link>`).join('\n')}
+</robot>`
+  const dae = (body) => `<?xml version="1.0"?><COLLADA><library_geometries><geometry><mesh>${body}</mesh></geometry></library_geometries></COLLADA>`
+  return {
+    tri_formats: { main: 'r.urdf', files: {
+      'r.urdf': robot('tri', ['meshes/q.obj', 'meshes/t.dae', 'meshes/g.glb', 'meshes/p.dae']),
+      'meshes/q.obj': 'v 0 0 0\n' + 'f 1 2 3 4\n'.repeat(250_001), // 500,002: each quad is two
+      'meshes/t.dae': dae('<triangles count="600000"/>'),
+      'meshes/g.glb': glb({ accessors: [{ count: 1_500_003 }], meshes: [{ primitives: [{ indices: 0 }] }] }),
+      'meshes/p.dae': dae('<polylist count="500001"/>'),
+    } },
+    tri_small: { main: 'r.urdf', files: {
+      'r.urdf': robot('tri_small', ['meshes/q.obj', 'meshes/g.glb', 'meshes/l.dae']),
+      'meshes/q.obj': 'f 1 2 3 4\n'.repeat(10),
+      'meshes/g.glb': glb({ accessors: [{ count: 3_000_000 }], meshes: [{ primitives: [{ mode: 1, indices: 0 }] }] }),
+      'meshes/l.dae': dae('<lines count="3000000"/><trianglesX count="3000000"/>'),
+    } },
+    // a biped (feet below the base) whose feet are nowhere in the import, named every way a robot file can name a file
+    missing_refs: { main: 'r.urdf', files: { 'r.urdf': robot('missing', ['package://nopkg/meshes/gone.stl', 'file:///srv/robot/gone.stl',
+      'https://example.invalid/m.stl', 'meshes/gone.stl']).replace(/name="j(\d)"/g, (_, i) => `name="${['left_hip', 'right_hip', 'left_ankle', 'right_ankle'][i]}_joint"`) } },
+  }
 }
 
 /**
@@ -627,6 +753,11 @@ function xacroExpected() {
  */
 function xacroFixtures() {
   const joint = '<link name="base"/><link name="arm"/><joint name="j" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>'
+  const argsXacro = `<robot name="xa" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="side" default="left"/>
+  <link name="base"/><link name="arm"/>
+  <joint name="$(arg prefix)j_$(arg side)" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+</robot>`
   const robot = (name, body) => `<robot name="${name}" xmlns:xacro="http://www.ros.org/wiki/xacro">${joint}${body}</robot>`
   return {
     xacro: { main: 'pkg/urdf/main.xacro', options: { xacroArgs: { given: 'yes' } }, files: {
@@ -804,6 +935,18 @@ e: [*d, *d, *d, *d, *d, *d, *d, *d, *d]
 `,
     } },
     xacro_fatal: { main: 'f.xacro', files: { 'f.xacro': robot('f', '<link name="${xacro.fatal(\'stop here\')}"/>') } },
+    xacro_args: { main: 'a.xacro', files: { 'a.xacro': argsXacro } },
+    xacro_args_set: { main: 'a.xacro', options: { xacroArgs: { side: 'right', prefix: 'p_' } }, files: { 'a.xacro': argsXacro } },
+    xacro_args_late: { main: 'l.xacro', files: { 'l.xacro': `<robot name="al" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <link name="base"/><link name="arm"/>
+  <joint name="j$(arg late)_x" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+  <xacro:arg name="late" default="d"/>
+</robot>` } },
+    xacro_args_fail: { main: 'f.xacro', files: { 'f.xacro': `<robot name="af" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="mode" default="a"/>
+  <xacro:property name="m" value="$(arg mode)$(arg need)"/>
+  ${joint}<link name="\${xacro.fatal('stop ' + m)}"/>
+</robot>` } },
     xacro_eval_cap: { main: 'e.xacro', files: { 'e.xacro': robot('e', '<link name="$(eval \'x\' * 20000)"/>') } },
   }
 }

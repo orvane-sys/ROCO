@@ -390,7 +390,7 @@ class Xacro {
       ['dotify', dotifyFn],
       ['arg', f('arg', (a) => {
         const name = pyStr(a[0] ?? null)
-        const v = this.args.get(name)
+        const v = this.arg(name)
         if (v === undefined) throw new PyError('KeyError', `'${name}'`)
         return v
       })],
@@ -519,7 +519,7 @@ class Xacro {
           return `package://${one()}`
         case 'arg': {
           const name = one()
-          const v = this.args.get(name)
+          const v = this.arg(name)
           if (v !== undefined) return v
           this.note('error', `The xacro needs the argument '${name}', which has no value, so it was left empty.`, this.file)
           return ''
@@ -542,6 +542,17 @@ class Xacro {
     }
   }
 
+  /**
+   * An argument's value. The value it had when first read or declared goes in `ctx.xacroArgsUsed` for the dialog's form
+   * (undefined: needed but given no value; a later declaration does not hide that it was missing where it was first used).
+   */
+  private arg(name: string): string | undefined {
+    const v = this.args.get(name)
+    const used = this.ctx.xacroArgsUsed
+    if (used && !used.has(name)) used.set(name, v)
+    return v
+  }
+
   /** `$(eval expr)`: roslaunch's eval, with the arguments (converted to numbers or bools) and math as names. */
   private substEval(src: string): string {
     if (src.includes('__')) throw new XacroError('$(eval ...) may not contain double underscore expressions')
@@ -560,7 +571,7 @@ class Xacro {
     const f = (name: string, fn: (a: PyVal[]) => PyVal) => fns.set(name, new PyFunc(name, (a) => fn(a)))
     f('arg', (a) => {
       const name = pyStr(a[0] ?? null)
-      const v = this.args.get(name)
+      const v = this.arg(name)
       if (v === undefined) throw new XacroError(`Undefined substitution argument ${name}`)
       return convert(v)
     })
@@ -575,7 +586,7 @@ class Xacro {
       get: (name) => {
         const fv = fns.get(name)
         if (fv !== undefined) return fv
-        const av = this.args.get(name)
+        const av = this.args.has(name) ? this.arg(name) : undefined
         if (av !== undefined) return convert(av)
         const bv = python.get(name)
         if (bv !== undefined) return bv
@@ -773,6 +784,7 @@ class Xacro {
       case 'xacro:arg': {
         const { name, default: def } = this.attrs(el, ['name', 'default'], [])
         if (!this.args.has(name!)) this.args.set(name!, pyStr(this.text(def!, sym)))
+        this.arg(name!)
         this.removePreviousComments(el)
         el.parentNode?.removeChild(el)
         return null

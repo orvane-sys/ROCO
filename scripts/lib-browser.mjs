@@ -1,7 +1,8 @@
 // What the browser checks (check-layout, check-a11y) share: a static server on the built page (dist/) and the Chrome or Chromium on
 // this PC. playwright-core downloads no browser, so CI uses the one on the runner and this PC uses its own.
 import { createServer } from 'node:http'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -68,6 +69,40 @@ export const guardCsp = (target) =>
       })
     })
   })
+
+/**
+ * A xacro that needs an argument it is not given and names a mesh it does not have, so its import shows the dialog's report
+ * (two problems) and the arguments form. Its joint is named from both arguments.
+ */
+export const REPORT_XACRO = `<?xml version="1.0"?>
+<robot name="report_bot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="side" default="left"/>
+  <link name="base"/>
+  <link name="arm"><visual><geometry><mesh filename="package://report_bot_description/meshes/a_rather_long_folder_name/forearm_link_visual_mesh.stl"/></geometry></visual></link>
+  <joint name="$(arg prefix)joint_$(arg side)" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+</robot>
+`
+
+/**
+ * Opens Settings, then the import dialog, and imports REPORT_XACRO through its file input; resolves once the report shows. The
+ * file stays on disk for "Import again" until the returned function removes it (call it after closing the page).
+ */
+export async function openImportReport(page) {
+  const dir = mkdtempSync(join(tmpdir(), 'roco-dialog-'))
+  const remove = () => rmSync(dir, { recursive: true, force: true })
+  try {
+    writeFileSync(join(dir, 'report_bot.xacro'), REPORT_XACRO)
+    await page.locator('[data-action="settings"]').first().click()
+    await page.getByRole('button', { name: /Import model/ }).click()
+    await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(join(dir, 'report_bot.xacro'))
+    await page.getByRole('heading', { name: 'Import report' }).waitFor({ timeout: PAGE_READY_MS })
+    await page.getByRole('form', { name: 'Xacro arguments' }).waitFor()
+  } catch (e) {
+    remove()
+    throw e
+  }
+  return remove
+}
 
 /** A tally for the checks: `check(ok, what)` counts, and `finish(name)` prints the totals and sets the exit code. */
 export function tally() {

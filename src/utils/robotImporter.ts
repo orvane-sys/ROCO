@@ -11,6 +11,7 @@ import { ImportReport } from './importReport'
 import { LIMITS, TEXT_FILE, refuse, sizeLimitFor } from './importLimits'
 import { Deadline, parseXmlSafe } from './safeXml'
 import { isZip, unpackZip } from './zipBundle'
+import { countTriangles } from './meshTriangles'
 import { buildProfileFromParsedRobot, robotCategory } from './autoProfileBuilder'
 import { motorOrderNote } from './motorMatch'
 import { getRobotProfile, unregisterRobotProfile, type RobotProfile } from '../config/robotRegistry'
@@ -298,7 +299,46 @@ export interface ImportResult {
   warnings: string[]
   /** Everything the import fixed, approximated, substituted or could not use. Its lines are also in `warnings`. */
   report: ImportReport
+  /** The warnings that are not report lines (how the joints were tied to motors). */
+  notes: string[]
+  /** The main description file used, by its path in the import (pass it back as `mainFile` to import again). */
+  mainFile: string
+  /** The xacro's arguments, in the order it met them; empty for any other file. */
+  xacroArgs: XacroArg[]
 }
+
+/** One xacro argument for the dialog's form: its value in this import, or `undefined` when the file needs one and has none. */
+export interface XacroArg {
+  name: string
+  value: string | undefined
+}
+
+/** What a failed import got to before it stopped, so the dialog can still show the report and the xacro's arguments. */
+export interface ImportFailure {
+  report: ImportReport
+  mainFile?: string
+  xacroArgs: XacroArg[]
+}
+const failures = new WeakMap<object, ImportFailure>()
+
+/** The report and arguments of an import that threw `err`, if `err` came from `importRobotFiles`. */
+export function importFailure(err: unknown): ImportFailure | undefined {
+  return typeof err === 'object' && err !== null ? failures.get(err) : undefined
+}
+
+/** Where a failed import had got to: filled in by `importFiles` as it goes. */
+interface ImportProgress {
+  report?: ImportReport
+  mainFile?: string
+  xacroArgsUsed?: Map<string, string | undefined>
+}
+const argList = (used?: Map<string, string | undefined>): XacroArg[] => Array.from(used ?? [], ([name, value]) => ({ name, value }))
+
+/**
+ * A file the import does not have is never asked of a web server: the path could name the user's own folders. Requests
+ * for it get this blob URL instead, which names no blob, so the load fails inside the browser.
+ */
+const nowhere = (): string => `blob:${location.origin}/00000000-0000-4000-8000-000000000000`
 
 /**
  * The files that could be the entry-point description, best first. A `.urdf` wins; among xacro/xml/sdf files a top-level
@@ -357,17 +397,21 @@ export interface ImportOptions {
 }
 
 export async function importRobotFiles(files: FileList | File[], options: ImportOptions = {}): Promise<ImportResult> {
+  const progress: ImportProgress = {}
   try {
-    return await importFiles(files, options)
+    return await importFiles(files, options, progress)
   } catch (e) {
     // the converters and three.js walk the link tree recursively: a chain thousands of links long overflows the stack
     // (Chrome's RangeError, Firefox's InternalError "too much recursion")
-    if (e instanceof Error && /call stack size|too much recursion/i.test(e.message)) throw refuse('depth', 'its links or bodies chain thousands deep')
-    throw e
+    const err = e instanceof Error && /call stack size|too much recursion/i.test(e.message) ? refuse('depth', 'its links or bodies chain thousands deep') : e
+    if (progress.report && typeof err === 'object' && err !== null) {
+      failures.set(err, { report: progress.report, mainFile: progress.mainFile, xacroArgs: argList(progress.xacroArgsUsed) })
+    }
+    throw err
   }
 }
 
-async function importFiles(files: FileList | File[], options: ImportOptions): Promise<ImportResult> {
+async function importFiles(files: FileList | File[], options: ImportOptions, progress: ImportProgress): Promise<ImportResult> {
   const given = Array.from(files)
   if (given.length === 0) {
     throw new Error('No files provided for robot import.')
@@ -395,6 +439,7 @@ async function importFiles(files: FileList | File[], options: ImportOptions): Pr
   )
 
   const report = new ImportReport()
+  progress.report = report
   const tops = pickMainFiles(fileArray, texts)
   let mainFile = tops[0]
   if (options.mainFile !== undefined) {
@@ -414,6 +459,9 @@ async function importFiles(files: FileList | File[], options: ImportOptions): Pr
 
   // 2. Parse first, so a bad file fails before any blob URL exists (nothing to leak or revoke).
   const mainPath = filePath(mainFile)
+  progress.mainFile = mainPath
+  const xacroArgsUsed = new Map<string, string | undefined>()
+  progress.xacroArgsUsed = xacroArgsUsed
   const textFileIndex = new AssetIndex()
   const textByUrl = new Map<string, string>()
   for (const [f, text] of texts) {
@@ -426,6 +474,7 @@ async function importFiles(files: FileList | File[], options: ImportOptions): Pr
     fileName: mainPath,
     report,
     xacroArgs: options.xacroArgs,
+    xacroArgsUsed,
     // MuJoCo looks for an include next to the file that includes it, then next to the main file
     resolveInclude: (filename, from, opts) => {
       let hit = from && from !== mainPath ? textFileIndex.resolve(filename, { from }) : undefined
@@ -452,27 +501,28 @@ async function importFiles(files: FileList | File[], options: ImportOptions): Pr
     }
   }
 
-  // Very large meshes draw slowly. A binary STL gives its triangle count in its header, so this reads 84 bytes a file;
-  // other formats are not counted here.
+  // Very large meshes draw slowly. Each mesh file is counted the cheapest way its format allows (src/utils/meshTriangles.ts):
+  // a binary STL's header is 84 bytes; a COLLADA file with polygons gives only a lower bound ("at least").
   const byPath = new Map(fileArray.map((f) => [filePath(f), f]))
   const count = (n: number) => n.toLocaleString('en-US')
   let triangles = 0
+  let exact = true
   for (const url of new Set(Array.from(meshes.values(), (h) => h.url))) {
     deadline.check('counting mesh triangles')
     const f = url ? byPath.get(url) : undefined
-    if (!f || !/\.stl$/i.test(f.name) || f.size < 84) continue
-    const n = new DataView(await f.slice(80, 84).arrayBuffer()).getUint32(0, true)
-    if (84 + 50 * n !== f.size) continue // an ASCII STL
-    triangles += n
-    if (n > LIMITS.trianglesMesh) {
+    const got = f ? await countTriangles(f, f.name) : null
+    if (!f || !got) continue
+    triangles += got.triangles
+    exact &&= got.exact
+    if (got.triangles > LIMITS.trianglesMesh) {
       report.add('limit', `A mesh has more than ${count(LIMITS.trianglesMesh)} triangles, so the robot may draw slowly.`, {
-        where: `${filePath(f)}: ${count(n)}`,
+        where: `${filePath(f)}: ${got.exact ? '' : 'at least '}${count(got.triangles)}`,
         hint: 'A simplified copy of the mesh draws faster.',
       })
     }
   }
   if (triangles > LIMITS.trianglesTotal) {
-    report.add('limit', `The meshes have ${count(triangles)} triangles in all, more than ${count(LIMITS.trianglesTotal)}, so the robot may draw slowly.`)
+    report.add('limit', `The meshes have ${exact ? '' : 'at least '}${count(triangles)} triangles in all, more than ${count(LIMITS.trianglesTotal)}, so the robot may draw slowly.`)
   }
 
   // 4. Parse the URDF for kinematics only. Meshes are loaded later by the digital twin, so skip them here
@@ -503,9 +553,11 @@ async function importFiles(files: FileList | File[], options: ImportOptions): Pr
 
     // The twin asks for "<urdf folder>/<path written in step 3>"; the URDF's own blob folder drops out in
     // normalizeAssetPath, so the full path matches exactly. Anything else falls back to the name match.
+    // A blob: URL is never a network request (three.js makes its own for textures inside a glTF); anything else that is
+    // not an imported file gets nowhere(), never the page's server.
     const resolveAsset = (url: string): string => {
       if (ownUrls.has(url) || /^data:/i.test(url)) return url
-      return blobIndex.exact(url).url ?? blobIndex.find(url).url ?? url
+      return blobIndex.exact(url).url ?? blobIndex.find(url).url ?? (/^blob:/i.test(url) ? url : nowhere())
     }
 
     // 6. Build dynamic RobotProfile (throws if it has more joints than LowState_ has motor slots). Its standing height needs
@@ -539,6 +591,7 @@ async function importFiles(files: FileList | File[], options: ImportOptions): Pr
     )
   }
 
+  const notes = warnings.slice()
   warnings.push(...report.lines())
-  return { profile: getRobotProfile(profile.id), warnings, report }
+  return { profile: getRobotProfile(profile.id), warnings, report, notes, mainFile: mainPath, xacroArgs: argList(xacroArgsUsed) }
 }

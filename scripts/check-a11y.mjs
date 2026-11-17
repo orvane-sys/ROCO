@@ -2,15 +2,39 @@
 //   1. axe-core (WCAG 2.0 to 2.2 A and AA, plus its best practices) in all three themes, at 320, 768 and 1600 px, in all three workspaces
 //   2. reflow: at 200 % and 400 % zoom (a 640 and a 320 px window) the page does not scroll sideways
 //   3. the keyboard: Tab through every workspace; each stop has a name, a visible focus mark and is not covered by another element
+//   4. the import dialog showing its report and xacro arguments form: axe in all three themes at 320, 768 and 1600 px, no sideways
+//      scroll at 320 px, and the keyboard stays in the dialog with each stop named, marked and uncovered
 // It needs a screen reader for the rest; docs/screen-reader-test.md is the script for that.
 //
 //   npm run build && npm run check:a11y
 import { readFileSync } from 'node:fs'
-import { PAGE_READY_MS, guardCsp, startBrowser, tally } from './lib-browser.mjs'
+import { PAGE_READY_MS, guardCsp, openImportReport, startBrowser, tally } from './lib-browser.mjs'
 
 const axeSource = readFileSync(new URL('../node_modules/axe-core/axe.min.js', import.meta.url), 'utf8')
 const { url, browser, close } = await startBrowser('check-a11y')
 const { check, finish } = tally()
+
+/** Each keyboard stop: what it is, whether it has a name, is on screen and uncovered, and shows a focus mark. */
+const stopOf = () => {
+  const el = document.activeElement
+  if (!el || el === document.body) return null
+  const r = el.getBoundingClientRect()
+  const cs = getComputedStyle(el)
+  const label = el.getAttribute('aria-label') || el.getAttribute('title') || (el.getAttribute('aria-labelledby') ? document.getElementById(el.getAttribute('aria-labelledby'))?.textContent : '') || el.textContent || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || ''
+  const x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1)
+  const y = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1)
+  const top = document.elementFromPoint(x, y)
+  return {
+    what: `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''} "${label.trim().slice(0, 40)}"`,
+    named: label.trim().length > 0 || (el.labels?.length ?? 0) > 0,
+    sized: r.width > 0 && r.height > 0,
+    inView: r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth,
+    covered: !(top === el || el.contains(top) || top?.contains(el)),
+    mark: (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) || cs.boxShadow !== 'none',
+    outside: document.querySelector('main') ? !document.querySelector('main').contains(el) : false,
+    inDialog: !!el.closest('[role=dialog]'),
+  }
+}
 
 async function open(width, height, theme = 'dark') {
   const page = await browser.newPage({ viewport: { width, height } })
@@ -105,25 +129,7 @@ try {
       const stops = []
       for (let i = 0; i < 120; i++) {
         await page.keyboard.press('Tab')
-        const s = await page.evaluate(() => {
-          const el = document.activeElement
-          if (!el || el === document.body) return null
-          const r = el.getBoundingClientRect()
-          const cs = getComputedStyle(el)
-          const label = el.getAttribute('aria-label') || el.getAttribute('title') || (el.getAttribute('aria-labelledby') ? document.getElementById(el.getAttribute('aria-labelledby'))?.textContent : '') || el.textContent || el.getAttribute('placeholder') || ''
-          const x = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1)
-          const y = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1)
-          const top = document.elementFromPoint(x, y)
-          return {
-            what: `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''} "${label.trim().slice(0, 40)}"`,
-            named: label.trim().length > 0 || (el.labels?.length ?? 0) > 0,
-            sized: r.width > 0 && r.height > 0,
-            inView: r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth,
-            covered: !(top === el || el.contains(top) || top?.contains(el)),
-            mark: (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) || cs.boxShadow !== 'none',
-            outside: document.querySelector('main') ? !document.querySelector('main').contains(el) : false,
-          }
-        })
+        const s = await page.evaluate(stopOf)
         if (s === null) break
         stops.push(s)
       }
@@ -136,6 +142,55 @@ try {
       }
     }
     await page.close()
+  }
+
+  // 4. the import dialog with its report and the xacro arguments form open
+  {
+    let runs = 0
+    for (const theme of ['dark', 'light', 'contrast']) {
+      for (const [w, h] of [
+        [320, 700],
+        [768, 900],
+        [1600, 900],
+      ]) {
+        const page = await open(w, h, theme)
+        const at = `import dialog, ${theme} ${w}px`
+        const removeFile = await openImportReport(page)
+        await page.evaluate(axeSource)
+        runs++
+        const found = await page.evaluate((tags) => axe.run(document.querySelector('[role=dialog]'), { runOnly: { type: 'tag', values: tags } }).then((r) => r.violations.flatMap((v) => v.nodes.map((n) => `${v.id} on ${n.target.join(' ')}: ${n.failureSummary?.split('\n').slice(1, 2).join(' ').trim() ?? ''}`))), TAGS)
+        for (const v of found) check(false, `${at}: axe ${v}`)
+        if (w === 320) {
+          const wide = await page.evaluate(() => {
+            const bad = [...document.querySelectorAll('[role=dialog] *')].filter((e) => e.getClientRects().length > 0 && e.getBoundingClientRect().right > innerWidth + 1)
+            return { sideways: document.documentElement.scrollWidth > innerWidth, first: bad[0] ? `${bad[0].tagName}.${String(bad[0].className).slice(0, 50)}` : '' }
+          })
+          check(!wide.sideways && !wide.first, `${at}: nothing in the dialog runs off the side (${wide.first})`)
+        }
+        if (theme === 'dark' && w === 768) {
+          const stops = []
+          for (let i = 0; i < 30; i++) {
+            await page.keyboard.press('Tab')
+            const s = await page.evaluate(stopOf)
+            if (s === null || (stops.length && s.what === stops[0].what)) break
+            stops.push(s)
+          }
+          const names = stops.map((s) => s.what).join(' | ')
+          check(['Download report', 'side', 'prefix', 'Import again with these values', 'Done', 'Close dialog'].every((n) => names.includes(n)),
+            `${at}: Tab reaches the report download, each argument, Import again, Done and Close (${names})`)
+          for (const s of stops) {
+            check(s.inDialog, `${at}: ${s.what} is inside the dialog (focus stays in it)`)
+            check(s.named, `${at}: ${s.what} has a name`)
+            check(s.sized && s.inView && !s.covered, `${at}: ${s.what} is on screen and not covered when focused`)
+            check(s.mark, `${at}: ${s.what} shows a focus mark`)
+          }
+        }
+        check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+        await page.close()
+        removeFile()
+      }
+    }
+    check(runs === 9, `axe ran on the import dialog ${runs} times`)
   }
 } finally {
   await close()

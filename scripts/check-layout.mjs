@@ -3,8 +3,10 @@
 // workspace's note shows once, and every palette command has a visible control. It uses the Chrome or Chromium on this PC (playwright-core downloads no browser).
 //
 //   npm run build && npm run check:layout        (CHROME_PATH=/path/to/chrome to choose a browser)
-import { readFileSync } from 'node:fs'
-import { PAGE_READY_MS, guardCsp, startBrowser, tally } from './lib-browser.mjs'
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PAGE_READY_MS, guardCsp, openImportReport, startBrowser, tally } from './lib-browser.mjs'
 
 const { url, browser, close } = await startBrowser('check-layout')
 const { check, finish } = tally()
@@ -399,6 +401,91 @@ try {
     await page.waitForTimeout(200)
     check(!ran && page.errors.length === 1 && /CSP blocked inline \(script-src/.test(page.errors[0]), `CSP: a script added later does not run and is reported (ran: ${ran}; ${page.errors.join('; ')})`)
     await page.close()
+  }
+
+  // 9. The import dialog's report and xacro arguments: inside the window at every width, the report downloads as text, and the
+  // arguments form imports the same file again with the value typed in.
+  for (const [w, h] of [
+    [320, 640],
+    [390, 844],
+    [768, 1024],
+    [1366, 768],
+  ]) {
+    const page = await open(w, h)
+    const at = `import dialog ${w}x${h}`
+    const removeFile = await openImportReport(page)
+    const box = await page.evaluate(() => {
+      const d = document.querySelector('[role=dialog]').getBoundingClientRect()
+      const out = [...document.querySelectorAll('[role=dialog] *')].filter((e) => e.getClientRects().length > 0 && e.getBoundingClientRect().right > d.right + 0.5)
+      return { inside: d.left >= 0 && d.right <= innerWidth && d.top >= 0 && d.bottom <= innerHeight, hscroll: document.documentElement.scrollWidth > innerWidth, out: out[0] ? `${out[0].tagName}.${String(out[0].className).slice(0, 40)}` : '' }
+    })
+    check(box.inside && !box.hscroll && !box.out, `${at}: the dialog and all it shows fit the window (${JSON.stringify(box)})`)
+    const text = await page.locator('[role=dialog]').innerText()
+    check(/Imported report bot \(1 joint\)!/.test(text) && /Problems \(2\)/.test(text) && text.includes("needs the argument 'prefix'") && text.includes('forearm_link_visual_mesh.stl'),
+      `${at}: the dialog says it imported, with both problems and where (${text.slice(-400)})`)
+    if (w === 1366) {
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download report' }).click()])
+      const saved = await download.path()
+      const body = saved ? readFileSync(saved, 'utf8') : ''
+      check(/^roco_import_report_\d{8}_\d{4}\.txt$/.test(download.suggestedFilename()) && body.startsWith('ROCO import report\nModel: report bot (1 joint)\nMain file: report_bot.xacro\n') &&
+        body.includes('xacro arg prefix = (no value)') && body.includes("error: ") && body.includes("needs the argument 'prefix'"),
+        `${at}: Download report saves the report as text (${download.suggestedFilename()}: ${JSON.stringify(body.slice(0, 160))})`)
+      await page.getByRole('textbox', { name: /^prefix/ }).fill('p_')
+      await page.getByRole('button', { name: 'Import again with these values' }).click()
+      await page.waitForFunction(() => {
+        const t = document.querySelector('[role=dialog]')?.innerText ?? ''
+        return /Problems \(1\)/.test(t) && !t.includes("needs the argument 'prefix'")
+      }, null, { timeout: PAGE_READY_MS }).catch(() => {})
+      const again = await page.locator('[role=dialog]').innerText()
+      check(/Imported report bot \(1 joint\)!/.test(again) && /Problems \(1\)/.test(again) && !again.includes("needs the argument 'prefix'") && (await page.getByRole('textbox', { name: /^prefix/ }).inputValue()) === 'p_',
+        `${at}: Import again uses the typed value: the argument problem is gone, the missing mesh stays (${again.slice(-400)})`)
+      await page.locator('[role=dialog]').getByRole('button', { name: 'Done', exact: true }).click()
+      check((await page.locator('[role=dialog]').count()) === 0, `${at}: Done closes the dialog`)
+    }
+    check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    await page.close()
+    removeFile()
+  }
+
+  // arguments named like Object.prototype's members are needed like any other, the report is not a live region (a screen
+  // reader would read all of it at each change), and Import again on a file changed since it was chosen says so in words
+  {
+    const page = await open(1366, 768)
+    const at = 'import dialog, odd names'
+    const dir = mkdtempSync(join(tmpdir(), 'roco-dialog-'))
+    try {
+      const file = join(dir, 'odd_bot.xacro')
+      writeFileSync(file, `<?xml version="1.0"?>
+<robot name="odd_bot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <link name="base"/><link name="l$(arg constructor)$(arg toString)"/>
+  <joint name="j" type="revolute"><parent link="base"/><child link="l$(arg constructor)$(arg toString)"/>
+    <axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+</robot>
+`)
+      await page.locator('[data-action="settings"]').first().click()
+      await page.getByRole('button', { name: /Import model/ }).click()
+      await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(file)
+      const form = page.getByRole('form', { name: 'Xacro arguments' })
+      await form.waitFor({ timeout: PAGE_READY_MS })
+      const fields = await form.locator('input').evaluateAll((els) => els.map((e) => `${e.id}=${JSON.stringify(e.value)}:${e.getAttribute('aria-invalid')}`))
+      const said = await form.innerText()
+      check(fields.join(' ') === 'xacro-arg-0="":true xacro-arg-1="":true' && said.includes('2 arguments have no value'),
+        `${at}: 'constructor' and 'toString' are both empty and needed (${fields.join(' ')}; ${JSON.stringify(said.slice(0, 120))})`)
+      const role = await page.locator('section[aria-label="Import report"]').evaluate((e) => [e.getAttribute('role'), e.getAttribute('aria-live'), e.closest('[aria-live],[role=status],[role=log],[role=alert]') ? 'live' : ''].join('|'))
+      check(role === '||', `${at}: the report is not a live region (${role})`)
+      writeFileSync(file, '<!-- changed -->\n', { flag: 'a' })
+      utimesSync(file, new Date(), new Date(Date.now() + 5000))
+      await form.getByRole('button', { name: 'Import again with these values' }).click()
+      const dialog = page.locator('[role=dialog]')
+      await dialog.getByText(/changed, moved or was deleted/).waitFor({ timeout: PAGE_READY_MS }).catch(() => {})
+      const text = await dialog.innerText()
+      check(text.includes('A chosen file changed, moved or was deleted after it was chosen, so it could not be read. Choose the files again.') && !/permission problems/.test(text),
+        `${at}: Import again on a changed file says so in words (${JSON.stringify(text.slice(-300))})`)
+      check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    } finally {
+      await page.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
 } finally {
   await close()

@@ -63,6 +63,7 @@ check(/not checked/i.test(m.motorOrderNote('fileOrder', undefined) ?? ''), 'note
 check(m.motorOrderNote(undefined, undefined) === null && m.motorOrderNote('fixed', undefined) === null, 'a built-in robot gets no note')
 r = m.matchMotorSlots(['left_hip_joint', 'tail_joint'].map(def), NAMES)
 check(/1 joint is not in the bridge/.test(m.motorOrderNote('fileOrder', r.match)), 'note counts joints that have no motor')
+check(/shows no data: \S[^:]*\.$/.test(m.motorOrderNote('fileOrder', r.match)), `note names the joint after "no data: " (got ${m.motorOrderNote('fileOrder', r.match)})`)
 check(/matched to motors by name/i.test(m.motorOrderNote('fileOrder', m.matchMotorSlots(NAMES.map(def), NAMES).match)), 'note says joints were matched by name')
 
 // the decoder reads each joint from its slot and leaves a slot -1 joint at its rest values

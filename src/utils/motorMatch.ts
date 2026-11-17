@@ -76,7 +76,7 @@ export function motorOrderNote(motorOrder: 'fixed' | 'fileOrder' | undefined, ma
   }
   const n = match.unmatchedJoints.length
   if (n > 0) {
-    return `${n} joint${n === 1 ? ' is' : 's are'} not in the bridge’s motor list and ${n === 1 ? 'shows' : 'show'} no data:${match.unmatchedJoints.slice(0, 4).join(', ')}${n > 4 ? ', …' : ''}.`
+    return `${n} joint${n === 1 ? ' is' : 's are'} not in the bridge’s motor list and ${n === 1 ? 'shows' : 'show'} no data: ${match.unmatchedJoints.slice(0, 4).join(', ')}${n > 4 ? ', …' : ''}.`
   }
   return match.reordered ? 'Joints matched to motors by name (the file’s order differs from the motor order).' : 'Joints matched to motors by name.'
 }

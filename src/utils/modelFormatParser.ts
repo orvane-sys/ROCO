@@ -24,6 +24,8 @@ export interface ParseContext {
   fileName?: string
   /** Values for the xacro's `$(arg name)`, given in the import dialog; unset ones fall back to `xacro:arg` defaults. */
   xacroArgs?: Record<string, string>
+  /** Filled by the xacro with each argument it declares or reads, in order, and its value then (undefined: needed, none given). */
+  xacroArgsUsed?: Map<string, string | undefined>
 }
 
 /** The prolog parts rootIs skips, sticky (`y`): each matches only where the scan stands. */

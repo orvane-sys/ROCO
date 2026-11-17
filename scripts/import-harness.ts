@@ -3,7 +3,7 @@
 // does, then reads back the URDF the importer produced and reports its joints and each link's world pose with every joint at zero.
 import * as THREE from 'three'
 import URDFLoader from 'urdf-loader'
-import { configureMultiFormatMeshLoader, getImportedAssetResolver, importRobotFiles } from '../src/utils/robotImporter'
+import { configureMultiFormatMeshLoader, getImportedAssetResolver, importFailure, importRobotFiles } from '../src/utils/robotImporter'
 import { applyUnitsFix, checkUnits } from '../src/utils/unitsCheck'
 import { getRobotProfile } from '../src/config/robotRegistry'
 
@@ -33,6 +33,13 @@ export interface HarnessResult {
    * applied, the size of the robot as the twin shows it (Y up, metres) and whether its ground links are at its bottom.
    */
   units?: { offer: ReturnType<typeof checkUnits>; size: number[]; groundAtBottom: boolean }
+  /** The import report's items, the notes that are not report lines, the main file and the xacro's arguments (v2 importers). */
+  report?: unknown[]
+  notes?: string[]
+  mainFile?: string
+  xacroArgs?: { name: string; value: string | undefined }[]
+  /** A failed import's report and xacro arguments, as the dialog gets them. */
+  failure?: { report: unknown[]; mainFile?: string; xacroArgs: { name: string; value: string | undefined }[] }
 }
 
 /** Loads the imported robot with its meshes, the way DigitalTwin does, turned Z-up to Y-up under a parent. */
@@ -72,7 +79,7 @@ async function run(list: HarnessFile[], options: Record<string, unknown> = {}, w
   const t0 = performance.now()
   try {
     // the options are ignored by an importer that takes none (v1), so the same harness measures before and after
-    const { profile, warnings } = await (importRobotFiles as (f: File[], o?: unknown) => ReturnType<typeof importRobotFiles>)(files, options)
+    const { profile, warnings, report, notes, mainFile, xacroArgs } = await (importRobotFiles as (f: File[], o?: unknown) => ReturnType<typeof importRobotFiles>)(files, options)
     const ms = performance.now() - t0
     const urdf = await (await fetch(getRobotProfile(profile.id).urdfPath)).text()
     const given = new Set(list.map((f) => f.path.toLowerCase()))
@@ -110,9 +117,12 @@ async function run(list: HarnessFile[], options: Record<string, unknown> = {}, w
       units = { offer, size: [size.x, size.y, size.z], groundAtBottom: Math.abs(footY - box.min.y) <= 1e-6 * Math.max(1, size.y) }
     }
     return { ok: true, ms, units, robotName: robot.robotName, profileName: profile.name, profileJoints: profile.joints.length,
-      profile: { category: profile.category, nominalPelvisHeight: profile.nominalPelvisHeight, groundContactLinks: profile.groundContactLinks }, warnings, joints, poses, meshes, ...(want.urdf ? { urdf } : {}) }
+      profile: { category: profile.category, nominalPelvisHeight: profile.nominalPelvisHeight, groundContactLinks: profile.groundContactLinks }, warnings, joints, poses, meshes, ...(want.urdf ? { urdf } : {}),
+      report: report?.toJson().items, notes, mainFile, xacroArgs }
   } catch (err) {
-    return { ok: false, ms: performance.now() - t0, error: err instanceof Error ? err.message : String(err) }
+    const f = importFailure(err)
+    return { ok: false, ms: performance.now() - t0, error: err instanceof Error ? err.message : String(err),
+      ...(f ? { failure: { report: f.report.toJson().items, mainFile: f.mainFile, xacroArgs: f.xacroArgs } } : {}) }
   }
 }
 
