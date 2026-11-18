@@ -3,7 +3,7 @@ import type { JointState } from '../types/telemetry'
 import type { RobotProfile } from '../config/robotRegistry'
 import { G1_29DOF_PROFILE } from '../config/robotRegistry'
 import type { MonitorState } from '../types/monitor'
-import { PLOT_SLOTS } from '../services/plotRing'
+import { ringIndex } from '../services/plotRing'
 import { useCursorSample, type CursorSample } from '../services/viewStore'
 import { formatDataTime } from '../utils/monitorFormat'
 import { motorOrderNote } from '../utils/motorMatch'
@@ -65,8 +65,9 @@ function jointsAt(joints: JointState[], profile: RobotProfile, c: CursorSample):
   return joints.map((j) => {
     const di = profile.joints.findIndex((d) => d.id === j.id)
     const slot = di < 0 ? -1 : profile.joints[di].sdkMotorIndex ?? di
-    if (slot < 0) return j // a joint with no motor in the bridge's list keeps its rest values
-    const b = c.i * PLOT_SLOTS + slot
+    const b = ringIndex(c.i, slot)
+    // a joint with no motor in the bridge's list keeps its rest values; one past the history's slots keeps its live values
+    if (b < 0) return j
     const q = c.ring.q[b]
     const tau = c.ring.tau[b]
     const qc = c.ring.qCmd[b]
@@ -322,7 +323,11 @@ export function MotorTelemetryGrid({
         )}
       </div>
 
-      {joints.length === 0 && <p className="text-sm text-ink-soft px-1">Waiting for telemetry…</p>}
+      {joints.length === 0 && (
+        <p className="text-sm text-ink-soft px-1">
+          {activeProfile.joints.length === 0 ? 'This robot has no movable joints.' : 'Waiting for telemetry…'}
+        </p>
+      )}
       {atCursor && monitor && cursor && (
         <p role="status" className="text-xs px-3 py-1.5 rounded-lg border border-accent-line bg-accent-soft/60 text-ink">
           Showing angle, target, torque and PD demand at <strong className="tabular-nums">{formatDataTime(cursor.t, monitor)}</strong> (the time cursor). Speed,

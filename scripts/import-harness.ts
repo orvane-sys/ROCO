@@ -20,6 +20,8 @@ export interface HarnessResult {
   robotName?: string
   profileName?: string
   profileJoints?: number
+  /** Each profile joint's motor slot (sdkMotorIndex), in profile order. */
+  profileSlots?: number[]
   /** The profile's guess at the base height standing, and the links it treats as touching the ground. */
   profile?: { category: string; nominalPelvisHeight: number; groundContactLinks: string[] }
   warnings?: string[]
@@ -117,6 +119,7 @@ async function run(list: HarnessFile[], options: Record<string, unknown> = {}, w
       units = { offer, size: [size.x, size.y, size.z], groundAtBottom: Math.abs(footY - box.min.y) <= 1e-6 * Math.max(1, size.y) }
     }
     return { ok: true, ms, units, robotName: robot.robotName, profileName: profile.name, profileJoints: profile.joints.length,
+      profileSlots: profile.joints.map((j) => j.sdkMotorIndex ?? -2),
       profile: { category: profile.category, nominalPelvisHeight: profile.nominalPelvisHeight, groundContactLinks: profile.groundContactLinks }, warnings, joints, poses, meshes, ...(want.urdf ? { urdf } : {}),
       report: report?.toJson().items, notes, mainFile, xacroArgs }
   } catch (err) {

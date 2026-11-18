@@ -28,7 +28,8 @@ export interface RobotProfile {
   joints: JointDefinition[]
   /**
    * fileOrder: an imported robot whose joints have no known motor slots, so they are matched by name to the bridge's motor list
-   * (src/utils/motorMatch.ts). Unset: the joints carry their own slots (built-in robots) and are never remapped.
+   * (src/utils/motorMatch.ts). Unset: the joints carry their own slots (built-in robots) and are never remapped, or there are
+   * no movable joints (an imported rigid robot).
    */
   motorOrder?: 'fixed' | 'fileOrder'
   /** How the joints were matched to motors at the last bridge hello. Set with the active profile, never stored in the registry. */

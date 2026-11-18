@@ -7,6 +7,12 @@
 export const PLOT_SLOTS = 29
 export const PLOT_CAPACITY = 4096 // ~80 s at 50 Hz: the 60 s window plus room to look back from a frozen moment
 
+/**
+ * Where motor slot `slot` of sample `i` is in the per-slot arrays, or -1 when the history does not keep that slot: no motor (-1),
+ * or a slot past PLOT_SLOTS (an imported robot with more joints), which would otherwise read the next sample's first slots.
+ */
+export const ringIndex = (i: number, slot: number): number => (slot >= 0 && slot < PLOT_SLOTS ? i * PLOT_SLOTS + slot : -1)
+
 export class PlotRing {
   readonly t = new Float64Array(PLOT_CAPACITY)
   readonly q = new Float32Array(PLOT_CAPACITY * PLOT_SLOTS)

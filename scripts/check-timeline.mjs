@@ -43,10 +43,13 @@ const procs = await bundle('src/config/procedures/g1_type6.ts')
 const procModel = await bundle('src/utils/procedureModel.ts')
 const conn = await bundle('src/utils/connectionChecks.ts')
 const profile = registry.G1_29DOF_WAIST_LOCKED_PROFILE
-const { PLOT_SLOTS, PLOT_CAPACITY, PlotRing } = ringMod
+const { PLOT_SLOTS, PLOT_CAPACITY, PlotRing, ringIndex } = ringMod
 
 // -- the plot ring ----------------------------------------------------------------------------------------------------------
 check(PLOT_CAPACITY >= 3600, 'the history holds the 60 s window plus room to look back (' + PLOT_CAPACITY + ' samples)')
+check(ringIndex(2, 3) === 2 * PLOT_SLOTS + 3 && ringIndex(0, PLOT_SLOTS - 1) === PLOT_SLOTS - 1, 'a kept slot is read from its own sample')
+check(ringIndex(2, PLOT_SLOTS) === -1 && ringIndex(2, 34) === -1, 'a slot past the history (a 44-joint import) is not read from the next sample')
+check(ringIndex(2, -1) === -1, 'a joint with no motor is not read from the history')
 const zeros = new Array(PLOT_SLOTS).fill(0)
 function ringOf(count, t0 = 100, dt = 0.02, fill) {
   const r = new PlotRing()

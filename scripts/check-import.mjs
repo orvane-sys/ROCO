@@ -221,7 +221,7 @@ const EXPECTED = {
   const errors = []
   const strays = []
   const importFixture = async (name, want = {}) => {
-    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name] ?? sdfFixtures()[name] ?? heightFixtures()[name] ?? meshFixtures()[name]
+    const fx = mjcfFixtures()[name] ?? xacroFixtures()[name] ?? sdfFixtures()[name] ?? heightFixtures()[name] ?? meshFixtures()[name] ?? slotFixtures()[name]
     const page = await browser.newPage()
     page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`))
     // every request the import makes: only the page, the harness and the G1 files it was given may reach a server
@@ -500,6 +500,25 @@ const EXPECTED = {
     got = await importFixture('xacro_fatal')
     check(!got.ok && got.failure && JSON.stringify(got.failure.xacroArgs) === '[]', 'a xacro with no arguments fails with an empty list')
 
+    // more movable joints than LowState_ has motor slots (stage 1.1 P1): the import goes on, the joints past slot 34 get slot -1
+    got = await importFixture('slots_37')
+    const pastSlots = items(got, 'limit').filter((i) => /more than the 35 motor slots/.test(i.message))
+    check(got.ok && got.profileJoints === 37 && JSON.stringify(got.profileSlots) === JSON.stringify([...Array(35).keys(), -1, -1]),
+      `37 movable joints import; the first 35 keep slots 0-34, the last two get -1 (got ${JSON.stringify(got.profileSlots ?? got.error)})`)
+    check(pastSlots.length === 1 && pastSlots[0].count === 2 && pastSlots[0].where.join() === 'j35,j36' && /37 movable joints/.test(pastSlots[0].message),
+      `the report names the joints with no slot (got ${JSON.stringify(pastSlots)})`)
+    got = await importFixture('slots_35')
+    check(got.ok && got.profileJoints === 35 && got.profileSlots.every((s, i) => s === i) && !items(got, 'limit').some((i) => /motor slots/.test(i.message)),
+      `negative: exactly 35 movable joints all get a slot and nothing is reported (got ${JSON.stringify(items(got, 'limit'))})`)
+    // a robot with no movable joints (a drone with fixed rotors) loads as one rigid body
+    got = await importFixture('rigid')
+    check(got.ok && got.profileJoints === 0 && Object.keys(got.poses ?? {}).length === 3 && items(got, 'limit').some((i) => /no movable joints/.test(i.message)),
+      `a robot with only fixed joints imports with no joints and says so (got ${JSON.stringify(got.error ?? items(got, 'limit'))})`)
+    check(!got.warnings?.some((l) => /Motor order/.test(l)), 'a robot with no joints gets no motor-order note')
+    got = await importFixture('slots_35')
+    check(!items(got, 'limit').some((i) => /no movable joints/.test(i.message)), 'negative: a robot with movable joints is not called rigid')
+    check(got.warnings?.some((l) => /Motor order/.test(l)), 'negative: a robot with movable joints still gets the motor-order note')
+
     check(strays.length === 0, `no fixture made a request outside the page and its files (${strays.join('; ')})`)
     check(errors.length === 0, `no page errors (${errors.join('; ')})`)
   } finally {
@@ -605,6 +624,24 @@ ${meshes.map((m, i) => `  <joint name="j${i}" type="revolute"><parent link="base
     // a biped (feet below the base) whose feet are nowhere in the import, named every way a robot file can name a file
     missing_refs: { main: 'r.urdf', files: { 'r.urdf': robot('missing', ['package://nopkg/meshes/gone.stl', 'file:///srv/robot/gone.stl',
       'https://example.invalid/m.stl', 'meshes/gone.stl']).replace(/name="j(\d)"/g, (_, i) => `name="${['left_hip', 'right_hip', 'left_ankle', 'right_ankle'][i]}_joint"`) } },
+  }
+}
+
+/** Robots for the motor slots: a chain of n movable joints, and a body with only fixed joints (a drone with fixed rotors). */
+function slotFixtures() {
+  const chain = (n) => `<robot name="chain${n}">
+  <link name="l0"/>
+${Array.from({ length: n }, (_, i) => `  <joint name="j${i}" type="revolute"><parent link="l${i}"/><child link="l${i + 1}"/><origin xyz="0 0 0.01"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+  <link name="l${i + 1}"/>`).join('\n')}
+</robot>`
+  return {
+    slots_37: { main: 'r.urdf', files: { 'r.urdf': chain(37) } },
+    slots_35: { main: 'r.urdf', files: { 'r.urdf': chain(35) } },
+    rigid: { main: 'r.urdf', files: { 'r.urdf': `<robot name="rigid">
+  <link name="base"><visual><geometry><box size="0.3 0.3 0.05"/></geometry></visual></link>
+  <joint name="prop0" type="fixed"><parent link="base"/><child link="p0"/><origin xyz="0.1 0 0.03"/></joint><link name="p0"/>
+  <joint name="prop1" type="fixed"><parent link="base"/><child link="p1"/><origin xyz="-0.1 0 0.03"/></joint><link name="p1"/>
+</robot>` } },
   }
 }
 

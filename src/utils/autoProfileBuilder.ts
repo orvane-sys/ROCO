@@ -97,17 +97,8 @@ export function buildProfileFromParsedRobot(
   const jointEntries = Object.entries(robot.joints || {})
   const activeJoints = jointEntries.filter(([, joint]) => isActuated(joint.jointType))
 
-  // The binary LowState_ frame has a fixed number of motor slots; extra joints would be dropped silently.
-  if (activeJoints.length > MOTOR_COUNT) {
-    throw new Error(
-      `This robot has ${activeJoints.length} actuated joints, but the LowState_ protocol carries at most ${MOTOR_COUNT} motor slots. ` +
-        `Remove or fix the extra joints (for example finger joints) and import again.`
-    )
-  }
-  if (activeJoints.length === 0) {
-    throw new Error('This robot description has no movable joints (revolute, continuous or prismatic).')
-  }
-
+  // The binary LowState_ frame has MOTOR_COUNT motor slots: joints past them get slot -1 and show no data (robotImporter reports
+  // them), unless the bridge's motor names match them to a slot. A robot with no movable joints (a drone) is one rigid body.
   const groupMap = new Map<string, { label: string; count: number }>()
   const jointDefs: JointDefinition[] = []
 
@@ -135,7 +126,7 @@ export function buildProfileFromParsedRobot(
       limitMax,
       maxEffort,
       defaultPos,
-      sdkMotorIndex: idx,
+      sdkMotorIndex: idx < MOTOR_COUNT ? idx : -1,
     })
   })
 
@@ -197,8 +188,9 @@ export function buildProfileFromParsedRobot(
     codecType: 'unitree_hg_2092',
     groups,
     joints: jointDefs,
-    // idx above is only the place in the file: the bridge's motor names decide the real slot (src/utils/motorMatch.ts)
-    motorOrder: 'fileOrder',
+    // idx above is only the place in the file: the bridge's motor names decide the real slot (src/utils/motorMatch.ts).
+    // A robot with no movable joints has nothing to match, so no motor-order note anywhere.
+    ...(jointDefs.length ? { motorOrder: 'fileOrder' as const } : {}),
   }
 
   registerCustomRobotProfile(profile)

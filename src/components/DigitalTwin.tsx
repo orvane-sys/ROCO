@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import URDFLoader, { type URDFRobot } from 'urdf-loader'
 import type { ConnectionStatus } from '../types/telemetry'
 import { telemetryService } from '../services/telemetryStream'
-import { PLOT_SLOTS } from '../services/plotRing'
+import { ringIndex } from '../services/plotRing'
 import { cursorSample, useCursorSample } from '../services/viewStore'
 import { formatDataTime, positionText, replayBadge } from '../utils/monitorFormat'
 import { setFollowHeading, setScene3d, themeVar, useUiPrefs } from '../services/uiPrefs'
@@ -542,7 +542,8 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
           let target = joint.position
           if (cs && defs) {
             const slot = defs[idx]?.sdkMotorIndex ?? idx
-            const q = slot >= 0 ? cs.ring.q[cs.i * PLOT_SLOTS + slot] : NaN
+            const b = ringIndex(cs.i, slot)
+            const q = b >= 0 ? cs.ring.q[b] : NaN
             if (Number.isFinite(q)) target = q
           }
           const current = smoothedJoints.get(joint.id)
@@ -884,7 +885,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
           <Upload className="w-12 h-12 text-accent-ink animate-bounce" />
           <h3 className="text-lg font-bold text-ink">Drop Robot Description or Folder to Import</h3>
           <p className="text-xs text-accent-ink max-w-sm">
-            Supports .urdf, .xacro, MuJoCo .xml with .stl, .dae, .obj, .glb, or full robot description directories.
+            Supports .urdf, .xacro, MuJoCo .xml, .sdf or a .zip, with .stl, .dae, .obj, .glb or .gltf meshes, or a whole robot folder.
           </p>
         </div>
       )}

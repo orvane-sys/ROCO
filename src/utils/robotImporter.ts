@@ -14,6 +14,7 @@ import { isZip, unpackZip } from './zipBundle'
 import { countTriangles } from './meshTriangles'
 import { buildProfileFromParsedRobot, robotCategory } from './autoProfileBuilder'
 import { motorOrderNote } from './motorMatch'
+import { MOTOR_COUNT } from './unitreeBinaryCodec'
 import { getRobotProfile, unregisterRobotProfile, type RobotProfile } from '../config/robotRegistry'
 import { telemetryService } from '../services/telemetryStream'
 
@@ -560,8 +561,8 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
       return blobIndex.exact(url).url ?? blobIndex.find(url).url ?? (/^blob:/i.test(url) ? url : nowhere())
     }
 
-    // 6. Build dynamic RobotProfile (throws if it has more joints than LowState_ has motor slots). Its standing height needs
-    // the robot's lowest point, which is often inside a mesh (a sole below the ankle, a foot inside a calf mesh).
+    // 6. Build dynamic RobotProfile. Its standing height needs the robot's lowest point, which is often inside a mesh (a sole
+    // below the ankle, a foot inside a calf mesh).
     const modelName = parsedRobot.robotName || mainFile.name.replace(/\.[^.]+$/, '')
     const lowMeshes = robotCategory(parsedRobot) === 'fixed_manipulator' ? [] : await loadLowMeshes(parsedRobot, meshStubs, resolveAsset, deadline)
     try {
@@ -573,6 +574,18 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
   } catch (err) {
     for (const u of urls) URL.revokeObjectURL(u)
     throw err
+  }
+  if (profile.joints.length === 0) {
+    report.add('limit', 'The robot has no movable joints (revolute, continuous or prismatic), so it is shown as one rigid body with no joint data.', {
+      hint: 'Rotors and wheels written as fixed joints cannot move in the view.',
+    })
+  }
+  const pastSlots = profile.joints.filter((j) => j.sdkMotorIndex === -1)
+  for (const j of pastSlots) {
+    report.add('limit', `The robot has ${profile.joints.length} movable joints, more than the ${MOTOR_COUNT} motor slots in a LowState_ frame, so the joints after the first ${MOTOR_COUNT} show no data.`, {
+      where: j.id,
+      hint: 'When a ROCO bridge connects, any of them it names in its motor list is matched to that motor.',
+    })
   }
 
   // 7. Activate the imported profile, then free robots we no longer keep.

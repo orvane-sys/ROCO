@@ -32,6 +32,7 @@ npm run lint                                   # oxlint plus the page, demo, mes
 npm run build
 npm run check:layout                           # Chrome: no layout jumps, no sideways scroll
 npm run check:a11y                             # Chrome: axe in three themes, reflow, keyboard walk
+npm run check:import                           # Chrome: import fixtures, hostile files, the corpus (skipped if not fetched)
 python3 -m pyflakes scripts tools
 python3 scripts/roco_dds_bridge.py --self-test
 scripts/roco --self-test
@@ -45,7 +46,9 @@ CI runs the same commands on every push and pull request, and checks that a full
 
 `npm run lint` is oxlint plus the colour, contrast, alert, profile, procedure, timeline, preference, demo, mesh and licence
 checks. `check:layout` and `check:a11y` drive Chrome on the built page: no layout jumps at any width, axe in three themes,
-reflow at 200 % and 400 % zoom, and a keyboard walk.
+reflow at 200 % and 400 % zoom, and a keyboard walk. `check:import` compares the importers with reference tools on 12 public
+robots that are not in the repository; [docs/import-formats.md](docs/import-formats.md#how-the-importers-are-checked) says how
+to fetch them.
 
 ### Regression tests
 

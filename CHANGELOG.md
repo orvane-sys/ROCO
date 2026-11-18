@@ -5,6 +5,38 @@ All notable changes to ROCO. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+Robot import takes SDFormat and zips, reads xacro and MuJoCo files the way their own tools do, and reports what it changed.
+[docs/import-formats.md](docs/import-formats.md) lists the formats, features and limits.
+
+### Added
+- SDFormat (`.sdf`, 1.4–1.11) import: nested models, includes from the import, poses `relative_to` frames, and universal joints
+  as two revolute joints.
+- Zip import. Zips are unpacked in a worker, one file at a time, and a zip bomb, a path out of the folder, a symbolic link,
+  an encrypted zip or a bad checksum is refused with its reason.
+- An import report in the dialog: problems, limits, unsupported parts, approximations and guessed files, with
+  **Download report**.
+- A form for a xacro's arguments, to fill in or change them and import again.
+- When a robot looks to be in millimetres or modelled Y-up, the 3D view offers a fix. It changes nothing until you press
+  **Fix**.
+- Limits for untrusted files (sizes, XML entities, xacro expansion, nesting, a 30 s time limit and a triangle warning), each
+  ending the import with a named reason instead of a hung tab.
+- `npm run check:import`: fixtures, hostile files, and 12 public robots compared with `mujoco` 3.17.0 and `xacro` 2.1.1.
+  CI runs it on five of them.
+
+### Changed
+- MuJoCo MJCF import is rewritten to follow MuJoCo's compiler: includes, default classes, `childclass`, frames, every
+  orientation form, `fromto`, capsules, ellipsoids, mesh scale and bodies with several joints. Free and ball joints and other
+  approximations are reported.
+- xacro import follows Python xacro 2.1.1: Python expressions, `load_yaml`, namespaced includes, `xacro:call`,
+  `xacro:element`, `xacro:attribute` and `$(eval)`. One bad line is reported instead of failing the whole import.
+- Meshes and includes are found by `package://`, `model://`, `file://`, `$(find)`, relative or absolute path, among the
+  imported files only, and each guess is reported.
+- Robots with more than 35 movable joints import: the joints past the 35 motor slots show no data unless the bridge names
+  them. Robots with no movable joints, such as drones, import as one rigid body.
+
+### Fixed
+- An imported biped's or quadruped's standing height is measured from its meshes, so it stands on the floor.
+
 ## [0.1.3] - 2026-11-13
 
 Upkeep: newer three.js and Vite, newer GitHub Actions, and lint that fails on any warning.

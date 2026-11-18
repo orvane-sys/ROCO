@@ -59,6 +59,22 @@ jobs:
       - name: Accessibility in Chrome
         run: npm run check:a11y
 
+      - name: Restore the corpus subset
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/roco-corpus
+          key: corpus-${{ hashFiles('tools/corpus/corpus.lock.json') }}
+
+      - name: Fetch the corpus subset and its reference
+        # the reference tools at the versions checked in stage 1.0; fetch.py reuses a restored checkout after checking its commit
+        run: |
+          python -m pip install mujoco==3.17.0 xacro==2.1.1
+          python tools/corpus/fetch.py --only jvrc1 --only skydio_x2 --only upkie --only go2 --only h1
+          python -I tools/corpus/reference.py --only jvrc1 --only skydio_x2 --only upkie --only go2 --only h1
+
+      - name: Import checks (fixtures, hostile files, corpus subset)
+        run: npm run check:import -- --ci
+
       - name: Python lint
         run: python -m pyflakes scripts tools
 

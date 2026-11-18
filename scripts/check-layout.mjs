@@ -487,6 +487,50 @@ try {
       rmSync(dir, { recursive: true, force: true })
     }
   }
+
+  // a robot with no movable joints (a drone) imports as one rigid body: its joint table says so, not "Waiting for telemetry…"
+  {
+    const page = await open(1366, 768)
+    const at = 'rigid robot'
+    const dir = mkdtempSync(join(tmpdir(), 'roco-rigid-'))
+    // the joint table is in one of the workspaces: visit each tab until it is there
+    const tableText = async () => {
+      const table = page.locator('section[aria-labelledby=actuators-heading]')
+      for (const tab of await page.getByRole('tab').all()) {
+        if (await table.count()) break
+        await tab.click()
+      }
+      return (await table.count()) ? table.innerText() : '(no joint table)'
+    }
+    try {
+      const file = join(dir, 'rigid_bot.urdf')
+      writeFileSync(file, `<?xml version="1.0"?>
+<robot name="rigid_bot">
+  <link name="base"><visual><geometry><box size="0.2 0.2 0.05"/></geometry></visual></link><link name="rotor"/>
+  <joint name="rotor_mount" type="fixed"><parent link="base"/><child link="rotor"/></joint>
+</robot>
+`)
+      await page.locator('section[aria-labelledby=replay-heading]').waitFor({ timeout: PAGE_READY_MS })
+      await tableText()
+      // demo data fills the G1's rows
+      await page.waitForFunction(() => !document.querySelector('section[aria-labelledby=actuators-heading]')?.textContent?.includes('Waiting for telemetry'), null, { timeout: PAGE_READY_MS }).catch(() => {})
+      const before = await tableText()
+      check(!before.includes('no movable joints') && !before.includes('Waiting for telemetry'), `${at}: the G1 with demo data has rows, not a no-joints note (${JSON.stringify(before.slice(0, 120))})`)
+      await page.locator('[data-action="settings"]').first().click()
+      await page.getByRole('button', { name: /Import model/ }).click()
+      await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(file)
+      const dialog = page.locator('[role=dialog]')
+      await dialog.getByText('Imported rigid bot (0 joints)!').waitFor({ timeout: PAGE_READY_MS })
+      await dialog.getByRole('button', { name: 'Done', exact: true }).click()
+      const after = await tableText()
+      check(after.includes('This robot has no movable joints.') && !after.includes('Waiting for telemetry'), `${at}: the joint table says the robot has no movable joints (${JSON.stringify(after.slice(0, 160))})`)
+      check(!/matched to motors|Motor order/.test(after), `${at}: no motor-order note for a robot with no joints to match (${JSON.stringify(after.slice(0, 160))})`)
+      check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    } finally {
+      await page.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
 } finally {
   await close()
 }
