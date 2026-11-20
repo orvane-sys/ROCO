@@ -1,10 +1,5 @@
 import * as THREE from 'three'
 import URDFLoader, { type URDFRobot } from 'urdf-loader'
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
-import { ColladaLoader } from 'three/examples/jsm/loaders/ColladaLoader.js'
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { parseRobotDescription } from './modelFormatParser'
 import { AssetIndex, type Resolved } from './assetResolver'
 import { ImportReport } from './importReport'
@@ -15,8 +10,16 @@ import { countTriangles } from './meshTriangles'
 import { buildProfileFromParsedRobot, robotCategory } from './autoProfileBuilder'
 import { motorOrderNote } from './motorMatch'
 import { MOTOR_COUNT } from './unitreeBinaryCodec'
-import { getRobotProfile, unregisterRobotProfile, type RobotProfile } from '../config/robotRegistry'
+import { getRobotProfile, type RobotProfile } from '../config/robotRegistry'
 import { telemetryService } from '../services/telemetryStream'
+import { configureMultiFormatMeshLoader } from './meshLoaders'
+import { evictOldImports, importedAssets } from './importedAssets'
+
+// Kept light for the first visit: these live in their own modules so the 3D view can use them without loading the importer.
+// Re-exported here so existing imports keep working.
+export { configureMultiFormatMeshLoader } from './meshLoaders'
+export { disposeImportedProfile, getImportedAssetResolver } from './importedAssets'
+export { collectDroppedFiles } from './droppedFiles'
 
 type MeshStub = { path: string; group: THREE.Group }
 
@@ -91,206 +94,8 @@ function disposeObject(root: THREE.Object3D): void {
   })
 }
 
-/**
- * Configures URDFLoader to support .stl, .dae, .obj, .glb, and .gltf mesh loading.
- * Preserves embedded materials on .dae and .glb meshes, and provides PBR cockpit
- * materials when missing.
- */
-export function configureMultiFormatMeshLoader(
-  loader: URDFLoader,
-  manager: THREE.LoadingManager,
-  /** Gives the packed twin of an STL url (scripts/pack-meshes.mjs), or null when there is none. The STL is the fallback. */
-  packedTwin?: (stlUrl: string) => string | null
-): void {
-  const defaultCockpitMaterial = new THREE.MeshStandardMaterial({
-    color: 0x94a3b8, // Slate cockpit grey
-    roughness: 0.35,
-    metalness: 0.65,
-  })
-
-  const stlLoader = new STLLoader(manager)
-  const colladaLoader = new ColladaLoader(manager)
-  const objLoader = new OBJLoader(manager)
-  const gltfLoader = new GLTFLoader(manager)
-  gltfLoader.setMeshoptDecoder(MeshoptDecoder)
-
-  // URDFLoader invokes loadMeshCb as: (path, manager, material, onComplete)
-  type MeshDone = (mesh: THREE.Object3D, err?: Error) => void
-  loader.loadMeshCb = (
-    path: string,
-    _mgr: THREE.LoadingManager,
-    materialOrDone: THREE.Material | null | MeshDone,
-    doneMaybe?: MeshDone
-  ) => {
-    let material: THREE.Material | null = null
-    let done: MeshDone
-
-    if (typeof materialOrDone === 'function') {
-      done = materialOrDone
-    } else {
-      material = materialOrDone
-      done = doneMaybe || (() => {})
-    }
-
-    const cleanPath = path.split('?')[0].split('#')[0]
-    const ext = cleanPath.split('.').pop()?.toLowerCase() ?? ''
-
-    const loadStl = () =>
-      stlLoader.load(
-        path,
-        (geom) => {
-          const mesh = new THREE.Mesh(geom, material || defaultCockpitMaterial.clone())
-          done(mesh)
-        },
-        undefined,
-        (err) => done(new THREE.Group(), err as Error)
-      )
-
-    if (ext === 'stl') {
-      const packed = packedTwin?.(path) ?? null
-      if (packed) {
-        // same triangles, 6x smaller: quantized and meshopt compressed. The file has no material, so the URDF's or the cockpit grey is used.
-        gltfLoader.load(
-          packed,
-          (gltf) => {
-            gltf.scene.traverse((child) => {
-              const m = child as THREE.Mesh
-              if (m.isMesh) m.material = material || defaultCockpitMaterial.clone()
-            })
-            done(gltf.scene)
-          },
-          undefined,
-          loadStl
-        )
-      } else loadStl()
-    } else if (ext === 'dae') {
-      colladaLoader.load(
-        path,
-        (collada) => {
-          if (collada?.scene) {
-            done(collada.scene)
-          } else {
-            done(new THREE.Group())
-          }
-        },
-        undefined,
-        (err) => done(new THREE.Group(), err as Error)
-      )
-    } else if (ext === 'obj') {
-      objLoader.load(
-        path,
-        (obj) => {
-          obj.traverse((child) => {
-            const m = child as THREE.Mesh
-            if (m.isMesh && (!m.material || (Array.isArray(m.material) && m.material.length === 0))) {
-              m.material = material || defaultCockpitMaterial.clone()
-            }
-          })
-          done(obj)
-        },
-        undefined,
-        (err) => done(new THREE.Group(), err as Error)
-      )
-    } else if (ext === 'glb' || ext === 'gltf') {
-      gltfLoader.load(
-        path,
-        (gltf) => {
-          done(gltf.scene)
-        },
-        undefined,
-        (err) => done(new THREE.Group(), err as Error)
-      )
-    } else {
-      stlLoader.load(
-        path,
-        (geom) => {
-          const mesh = new THREE.Mesh(geom, material || defaultCockpitMaterial.clone())
-          done(mesh)
-        },
-        undefined,
-        (err) => done(new THREE.Group(), err as Error)
-      )
-    }
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Imported-asset bookkeeping
-// -----------------------------------------------------------------------------
-interface ImportedAssets {
-  /** Every blob URL created for this import; revoked together when the profile is evicted. */
-  urls: string[]
-  resolve: (url: string) => string
-}
-const importedAssets = new Map<string, ImportedAssets>()
-/** Imported robots kept in memory at once. Older ones are unregistered and their blobs revoked. */
-const MAX_IMPORTED_PROFILES = 3
-
-export function getImportedAssetResolver(profileId: string): ((url: string) => string) | undefined {
-  return importedAssets.get(profileId)?.resolve
-}
-
-/** Unregisters an imported robot and frees its blob URLs. Built-in profiles are left alone. */
-export function disposeImportedProfile(profileId: string): void {
-  const assets = importedAssets.get(profileId)
-  if (!assets) return
-  for (const url of assets.urls) URL.revokeObjectURL(url)
-  importedAssets.delete(profileId)
-  unregisterRobotProfile(profileId)
-}
-
-function evictOldImports(keepId: string): void {
-  for (const id of Array.from(importedAssets.keys())) {
-    if (importedAssets.size <= MAX_IMPORTED_PROFILES) break
-    if (id !== keepId && id !== telemetryService.getActiveRobotProfile().id) disposeImportedProfile(id)
-  }
-}
-
 // Path-aware asset lookup lives in assetResolver.ts; re-exported so existing imports keep working.
 export { normalizeAssetPath, type AssetMatch } from './assetResolver'
-
-/**
- * Flattens a drag-and-drop payload into files. `dataTransfer.files` only yields a folder as an opaque
- * zero-byte entry, so directories are walked through the (webkit) FileSystem entry API. Each file keeps
- * its folder path in `webkitRelativePath` so same-named meshes in different folders stay distinguishable.
- */
-export async function collectDroppedFiles(dataTransfer: DataTransfer): Promise<File[]> {
-  const entries: FileSystemEntry[] = []
-  for (const item of Array.from(dataTransfer.items ?? [])) {
-    const entry = item.kind === 'file' ? item.webkitGetAsEntry?.() : null
-    if (entry) entries.push(entry)
-  }
-  if (entries.length === 0) return Array.from(dataTransfer.files)
-
-  const out: File[] = []
-  const readAll = (reader: FileSystemDirectoryReader) =>
-    new Promise<FileSystemEntry[]>((resolve, reject) => {
-      const all: FileSystemEntry[] = []
-      const next = () =>
-        reader.readEntries((batch) => {
-          if (batch.length === 0) resolve(all)
-          else {
-            all.push(...batch)
-            next() // readEntries returns at most ~100 entries per call
-          }
-        }, reject)
-      next()
-    })
-  const walk = async (entry: FileSystemEntry): Promise<void> => {
-    if (entry.isFile) {
-      const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject))
-      const relative = entry.fullPath.replace(/^\/+/, '')
-      if (relative.includes('/')) {
-        Object.defineProperty(file, 'webkitRelativePath', { value: relative, configurable: true })
-      }
-      out.push(file)
-    } else if (entry.isDirectory) {
-      for (const child of await readAll((entry as FileSystemDirectoryEntry).createReader())) await walk(child)
-    }
-  }
-  for (const entry of entries) await walk(entry)
-  return out
-}
 
 const filePath = (f: File): string => f.webkitRelativePath || f.name
 

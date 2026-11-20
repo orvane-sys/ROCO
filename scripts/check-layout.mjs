@@ -3,10 +3,10 @@
 // workspace's note shows once, and every palette command has a visible control. It uses the Chrome or Chromium on this PC (playwright-core downloads no browser).
 //
 //   npm run build && npm run check:layout        (CHROME_PATH=/path/to/chrome to choose a browser)
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PAGE_READY_MS, guardCsp, openImportReport, startBrowser, tally } from './lib-browser.mjs'
+import { PAGE_READY_MS, REPORT_XACRO, guardCsp, openImportReport, startBrowser, tally } from './lib-browser.mjs'
 
 const { url, browser, close } = await startBrowser('check-layout')
 const { check, finish } = tally()
@@ -485,6 +485,111 @@ try {
     } finally {
       await page.close()
       rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  // the first visit does not load the importer: its chunk is fetched only when the import dialog opens. Checked by chunk name
+  // and by a word only the MJCF converter has, so a converter merged into another chunk is caught too.
+  {
+    const at = 'cold load'
+    const page = await browser.newPage({ viewport: { width: 1366, height: 768 } })
+    const errors = []
+    const scripts = []
+    page.on('pageerror', (e) => errors.push(String(e)))
+    page.on('response', (r) => {
+      if (r.request().resourceType() === 'script' || /\.m?js(\?|$)/.test(r.url())) scripts.push(r.text().then((body) => ({ url: r.url(), body }), () => ({ url: r.url(), body: '' })))
+    })
+    await guardCsp(page)
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('roco.tour.v1', '1')
+      } catch {}
+    })
+    try {
+      await page.goto(url)
+      await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
+      await page.waitForSelector('canvas', { timeout: PAGE_READY_MS })
+      await page.waitForTimeout(1500)
+      const IMPORTER = /ImportRobotDialog|robotImporter|modelFormatParser|xacro|mjcfConverter|sdfConverter|zipBundle|zipWorker/
+      const cold = await Promise.all(scripts)
+      const coldNames = cold.map((s) => s.url.split('/').pop())
+      check(cold.length > 0, `${at}: scripts were seen (${cold.length})`)
+      check(!coldNames.some((n) => IMPORTER.test(n)), `${at}: no importer chunk on the first visit (${coldNames.filter((n) => IMPORTER.test(n)).join(', ') || 'none'})`)
+      check(!cold.some((s) => s.body.includes('eulerseq')), `${at}: no converter code on the first visit (${cold.filter((s) => s.body.includes('eulerseq')).map((s) => s.url.split('/').pop()).join(', ') || 'none'})`)
+      // negative test: opening the dialog does fetch the importer, so the checks above can fail
+      await page.locator('[data-action="settings"]').first().click()
+      await page.getByRole('button', { name: /Import model/ }).click()
+      await page.locator('[role=dialog]').getByRole('button', { name: /Select Model Files/ }).waitFor({ timeout: PAGE_READY_MS })
+      await page.waitForTimeout(500)
+      const all = await Promise.all(scripts)
+      check(all.some((s) => /ImportRobotDialog/.test(s.url)), `${at}: opening Import model… fetches the importer chunk`)
+      check(all.some((s) => s.body.includes('eulerseq')), `${at}: opening Import model… brings the converter code`)
+      check(errors.length === 0, `${at}: no page errors (${errors[0] ?? ''})`)
+    } finally {
+      await page.close()
+    }
+  }
+
+  // files dropped on the 3D view open the import dialog, so its report is seen; a drop that carries no files opens nothing
+  {
+    const page = await open(1366, 768)
+    const at = 'drop'
+    const drop = (withFile) =>
+      page.evaluate(([text, f]) => {
+        const dt = new DataTransfer()
+        if (f) dt.items.add(new File([text], 'report_bot.xacro', { type: 'application/xml' }))
+        else dt.setData('text/plain', 'not a file')
+        const view = document.querySelector('section[aria-label$="digital twin"]')
+        view.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }))
+        view.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }))
+      }, [REPORT_XACRO, withFile])
+    try {
+      await drop(false)
+      await page.waitForTimeout(1000)
+      check((await page.locator('[role=dialog]').count()) === 0, `${at}: a drop with no files opens no dialog`)
+      await drop(true)
+      const shown = await page.getByRole('heading', { name: 'Import report' }).waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      check(shown, `${at}: dropped files open the import dialog with its report`)
+      check(shown && (await page.getByRole('form', { name: 'Xacro arguments' }).count()) === 1, `${at}: the dropped xacro's arguments form shows`)
+      await page.keyboard.press('Escape')
+      await page.locator('[role=dialog]').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+
+      // real folders, dragged in through Chrome's own drag input, so the folder walk runs as it does for a user
+      const dir = mkdtempSync(join(tmpdir(), 'roco-drop-'))
+      try {
+        const folder = join(dir, 'report_bot_description')
+        mkdirSync(join(folder, 'urdf'), { recursive: true })
+        writeFileSync(join(folder, 'urdf', 'report_bot.xacro'), REPORT_XACRO)
+        const empty = join(dir, 'empty_folder')
+        mkdirSync(empty)
+        const cdp = await page.context().newCDPSession(page)
+        const box = await page.locator('section[aria-label$="digital twin"]').boundingBox()
+        const dragIn = async (path) => {
+          const data = { items: [], files: [path], dragOperationsMask: 1 }
+          for (const type of ['dragEnter', 'dragOver', 'drop']) {
+            await cdp.send('Input.dispatchDragEvent', { type, x: box.x + box.width / 2, y: box.y + box.height / 2, data })
+          }
+        }
+        const dialogText = (want) =>
+          page.locator('[role=dialog]').getByText(want).first().waitFor({ timeout: PAGE_READY_MS }).then(() => page.locator('[role=dialog]').innerText(), () => '(not shown)')
+        // the same folder twice, closing in between: each drop is imported, not only the first
+        for (const round of ['first', 'second']) {
+          await dragIn(folder)
+          const got = await dialogText('Imported report bot (1 joint)!')
+          check(got.includes('Import report') && got.includes('report_bot_description/urdf/report_bot.xacro'),
+            `${at}: a dropped folder (${round} time) is walked and imported with its paths (${JSON.stringify(got.slice(-200))})`)
+          await page.keyboard.press('Escape')
+          await page.locator('[role=dialog]').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+        }
+        await dragIn(empty)
+        const got = await dialogText('No files provided for robot import.')
+        check(got.includes('No files provided for robot import.'), `${at}: an empty folder opens the dialog, which says it holds no files (${JSON.stringify(got.slice(-200))})`)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+      check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    } finally {
+      await page.close()
     }
   }
 

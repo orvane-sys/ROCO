@@ -23,13 +23,10 @@ import {
   X,
   Upload,
 } from 'lucide-react'
-import {
-  collectDroppedFiles,
-  configureMultiFormatMeshLoader,
-  getImportedAssetResolver,
-  importRobotFiles,
-} from '../utils/robotImporter'
-import { parseRobotDescription } from '../utils/modelFormatParser'
+// Small modules only: the importer and its converters load when the import dialog opens, not on the first visit.
+import { collectDroppedFiles } from '../utils/droppedFiles'
+import { configureMultiFormatMeshLoader } from '../utils/meshLoaders'
+import { getImportedAssetResolver } from '../utils/importedAssets'
 import { acceptUnitsFix, acceptedUnitsFix, applyUnitsFix, checkUnits, type UnitsFix, type UnitsOffer } from '../utils/unitsCheck'
 
 // Standard/physical materials expose `emissive`; others (basic, line) do not, which the code checks at runtime.
@@ -41,6 +38,8 @@ interface DigitalTwinProps {
   selectedJointId?: string | null
   /** How much to draw. `off` builds no renderer at all. See `resolveScene3d`. */
   quality?: SceneQuality
+  /** Files dropped on the view; the app opens the import dialog with them, so its report is seen. */
+  onFilesDropped?: (files: File[]) => void
 }
 
 export type SceneQuality = 'full' | 'low' | 'off'
@@ -104,7 +103,7 @@ function supportsWebGL(): boolean {
 const WEBGL_UNAVAILABLE_MESSAGE =
   '3D view unavailable: WebGL could not start in this browser. Teleop and telemetry still work.'
 
-export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 'full' }: DigitalTwinProps) {
+export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 'full', onFilesDropped }: DigitalTwinProps) {
   const containerRef = useRef<HTMLElement | null>(null)
   const mountRef = useRef<HTMLDivElement | null>(null)
   // Recolours the scene (background, floor, grid, markers) from the --scene-* tokens; set while the scene exists.
@@ -453,7 +452,8 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     }
     configureMultiFormatMeshLoader(loader, manager, importedResolver ? undefined : packedMeshUrl)
 
-    // Preprocess model files (supporting .urdf, .xacro, and MuJoCo .xml)
+    // Every profile is a URDF here: the built-in ones are .urdf files, and an imported one is the URDF the importer made
+    // (xacro, MJCF and SDF are converted at import), so the text is parsed as it is.
     fetch(profile.urdfPath)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
@@ -461,11 +461,10 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
       })
       .then((rawText) => {
         if (disposed) return
-        const processedUrdf = parseRobotDescription(rawText, profile.urdfPath)
         // parse() does not know where the file came from: without a working path "meshes/x.STL"
         // resolves against the page root instead of the URDF's directory.
         loader.workingPath = THREE.LoaderUtils.extractUrlBase(profile.urdfPath)
-        const parsed = loader.parse(processedUrdf)
+        const parsed = loader.parse(rawText)
         robot = parsed
       })
       .catch((err) => {
@@ -870,10 +869,11 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         setIsDragOver(false)
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           try {
-            const { warnings } = await importRobotFiles(await collectDroppedFiles(e.dataTransfer))
-            if (warnings.length > 0) console.warn('Robot import warnings:', warnings)
+            // read the payload first: DataTransfer items are gone once the event ends
+            // an empty folder gives no files; the dialog then says so
+            onFilesDropped?.(await collectDroppedFiles(e.dataTransfer))
           } catch (err) {
-            setLoadError(err instanceof Error ? err.message : 'Failed to import robot files')
+            setLoadError(err instanceof Error ? err.message : 'Failed to read the dropped files')
           }
         }
       }}

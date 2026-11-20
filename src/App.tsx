@@ -121,6 +121,8 @@ export function App() {
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const [isAppearanceOpen, setIsAppearanceOpen] = useState(false)
   const [isImportOpen, setIsImportOpen] = useState(false)
+  // files dropped on the 3D view, imported by the dialog so its report and checks are seen
+  const [droppedFiles, setDroppedFiles] = useState<File[] | null>(null)
   const [isPaletteOpen, setIsPaletteOpen] = useState(false)
   const [tourManual, setIsTourOpen] = useState(false)
   const [tourDismissed, setTourDismissed] = useState(false)
@@ -423,6 +425,11 @@ export function App() {
     setIsSettingsOpen(false)
     setIsImportOpen(true)
   }, [])
+  const handleFilesDropped = useCallback((files: File[]) => {
+    setIsSettingsOpen(false)
+    setDroppedFiles(files)
+    setIsImportOpen(true)
+  }, [])
 
   // Robot-side E-stop reported by a live bridge also counts as latched.
   const isEmergencyStopped = !isMonitor && (isEStopped || Boolean(telemetry?.emergencyStopped))
@@ -496,7 +503,7 @@ export function App() {
             </div>
           }
         >
-          <DigitalTwin status={status} activeProfile={activeProfile} selectedJointId={selectedJointId} quality={quality} />
+          <DigitalTwin status={status} activeProfile={activeProfile} selectedJointId={selectedJointId} quality={quality} onFilesDropped={handleFilesDropped} />
         </Suspense>
       </ErrorBoundary>
     </div>
@@ -814,7 +821,11 @@ export function App() {
         <Suspense fallback={null}>
           <ImportRobotDialog
             isOpen={isImportOpen}
-            onClose={() => setIsImportOpen(false)}
+            initialFiles={droppedFiles}
+            onClose={() => {
+              setIsImportOpen(false)
+              setDroppedFiles(null)
+            }}
             onImportSuccess={(prof) => handleSelectProfile(prof.id)}
           />
         </Suspense>

@@ -217,7 +217,7 @@ the report up to that point.
 **Download report** saves it as a text file, `roco_import_report_<time>.txt`, with the main file and the xacro arguments
 used.
 
-Dropping files on the 3D view imports them without showing the report; use the dialog to see it.
+Dropping files on the 3D view opens the import dialog with them, so the report shows there too.
 
 ## How the importers are checked
 

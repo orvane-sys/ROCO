@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { FolderUp, FileCode, Upload, CheckCircle2, AlertCircle, Loader2, Download, RotateCcw } from 'lucide-react'
 import { collectDroppedFiles, importFailure, importRobotFiles, type ImportOptions, type XacroArg } from '../utils/robotImporter'
@@ -10,6 +10,8 @@ interface ImportRobotDialogProps {
   isOpen: boolean
   onClose: () => void
   onImportSuccess?: (profile: RobotProfile) => void
+  /** Files dropped on the 3D view: imported once when the dialog opens, so their report is shown here. */
+  initialFiles?: File[] | null
 }
 
 const KIND_LABEL: Record<ReportKind, string> = {
@@ -30,7 +32,7 @@ interface Details {
 }
 const NO_DETAILS: Details = { report: null, notes: [], xacroArgs: [] }
 
-export function ImportRobotDialog({ isOpen, onClose, onImportSuccess }: ImportRobotDialogProps) {
+export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFiles }: ImportRobotDialogProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -46,8 +48,9 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess }: ImportRo
   const lastArgs = useRef<Record<string, string>>({})
   // the typed value of one argument; own properties only, since an argument may be named `constructor` or `toString`
   const edited = (name: string): string | undefined => (Object.hasOwn(argEdits, name) ? argEdits[name] : undefined)
-
-  if (!isOpen) return null
+  // the import function of the latest render, and the dropped files already imported (each drop is imported once)
+  const processRef = useRef<((files: File[]) => Promise<void>) | null>(null)
+  const importedDrop = useRef<File[] | null>(null)
 
   const handleProcessFiles = async (files: FileList | File[], options: ImportOptions = {}) => {
     const list = Array.from(files)
@@ -87,6 +90,17 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess }: ImportRo
       setIsLoading(false)
     }
   }
+
+  useEffect(() => {
+    processRef.current = handleProcessFiles
+  })
+  useEffect(() => {
+    if (!isOpen || !initialFiles || importedDrop.current === initialFiles) return
+    importedDrop.current = initialFiles
+    void processRef.current?.(initialFiles)
+  }, [isOpen, initialFiles])
+
+  if (!isOpen) return null
 
   const importAgain = () => {
     const xacroArgs = { ...lastArgs.current, ...argEdits }
