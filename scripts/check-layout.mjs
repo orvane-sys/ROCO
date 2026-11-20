@@ -423,12 +423,15 @@ try {
     const text = await page.locator('[role=dialog]').innerText()
     check(/Imported report bot \(1 joint\)!/.test(text) && /Problems \(2\)/.test(text) && text.includes("needs the argument 'prefix'") && text.includes('forearm_link_visual_mesh.stl'),
       `${at}: the dialog says it imported, with both problems and where (${text.slice(-400)})`)
+    check(/Model check\s+Download report\s+Errors \(1\)/.test(text) && text.indexOf('Model check') < text.indexOf('Import report') && text.includes('Missing files are listed under Problems'),
+      `${at}: the model check shows above the report, with its one error and the note that points to Problems (${JSON.stringify(text.slice(0, 300))})`)
     if (w === 1366) {
       const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download report' }).click()])
       const saved = await download.path()
       const body = saved ? readFileSync(saved, 'utf8') : ''
       check(/^roco_import_report_\d{8}_\d{4}\.txt$/.test(download.suggestedFilename()) && body.startsWith('ROCO import report\nModel: report bot (1 joint)\nMain file: report_bot.xacro\n') &&
-        body.includes('xacro arg prefix = (no value)') && body.includes("error: ") && body.includes("needs the argument 'prefix'"),
+        body.includes('xacro arg prefix = (no value)') && body.includes("error: ") && body.includes("needs the argument 'prefix'") &&
+        /\nModel check:\nError \(moving-massless\): .+\n  where: arm\n  fix: /.test(body),
         `${at}: Download report saves the report as text (${download.suggestedFilename()}: ${JSON.stringify(body.slice(0, 160))})`)
       await page.getByRole('textbox', { name: /^prefix/ }).fill('p_')
       await page.getByRole('button', { name: 'Import again with these values' }).click()

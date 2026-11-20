@@ -1,11 +1,12 @@
 // MuJoCo MJCF to URDF, for the twin. The URDF only has to draw the robot and move its joints, so this keeps what drawing and
-// kinematics need (bodies, joints, visual geoms, meshes, colours) and reports everything else instead of dropping it silently.
+// kinematics need (bodies, joints, visual geoms, meshes, colours), and each body's <inertial> for the model check, and reports
+// everything else instead of dropping it silently.
 // Each rule below follows MuJoCo 3.17's compiler, checked against mujoco itself (tools/corpus/reference.py), not the docs alone.
 import * as THREE from 'three'
 import { LIMITS, refuse } from './importLimits'
 import type { ReportKind } from './importReport'
 import { parseXmlSafe } from './safeXml'
-import type { ParseContext } from './modelFormatParser'
+import type { MjcfInertiaContext, ParseContext } from './modelFormatParser'
 
 export type Vec3 = [number, number, number]
 /** w, x, y, z, as MuJoCo writes it. */
@@ -186,6 +187,17 @@ export function convertMjcfToUrdf(mjcfText: string, modelName = 'mujoco_robot', 
   const autolimits = (compiler.get('autolimits') ?? 'true') !== 'false'
   const stripPath = compiler.get('strippath') === 'true'
   const meshDir = (compiler.get('meshdir') ?? compiler.get('assetdir') ?? '').replace(/\/+$/, '')
+  const fromGeom = compiler.get('inertiafromgeom')
+  const inertia: MjcfInertiaContext = {
+    inertiafromgeom: fromGeom === 'true' || fromGeom === 'false' ? fromGeom : 'auto',
+    balanceinertia: compiler.get('balanceinertia') === 'true',
+    boundmass: nums(compiler.get('boundmass'))[0] ?? 0,
+    boundinertia: nums(compiler.get('boundinertia'))[0] ?? 0,
+    fusestatic: compiler.get('fusestatic') === 'true',
+    bodies: [],
+  }
+  const groupRange = nums(compiler.get('inertiagrouprange') ?? '0 5')
+  ctx.mjcfInertia = inertia
   if (compiler.get('coordinate') === 'global') note('unsupported', 'coordinate="global" is not supported (MuJoCo 3 removed it); poses are read as local.')
 
   // 3. Default classes. The top-level <default> is "main"; nested ones inherit from the one around them.
@@ -303,7 +315,7 @@ export function convertMjcfToUrdf(mjcfText: string, modelName = 'mujoco_robot', 
     group: number
     xml: string
   }
-  const links: { name: string; visuals: Visual[] }[] = [{ name: 'world', visuals: [] }]
+  const links: { name: string; visuals: Visual[]; inertial?: string }[] = [{ name: 'world', visuals: [] }]
   const joints: string[] = []
   let bodyCount = 0
   let jointCount = 0
@@ -384,14 +396,35 @@ export function convertMjcfToUrdf(mjcfText: string, modelName = 'mujoco_robot', 
     frame: Pose
     childclass?: string
   }
+  /**
+   * A body's <inertial> as URDF, in the body's frame. MJCF has no default class for it. As in MuJoCo (mjCBody::Compile), a
+   * fullinertia is the tensor in the inertial frame, which then may not be turned, and one inside a <frame> is in that frame.
+   */
+  const inertialXml = ({ el, frame }: Placed, where: string): string => {
+    const full = nums(el.getAttribute('fullinertia'))
+    const diag = vec3(el.getAttribute('diaginertia'), [0, 0, 0])
+    let refused = ''
+    if (!el.hasAttribute('pos') || !el.hasAttribute('mass')) refused = 'An inertial without pos or mass'
+    else if (full.length >= 6 && (ORIENTATION.some((o) => el.hasAttribute(o)) || diag.some((d) => d !== 0))) {
+      refused = 'An inertial with fullinertia and also an orientation or a diaginertia'
+    }
+    if (refused) {
+      note('error', `${refused}, which MuJoCo refuses, is left out.`, where)
+      return ''
+    }
+    const [ixx, iyy, izz, ixy, ixz, iyz] = full.length >= 6 ? full : [...diag, 0, 0, 0]
+    return `    <inertial>\n      ${origin(compose(frame, poseOf(el)))}\n      <mass value="${fmt(nums(el.getAttribute('mass')).slice(0, 1))}"/>\n` +
+      `      <inertia ixx="${fmt([ixx])}" ixy="${fmt([ixy])}" ixz="${fmt([ixz])}" iyy="${fmt([iyy])}" iyz="${fmt([iyz])}" izz="${fmt([izz])}"/>\n    </inertial>`
+  }
   /** A body's (or the worldbody's) geoms, joints and child bodies, with any <frame> around them composed in. */
   const contents = (container: Element, frame: Pose, childclass: string | undefined) => {
-    const out = { geoms: [] as Placed[], joints: [] as Placed[], bodies: [] as Placed[] }
+    const out = { geoms: [] as Placed[], joints: [] as Placed[], bodies: [] as Placed[], inertials: [] as Placed[] }
     const walk = (el: Element, at: Pose, cc: string | undefined) => {
       for (const child of Array.from(el.children)) {
         const tag = child.tagName
         if (tag === 'geom') out.geoms.push({ el: child, frame: at, childclass: cc })
         else if (tag === 'body') out.bodies.push({ el: child, frame: at, childclass: cc })
+        else if (tag === 'inertial') out.inertials.push({ el: child, frame: at })
         else if ((tag === 'joint' || tag === 'freejoint') && el === container) out.joints.push({ el: child, frame: at, childclass: cc })
         else if (tag === 'frame') walk(child, compose(at, poseOf(child)), child.getAttribute('childclass') ?? cc)
       }
@@ -406,16 +439,31 @@ export function convertMjcfToUrdf(mjcfText: string, modelName = 'mujoco_robot', 
     const cc = body.getAttribute('childclass') ?? childclass
     const X = compose(frame, poseOf(body))
     const inside = contents(body, IDENTITY, cc)
-    const link = { name, visuals: [] as Visual[] }
+    // MuJoCo refuses two <inertial> in one element; one in the body and one in a <frame> in it are both read, the last winning
+    const ins = inside.inertials
+    const twice = ins.some((a, i) => ins.some((b, j) => j > i && a.el.parentElement === b.el.parentElement))
+    if (twice) note('error', 'A body with two <inertial> in one element, which MuJoCo refuses, gets no inertial.', name)
+    else if (ins.length > 1) note('approx', 'A body with an <inertial> in it and in a <frame> in it: the last one is used.', name)
+    const inertial = twice ? undefined : ins.at(-1)
+    const link = { name, visuals: [] as Visual[], inertial: inertial ? inertialXml(inertial, name) : '' }
     links.push(link)
     for (const g of inside.geoms) link.visuals.push(...visualsOf(g.el, classOf(g.el, g.childclass), g.frame))
-
+    // for the model check: whether MuJoCo could infer this body's inertia from a geom (one in inertiagrouprange with mass)
+    const massive = inside.geoms.some(({ el, childclass: gc }) => {
+      const cls = classOf(el, gc)
+      const group = Number(attr(el, cls, 'group') ?? 0)
+      const type = attr(el, cls, 'type') ?? 'sphere'
+      const mass = attr(el, cls, 'mass')
+      const weighs = mass != null ? Number(mass) > 0 : Number(attr(el, cls, 'density') ?? 1000) > 0
+      return group >= (groupRange[0] ?? 0) && group <= (groupRange[1] ?? 5) && type !== 'plane' && type !== 'hfield' && weighs
+    })
     const js = inside.joints.map(({ el, childclass: jc }) => {
       const cls = classOf(el, jc)
       const type = el.tagName === 'freejoint' ? 'free' : (attr(el, cls, 'type') ?? 'hinge')
       return { el, cls, type, name: el.getAttribute('name') || `joint_${++jointCount}`, pos: vec3(attr(el, cls, 'pos'), [0, 0, 0]) }
     })
     const free = js.find((j) => j.type === 'free')
+    inertia.bodies.push({ link: name, parent: parent === 'world' ? '' : parent, moving: js.length > 0, geoms: massive, fullinertia: !!link.inertial && nums(inertial?.el.getAttribute('fullinertia')).length >= 6 })
     if (js.length === 0) {
       joints.push(jointXml(`${parent}_to_${name}`, 'fixed', parent, name, X))
     } else if (free) {
@@ -466,6 +514,7 @@ export function convertMjcfToUrdf(mjcfText: string, modelName = 'mujoco_robot', 
     for (const g of top.geoms) {
       if ((attr(g.el, classOf(g.el, g.childclass), 'type') ?? 'sphere') !== 'plane') worldGeoms++
     }
+    if (top.inertials.length) note('error', 'An <inertial> in the worldbody, which MuJoCo refuses, is left out.', 'world')
     for (const b of top.bodies) visitBody(b, 'world')
   }
 
@@ -477,9 +526,9 @@ export function convertMjcfToUrdf(mjcfText: string, modelName = 'mujoco_robot', 
   // MuJoCo's viewer shows geom groups 0-2 by default (collision geoms usually sit in 3); show everything only if that is empty.
   const shown = links.some((l) => l.visuals.some((v) => v.group <= 2))
   if (!shown && links.some((l) => l.visuals.length)) note('approx', 'No geom is in groups 0-2, so every group is drawn.')
-  const linkXml = links.map(({ name, visuals }) => {
-    const drawn = visuals.filter((v) => !shown || v.group <= 2).map((v) => v.xml)
-    return drawn.length ? `  <link name="${esc(name)}">\n${drawn.join('\n')}\n  </link>` : `  <link name="${esc(name)}"/>`
+  const linkXml = links.map(({ name, visuals, inertial }) => {
+    const parts = [...(inertial ? [inertial] : []), ...visuals.filter((v) => !shown || v.group <= 2).map((v) => v.xml)]
+    return parts.length ? `  <link name="${esc(name)}">\n${parts.join('\n')}\n  </link>` : `  <link name="${esc(name)}"/>`
   })
   return `<?xml version="1.0"?>\n<robot name="${esc(robotName)}">\n${linkXml.join('\n')}\n\n${joints.join('\n')}\n</robot>\n`
 }

@@ -72,7 +72,8 @@ export const guardCsp = (target) =>
 
 /**
  * A xacro that needs an argument it is not given and names a mesh it does not have, so its import shows the dialog's report
- * (two problems) and the arguments form. Its joint is named from both arguments.
+ * (two problems) and the arguments form. Its joint is named from both arguments. Its moving link has no mass, so the model
+ * check shows one error too.
  */
 export const REPORT_XACRO = `<?xml version="1.0"?>
 <robot name="report_bot" xmlns:xacro="http://www.ros.org/wiki/xacro">
@@ -84,7 +85,7 @@ export const REPORT_XACRO = `<?xml version="1.0"?>
 `
 
 /**
- * Opens Settings, then the import dialog, and imports REPORT_XACRO through its file input; resolves once the report shows. The
+ * Opens Settings, then the import dialog, and imports REPORT_XACRO through its file input; resolves once the report and the model check show. The
  * file stays on disk for "Import again" until the returned function removes it (call it after closing the page).
  */
 export async function openImportReport(page) {
@@ -96,6 +97,7 @@ export async function openImportReport(page) {
     await page.getByRole('button', { name: /Import model/ }).click()
     await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(join(dir, 'report_bot.xacro'))
     await page.getByRole('heading', { name: 'Import report' }).waitFor({ timeout: PAGE_READY_MS })
+    await page.getByRole('heading', { name: 'Model check' }).waitFor()
     await page.getByRole('form', { name: 'Xacro arguments' }).waitFor()
   } catch (e) {
     remove()

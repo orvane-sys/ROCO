@@ -15,11 +15,15 @@
 // cache), the SDF is added to the model folder as its main file, and the import is compared with the URDF reference. gz lumps links
 // joined by fixed joints into their parent and leaves out links with no mass, so only the links and joints the SDF still has are
 // compared; the rest are counted. gz writes about 6 significant digits, so the tolerances are SDF_TOL.
+//
+// The model check (src/utils/modelChecker.ts) is held to MuJoCo's verdict in each reference's mass_check: an error-level mass or
+// inertia finding if and only if MuJoCo refuses the model's masses or inertias. When reference.py ran with --mutate, each mutant
+// (<cache>/mutants/<name>/) is imported from the model's folder as its main file and held to its own verdict the same way.
 import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, relative, resolve, sep } from 'node:path'
+import { basename, join, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -36,6 +40,20 @@ export const SDF_TOL = { ...TOL, limit: 1e-5 }
 /** The models CI checks (stage 1.1 decision P6): small, and every format the subset can cover. */
 export const CI_SUBSET = ['jvrc1', 'skydio_x2', 'upkie', 'go2', 'h1']
 export const LOAD_TARGET = 0.95
+/** The model check's codes for what MuJoCo refuses about masses and inertias (reference.py mass_check). */
+export const MASS_CODES = ['mass', 'inertia-pd', 'inertia-triangle', 'moving-massless']
+
+/**
+ * Whether the model check agrees with MuJoCo's verdict on a model's masses and inertias: 'agree' when it has an error-level
+ * mass or inertia finding exactly when MuJoCo refused them; 'not comparable' when MuJoCo refused for another reason or after
+ * reference.py dropped a mesh; 'no verdict' when the reference has none (reference.py ran without mujoco).
+ */
+export function massAgreement(findings, massCheck) {
+  if (!massCheck) return 'no verdict'
+  if (!massCheck.ok && massCheck.comparable === false) return 'not comparable'
+  const flagged = findings.some((f) => f.severity === 'error' && MASS_CODES.includes(f.code))
+  return flagged === !massCheck.ok ? 'agree' : 'disagree'
+}
 
 const norm = (v) => {
   const n = Math.hypot(...v)
@@ -217,6 +235,17 @@ function selfTest() {
   check(compareModel(sv.ref, g, SDF_TOL).jointProblems[0] === 'j1: missing', 'negative: a joint the SDF has but the import lacks fails')
   g = got(); g.poses.b.xyz = [1, SDF_TOL.pos * 3, 0]
   check(compareModel(sv.ref, g, SDF_TOL).poseProblems[0]?.startsWith('b: off by'), 'negative: a link 3x the SDF tolerance off fails')
+  const err = (code) => ({ severity: 'error', code, where: ['l'] })
+  const warn = (code) => ({ severity: 'warning', code, where: ['l'] })
+  check(massAgreement([], { ok: true }) === 'agree' && massAgreement([warn('moving-massless')], { ok: true }) === 'agree',
+    'no mass error (a warning at most) on a model MuJoCo accepts agrees')
+  check(MASS_CODES.every((c) => massAgreement([err(c)], { ok: false, comparable: true }) === 'agree'), 'each mass or inertia error on a model MuJoCo refuses agrees')
+  check(massAgreement([], { ok: false, comparable: true }) === 'disagree', 'negative: no finding on a model MuJoCo refuses disagrees')
+  check(massAgreement([warn('mass')], { ok: false, comparable: true }) === 'disagree', 'negative: only a warning on a model MuJoCo refuses disagrees')
+  check(massAgreement([err('inertia-pd')], { ok: true }) === 'disagree', 'negative: a mass or inertia error on a model MuJoCo accepts disagrees')
+  check(massAgreement([err('axis')], { ok: false, comparable: true }) === 'disagree', 'negative: an axis error does not stand for a mass refusal')
+  check(massAgreement([], { ok: false, comparable: false }) === 'not comparable' && massAgreement([], undefined) === 'no verdict',
+    'a refusal for another reason is not comparable, and no verdict is said')
   console.log(`check-import-corpus: ${passed} self-test checks passed${failed ? `, ${failed} FAILED` : ''}`)
   return failed ? 1 : 0
 }
@@ -311,6 +340,11 @@ async function main(argv) {
     const url = decodeURIComponent((req.url ?? '/').split('?')[0])
     if (url === '/') return res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><meta charset="utf-8"><script src="/harness.js"></script>')
     if (url === '/harness.js') return res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(harness)
+    const mu = /^\/mutant\/(\d+)\/([a-z-]+\.(?:urdf|xml))$/.exec(url)
+    if (mu && plan[Number(mu[1])]) {
+      const file = join(cache, 'mutants', plan[Number(mu[1])].m.name, mu[2])
+      return existsSync(file) ? res.writeHead(200, { 'Content-Type': 'application/octet-stream' }).end(readFileSync(file)) : res.writeHead(404).end()
+    }
     const s = /^\/sdf\/(\d+)$/.exec(url)
     if (s && plan[Number(s[1])]?.sdf) return res.writeHead(200, { 'Content-Type': 'application/octet-stream' }).end(readFileSync(plan[Number(s[1])].sdf))
     const m = /^\/files\/(\d+)\/(.+)$/.exec(url)
@@ -323,28 +357,35 @@ async function main(argv) {
   const origin = `http://127.0.0.1:${server.address().port}`
   const browser = await launchChrome('check-import-corpus')
   const results = []
+  const mutantResults = []
+  /** Imports plan entry i's folder in a fresh page; `extra` ({ path, url }) is added to the folder and imported as its main file. */
+  const importOnce = async (i, p, extra) => {
+    const page = await browser.newPage()
+    const errors = []
+    page.on('pageerror', (e) => errors.push(e.message))
+    // the importer's module graph starts the telemetry client; give it a socket that never connects instead of a real one
+    await page.addInitScript(() => {
+      window.WebSocket = class { constructor() { this.readyState = 3 } send() {} close() {} addEventListener() {} removeEventListener() {} }
+    })
+    await page.goto(origin + '/')
+    await page.waitForFunction(() => !!window.__rocoImport, null, { timeout: 30000 }).catch((e) => {
+      throw new Error(`the harness did not load: ${errors.join('; ') || e.message}`)
+    })
+    const files = walk(p.dir).map((f) => {
+      const rel = relative(p.dir, f).split(sep).join('/')
+      return { path: `${p.top}/${rel}`, url: `${origin}/files/${i}/${rel.split('/').map(encodeURIComponent).join('/')}` }
+    })
+    const rel = p.m.package === '.' ? p.m.path : p.m.path.slice(p.m.package.length + 1)
+    if (extra) files.push(extra)
+    const options = { mainFile: extra ? extra.path : `${p.top}/${rel}`, xacroArgs: p.m.xacro_args ?? {} }
+    const got = await page.evaluate(([f, o]) => window.__rocoImport.run(f, o), [files, options])
+    await page.close()
+    return { got, errors, files, rel }
+  }
+  const brief = (findings) => (findings ?? []).map((f) => ({ severity: f.severity, code: f.code, where: f.where.slice(0, 5) }))
   try {
     for (const [i, p] of plan.entries()) {
-      const page = await browser.newPage()
-      const errors = []
-      page.on('pageerror', (e) => errors.push(e.message))
-      // the importer's module graph starts the telemetry client; give it a socket that never connects instead of a real one
-      await page.addInitScript(() => {
-        window.WebSocket = class { constructor() { this.readyState = 3 } send() {} close() {} addEventListener() {} removeEventListener() {} }
-      })
-      await page.goto(origin + '/')
-      await page.waitForFunction(() => !!window.__rocoImport, null, { timeout: 30000 }).catch((e) => {
-        throw new Error(`the harness did not load: ${errors.join('; ') || e.message}`)
-      })
-      const files = walk(p.dir).map((f) => {
-        const rel = relative(p.dir, f).split(sep).join('/')
-        return { path: `${p.top}/${rel}`, url: `${origin}/files/${i}/${rel.split('/').map(encodeURIComponent).join('/')}` }
-      })
-      const rel = p.m.package === '.' ? p.m.path : p.m.path.slice(p.m.package.length + 1)
-      if (p.sdf) files.push({ path: `${p.top}/${p.m.name}.gz.sdf`, url: `${origin}/sdf/${i}` })
-      const options = { mainFile: p.sdf ? `${p.top}/${p.m.name}.gz.sdf` : `${p.top}/${rel}`, xacroArgs: p.m.xacro_args ?? {} }
-      const got = await page.evaluate(([f, o]) => window.__rocoImport.run(f, o), [files, options])
-      await page.close()
+      const { got, errors, files, rel } = await importOnce(i, p, p.sdf && { path: `${p.top}/${p.m.name}.gz.sdf`, url: `${origin}/sdf/${i}` })
       let ref = JSON.parse(readFileSync(p.refFile, 'utf8'))
       let left = ''
       if (p.sdf) {
@@ -360,6 +401,25 @@ async function main(argv) {
       r.meshes = got.meshes ?? null
       r.profile = got.profile ?? null
       r.pageErrors = errors
+      // the model check: an error-level mass or inertia finding iff MuJoCo refuses the model (reference.py mass_check); any other
+      // error on a corpus model, or any error when there is no verdict, is a miss too
+      r.findings = brief(got.findings)
+      r.checkErrors = r.findings.filter((f) => f.severity === 'error')
+      r.mass = p.sdf ? 'no verdict' : massAgreement(r.findings, ref.mass_check)
+      r.checkUnexpected = r.mass === 'disagree' || (r.mass === 'no verdict' && r.checkErrors.length > 0) ||
+        r.checkErrors.some((f) => !MASS_CODES.includes(f.code))
+      // the mutants: the same folder with the mutant as its main file, next to the model's own
+      const mutants = []
+      for (const mu of p.sdf ? [] : ref.mutants ?? []) {
+        const path = posix.join(p.top, posix.dirname(rel), `${p.m.name}.mutant-${mu.file}`)
+        const m = await importOnce(i, p, { path, url: `${origin}/mutant/${i}/${mu.file}` })
+        const findings = brief(m.got.findings)
+        const agreement = m.got.ok ? massAgreement(findings, mu.mass_check) : 'did not load'
+        mutants.push({ model: p.m.name, kind: mu.kind, link: mu.link, agreement, mujoco: mu.mass_check, findings, error: m.got.error, pageErrors: m.errors })
+      }
+      mutantResults.push(...mutants)
+      r.mutants = mutants.map((mu) => ({ kind: mu.kind, link: mu.link, agreement: mu.agreement, mujoco: mu.mujoco, findings: mu.findings }))
+      r.pageErrors.push(...mutants.flatMap((mu) => mu.pageErrors))
       results.push(r)
       const mark = r.loaded && !r.jointProblems.length && !r.poseProblems.length ? 'ok  ' : 'MISS'
       console.log(`${mark} ${p.m.name.padEnd(17)} ${p.m.format.padEnd(5)} ${r.loaded ? 'loaded' : 'failed'} ` +
@@ -368,8 +428,18 @@ async function main(argv) {
             `worst ${r.worstPos.toExponential(1)} m ${r.worstRot.toExponential(1)} rad  ${r.ms} ms  warnings ${r.warnings.length}` +
             (r.meshes ? `  meshes ${r.meshes.resolved}/${r.meshes.total}` : '') +
             (r.approx.length ? `  approx ${r.approx.length}` : '') + (r.unnamed ? `  unnamed ${r.unnamed}` : '') +
-            (p.sdf ? `  axis ${r.worstAxis.toExponential(1)} limit ${r.worstLimit.toExponential(1)}${left}` : '')
+            (p.sdf ? `  axis ${r.worstAxis.toExponential(1)} limit ${r.worstLimit.toExponential(1)}${left}` : '') +
+            `  check ${r.checkErrors.length}E/${r.findings.length - r.checkErrors.length}W ${r.mass}` +
+            (mutants.length ? `  mutants ${mutants.filter((mu) => mu.agreement === 'agree').length}/${mutants.length} agree` : '')
           : `(${r.error})`) + (errors.length ? `  PAGE ERRORS ${errors.length}` : ''))
+      if (r.checkUnexpected) {
+        console.log(`       MuJoCo: ${ref.mass_check ? (ref.mass_check.ok ? 'accepts' : ref.mass_check.error) : 'no verdict'}`)
+        for (const f of r.checkErrors) console.log(`       model check error ${f.code}: ${f.where.join(', ')}`)
+      }
+      for (const mu of mutants.filter((x) => x.agreement !== 'agree')) {
+        console.log(`       mutant ${mu.kind} on ${mu.link}: ${mu.agreement}; MuJoCo ${mu.mujoco.ok ? 'accepts' : 'refuses: ' + mu.mujoco.error}; ` +
+          `check ${mu.findings.filter((f) => f.severity === 'error').map((f) => f.code).join(', ') || 'no errors'}${mu.error ? ` (${mu.error})` : ''}`)
+      }
       if (r.loaded && (r.jointProblems.length || r.poseProblems.length)) {
         for (const w of [...r.jointProblems.slice(0, 3), ...r.poseProblems.slice(0, 3)]) console.log(`       ${w}`)
       }
@@ -386,8 +456,16 @@ async function main(argv) {
   console.log(`check-import-corpus: ${loaded}/${results.length} loaded, ${exact}/${results.length} match the reference, ${pageErrors} page errors`)
   const t = targetsMet(results)
   if (reportOnly) return 0
-  if (!t.ok || pageErrors) {
+  const unexpected = results.filter((r) => r.checkUnexpected).map((r) => r.name)
+  const count = (list, a) => list.filter((x) => x.mass === a || x.agreement === a).length
+  const mutantMisses = mutantResults.filter((x) => x.agreement === 'disagree' || x.agreement === 'did not load')
+  console.log(`check-import-corpus: model check vs MuJoCo: models ${count(results, 'agree')}/${results.length} agree` +
+    ` (${count(results, 'not comparable')} not comparable, ${count(results, 'no verdict')} no verdict), mutants ${count(mutantResults, 'agree')}/${mutantResults.length} agree` +
+    ` (${count(mutantResults, 'not comparable')} not comparable); misses: models ${unexpected.length}, mutants ${mutantMisses.length}`)
+  if (!t.ok || pageErrors || unexpected.length || mutantMisses.length) {
     for (const w of t.why) console.error('MISS: ' + w)
+    if (unexpected.length) console.error(`MISS: the model check disagrees with MuJoCo on ${unexpected.join(', ')} (see above)`)
+    for (const x of mutantMisses) console.error(`MISS: mutant ${x.model}/${x.kind}: ${x.agreement}`)
     return 1
   }
   return 0

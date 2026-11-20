@@ -22,6 +22,11 @@ if (dumpAt > 0) {
       writeFileSync(out, body)
     }
   }
+  for (const [name, fx] of Object.entries(checkerFixtures())) {
+    const out = join(dir, 'check', name, fx.file)
+    mkdirSync(dirname(out), { recursive: true })
+    writeFileSync(out, fx.text)
+  }
   console.log(`check-import: fixtures written to ${dir}`)
   process.exit(0)
 }
@@ -199,6 +204,41 @@ const EXPECTED = {
   },
 }
 
+// MuJoCo 3.17.0 compiling the inertia fixture: each body's body_mass, body_ipos and its inertia turned into the body frame,
+// body_iquat · diag(body_inertia) · body_iquatᵀ, as xx yy zz xy xz yz, to 9 decimals.
+const EXPECTED_INERTIA = {
+  inertia: {
+    base: { mass: 5, ipos: [0.01, 0.02, 0.03], I: [0.275000002, 0.274999998, 0.1, 0.025, 0, 0] },
+    arm: { mass: 1.5, ipos: [0.1, 0.05, 0], I: [0.03, 0.04, 0.02, -0.001, -0.003, 0.002] },
+    paddle: { mass: 0.2, ipos: [0, 0, 0.01], I: [0.0025, 0.002875, 0.003625, -0.000433013, -0.00025, -0.000649519] },
+    twice: { mass: 2, ipos: [0.1, 0, 0.02], I: [0.02, 0.03, 0.04, 0, 0, 0] },
+  },
+}
+
+/**
+ * A link's URDF <inertial>: its mass, its origin's xyz, and its tensor turned into the link frame (R · I · Rᵀ, R from the
+ * origin's rpy, fixed axes x then y then z), as xx yy zz xy xz yz, plus the tensor as written. null when the link has none.
+ */
+function urdfInertial(urdf, link) {
+  const body = (new RegExp(`<link name="${link.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"(?:/>|>([\\s\\S]*?)</link>)`).exec(urdf ?? '') ?? [])[1] ?? ''
+  const el = /<inertial>([\s\S]*?)<\/inertial>/.exec(body)?.[1]
+  if (!el) return null
+  const nums = (s) => (s ?? '').trim().split(/\s+/).map(Number)
+  const at = (tag, a) => new RegExp(`<${tag}\\b[^>]*\\b${a}="([^"]*)"`).exec(el)?.[1]
+  const xyz = nums(at('origin', 'xyz'))
+  const [r, p, y] = nums(at('origin', 'rpy'))
+  const g = Object.fromEntries(['ixx', 'ixy', 'ixz', 'iyy', 'iyz', 'izz'].map((k) => [k, Number(at('inertia', k))]))
+  const [cr, sr, cp, sp, cy, sy] = [Math.cos(r), Math.sin(r), Math.cos(p), Math.sin(p), Math.cos(y), Math.sin(y)]
+  const R = [
+    [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+    [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+    [-sp, cp * sr, cp * cr],
+  ]
+  const I = [[g.ixx, g.ixy, g.ixz], [g.ixy, g.iyy, g.iyz], [g.ixz, g.iyz, g.izz]]
+  const T = (i, j) => R[i].reduce((sum, _, a) => sum + R[i][a] * R[j].reduce((s2, __, b) => s2 + I[a][b] * R[j][b], 0), 0)
+  return { mass: Number(at('mass', 'value')), xyz, rpy: [r, p, y], raw: [g.ixx, g.iyy, g.izz, g.ixy, g.ixz, g.iyz], tensor: [T(0, 0), T(1, 1), T(2, 2), T(0, 1), T(0, 2), T(1, 2)] }
+}
+
 // --- MJCF conversion, through the page's importer in Chrome ------------------------------------------------------------
 {
   const bundle = await rolldown({ input: fileURLToPath(new URL('scripts/import-harness.ts', root)), logLevel: 'silent',
@@ -248,7 +288,24 @@ const EXPECTED = {
     if (stray.length) strays.push(`${name}: ${stray.slice(0, 3).join(', ')}`)
     return { ...got, stray }
   }
+  /** A fixture's main file through its converter alone (no importer), for what the converter leaves in its context. */
+  const convertFixture = async (name) => {
+    const fx = mjcfFixtures()[name] ?? sdfFixtures()[name]
+    const page = await browser.newPage()
+    page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`))
+    await page.addInitScript(() => {
+      window.WebSocket = class { constructor() { this.readyState = 3 } send() {} close() {} addEventListener() {} removeEventListener() {} }
+    })
+    await page.goto(`http://127.0.0.1:${server.address().port}/`)
+    await page.waitForFunction(() => !!window.__rocoImport, null, { timeout: 30000 })
+    const out = await page.evaluate(([t, f]) => window.__rocoImport.convert(t, f), [fx.files[fx.main], fx.main])
+    await page.close()
+    return out
+  }
+  const inertiaSettings = (c) => JSON.stringify(c.mjcfInertia && { inertiafromgeom: c.mjcfInertia.inertiafromgeom, balanceinertia: c.mjcfInertia.balanceinertia, boundmass: c.mjcfInertia.boundmass, boundinertia: c.mjcfInertia.boundinertia })
   const near = (a, b, tol = 1e-9) => a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) <= tol)
+  /** A report line of this kind that says this. */
+  const said = (g, kind, text) => (g.warnings ?? []).some((l) => l.startsWith(kind) && l.includes(text))
   /** Same rotation: q and -q are one rotation. */
   const sameRot = (a, b, tol = 1e-9) => near(a, b, tol) || near(a, b.map((c) => -c), tol)
   const posesMatch = (got, expected, what) => {
@@ -307,6 +364,39 @@ const EXPECTED = {
     check(!got.ok && /^The description nests too deeply \(include 'd9.xml' is 9 includes deep\)/.test(got.error ?? ''), `includes 9 deep are refused (${got.error ?? 'imported'})`)
     got = await importFixture('ambiguous')
     check(got.ok && got.robotName === 'right', 'the main file the import names is the one used')
+
+    // --- inertials: mass, centre of mass and the tensor in the body frame, against MuJoCo's body_mass, body_ipos and
+    // body_iquat · diag(body_inertia) · body_iquatᵀ ---
+    got = await importFixture('inertia', { urdf: true })
+    check(got.ok, `inertia imports (${got.error ?? ''})`)
+    {
+      const bad = Object.entries(EXPECTED_INERTIA.inertia).filter(([n, e]) => {
+        const i = urdfInertial(got.urdf, n)
+        return !i || !near([i.mass], [e.mass], 1e-9) || !near(i.xyz, e.ipos, 1e-9) || !near(i.tensor, e.I, 1e-8)
+      })
+      check(bad.length === 0, `MJCF inertials (a quat, a fullinertia in a turned frame on a two-joint body, an euler in degrees, one in a frame) match MuJoCo${bad.length ? ` (off: ${bad.map(([n]) => `${n} got ${JSON.stringify(urdfInertial(got.urdf, n))}`).join('; ')})` : ''}`)
+      check(urdfInertial(got.urdf, 'tip') === null && urdfInertial(got.urdf, 'arm__j1') === null && urdfInertial(got.urdf, 'world') === null,
+        'a body with no <inertial>, a helper link and the world get none')
+      const w = got.warnings ?? []
+      check(w.some((l) => l.startsWith('approx') && l.includes('the last one is used') && l.includes('twice')) && !w.some((l) => l.startsWith('error')),
+        'an <inertial> in a body and in a <frame> in it is reported; nothing in inertia is an error')
+      const c = await convertFixture('inertia')
+      check(inertiaSettings(c) === JSON.stringify({ inertiafromgeom: 'auto', balanceinertia: false, boundmass: 0, boundinertia: 0 }),
+        `the MJCF compiler's inertia settings default as in MuJoCo (${JSON.stringify(c.mjcfInertia)})`)
+    }
+    got = await importFixture('inertia_refused', { urdf: true })
+    check(got.ok && ['j1', 'j2', 'j3', 'j4', 'j5'].every((n) => n in (got.joints ?? {})), `inertia_refused still imports every joint (${got.error ?? ''})`)
+    {
+      check(['full_euler', 'full_diag', 'two', 'no_mass'].every((n) => urdfInertial(got.urdf, n) === null) && urdfInertial(got.urdf, 'good')?.mass === 0.5,
+        'an inertial MuJoCo refuses is left out; the good one beside them is kept')
+      check(said(got, 'error', 'fullinertia and also an orientation or a diaginertia') && said(got, 'error', 'full_euler, full_diag'),
+        'a fullinertia with an orientation, and one with a diaginertia, are reported as MuJoCo refuses them')
+      check(said(got, 'error', 'two <inertial> in one element') && said(got, 'error', 'without pos or mass') && said(got, 'error', 'in the worldbody'),
+        'two inertials in one body, one with no mass, and one in the worldbody are reported')
+      const c = await convertFixture('inertia_refused')
+      check(inertiaSettings(c) === JSON.stringify({ inertiafromgeom: 'true', balanceinertia: true, boundmass: 0.001, boundinertia: 1e-6 }),
+        `the MJCF compiler's inertia settings are read (${JSON.stringify(c.mjcfInertia)})`)
+    }
     // --- xacro: the expression table against Python xacro 2.1.1, then each error it reports and goes on past ---
     const unxml = (v) => v.replace(/&(lt|gt|quot|apos|amp);/g, (_, e) => ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' })[e])
     const xs = (urdf) => Array.from((urdf ?? '').matchAll(/<x n="([^"]*)" v="([^"]*)"\/>/g), (m) => [m[1], unxml(m[2])])
@@ -357,7 +447,6 @@ const EXPECTED = {
       const jj = g.joints?.[n]
       return jj?.type === type && (!axis || near(jj.axis, axis)) && (lower === undefined || (near([jj.lower], [lower]) && near([jj.upper], [upper])))
     }
-    const said = (g, kind, text) => (g.warnings ?? []).some((l) => l.startsWith(kind) && l.includes(text))
     const linkVisuals = (g, link) => (new RegExp(`<link name="${link}">([\\s\\S]*?)</link>`).exec(g.urdf ?? '') ?? [])[1] ?? ''
 
     got = await importFixture('sdf_frames', { urdf: true })
@@ -397,6 +486,27 @@ const EXPECTED = {
       'a model:// mesh, and a relative mesh in an included file read from that file\'s folder')
     check(got.meshes?.total === 3 && got.meshes?.resolved === 3, `every SDF mesh resolves (${JSON.stringify(got.meshes)})`)
     check(!(got.warnings ?? []).some((l) => l.startsWith('error')), `nothing in sdf_nested is an error (${(got.warnings ?? []).filter((l) => l.startsWith('error')).join(' | ')})`)
+
+    got = await importFixture('sdf_inertia', { urdf: true })
+    check(got.ok, `sdf_inertia imports (${got.error ?? ''})`)
+    {
+      const base = urdfInertial(got.urdf, 'base')
+      check(base?.mass === 4 && near(base.xyz, [0.1, 0.2, 0.3]) && near(base.rpy, [0, 0, Math.PI / 2]) && near(base.raw, [0.4, 0.5, 0.6, 0.01, 0.02, 0.03]),
+        `an SDF inertial keeps its mass, pose and full tensor as written (${JSON.stringify(base)})`)
+      const deg = urdfInertial(got.urdf, 'deg')
+      check(deg?.mass === 2 && near(deg.xyz, [0, 0, 0.1]) && near(deg.rpy, [0, Math.PI / 2, 0]) && near(deg.raw, [0.2, 0.2, 0.1, 0, 0, 0]) &&
+        said(got, 'approx', 'An inertial pose relative to "f" is read in its link\'s frame'),
+        `an inertial pose in degrees and relative_to a frame is read in the link frame, as libsdformat does, and reported (${JSON.stringify(deg)})`)
+      const d = urdfInertial(got.urdf, 'defaults')
+      check(d?.mass === 3 && near(d.xyz, [0, 0, 0]) && near(d.raw, [1, 1, 1, 0, 0, 0]), `an inertial with only a mass gets libsdformat's unit inertia (${JSON.stringify(d)})`)
+      check(urdfInertial(got.urdf, 'bare') === null && urdfInertial(got.urdf, 'computed') === null, 'a link with no <inertial>, and one Gazebo computes, get none')
+      check(said(got, 'unsupported', 'auto="true"') && said(got, 'unsupported', 'computed') && !(got.warnings ?? []).some((l) => l.startsWith('error')),
+        'an auto inertial is reported as not computed; nothing in sdf_inertia is an error')
+      const c = await convertFixture('sdf_inertia')
+      check(JSON.stringify(c.sdfAutoInertia) === '["computed"]' && c.mjcfInertia === undefined, `the links Gazebo computes are named for the model check (${JSON.stringify(c.sdfAutoInertia)})`)
+      const f = await convertFixture('sdf_frames')
+      check(f.sdfAutoInertia === undefined && !/<inertial>/.test(f.urdf), 'an SDF with no inertials gets none and names no computed link')
+    }
 
     got = await importFixture('sdf_world')
     check(got.ok && got.robotName === 'bot', `sdf_world imports its model with the most joints (${got.error ?? ''})`)
@@ -518,6 +628,49 @@ const EXPECTED = {
     got = await importFixture('slots_35')
     check(!items(got, 'limit').some((i) => /no movable joints/.test(i.message)), 'negative: a robot with movable joints is not called rigid')
     check(got.warnings?.some((l) => /Motor order/.test(l)), 'negative: a robot with movable joints still gets the motor-order note')
+
+    // --- the model check: each fixture gives exactly its findings; every fixture MuJoCo compiles, and the G1, give no error ---
+    {
+      const page = await browser.newPage()
+      page.on('pageerror', (e) => errors.push(`model check: ${e.message}`))
+      await page.addInitScript(() => {
+        window.WebSocket = class { constructor() { this.readyState = 3 } send() {} close() {} addEventListener() {} removeEventListener() {} }
+      })
+      await page.goto(`http://127.0.0.1:${server.address().port}/`)
+      await page.waitForFunction(() => !!window.__rocoImport, null, { timeout: 30000 })
+      const findingsOf = (text, file, triangles) => page.evaluate(([t, f, n]) => window.__rocoImport.convert(t, f, n ?? undefined).findings, [text, file, triangles ?? null])
+      const codes = new Set()
+      for (const [name, fx] of Object.entries(checkerFixtures())) {
+        const got = await findingsOf(fx.text, fx.file, fx.triangles)
+        const said = got.map((f) => `${f.severity} ${f.code}`).sort()
+        const want = fx.expect.map(([k]) => k).sort()
+        const named = fx.expect.every(([k, ...where]) => got.some((f) => `${f.severity} ${f.code}` === k && where.every((w) => f.where.includes(w))))
+        const errorsFirst = got.findIndex((f) => f.severity === 'warning') === -1 || !got.slice(got.findIndex((f) => f.severity === 'warning')).some((f) => f.severity === 'error')
+        const complete = got.every((f) => f.message && f.fix)
+        check(JSON.stringify(said) === JSON.stringify(want) && named && errorsFirst && complete,
+          `model check ${name}: ${want.length ? want.join(', ') : 'no findings'} (got ${JSON.stringify(got.map((f) => [`${f.severity} ${f.code}`, f.where]))})`)
+        for (const k of want) codes.add(k.split(' ')[1])
+      }
+      const all = ['mass', 'inertia-pd', 'inertia-triangle', 'moving-massless', 'axis', 'limits', 'mesh-scale', 'collision-heavy']
+      check(all.every((c) => codes.has(c)), `every model check code has a failing fixture (missing: ${all.filter((c) => !codes.has(c)).join(', ')})`)
+      // negative: the MJCF and SDF fixtures MuJoCo and libsdformat accept give no error (the refused ones are reported by the converter)
+      const refusedByMujoco = new Set(['missing_include', 'circular', 'include_depth', 'inertia_refused'])
+      const noisy = []
+      for (const [name, fx] of Object.entries({ ...mjcfFixtures(), ...sdfFixtures() })) {
+        if (refusedByMujoco.has(name) || !fx.main || !(fx.main in fx.files)) continue
+        // a file the converter refuses throws, and the import shows that error instead
+        const got = await findingsOf(fx.files[fx.main], fx.main).catch(() => [])
+        const bad = got.filter((f) => f.severity === 'error')
+        if (bad.length) noisy.push(`${name}: ${bad.map((f) => `${f.code} ${f.where.join(',')}`).join('; ')}`)
+      }
+      check(noisy.length === 0, `negative: the MJCF and SDF fixtures give no model check error (${noisy.join(' | ')})`)
+      await page.close()
+      got = await importFixture('units_g1')
+      check(got.ok && Array.isArray(got.findings) && !got.findings.some((f) => f.severity === 'error'),
+        `negative: the G1 sample imports with no model check error (got ${JSON.stringify((got.findings ?? []).map((f) => [f.severity, f.code, f.where.slice(0, 3)]))})`)
+      got = await importFixture('tri_formats')
+      check(got.ok && Array.isArray(got.findings), `an import returns its model check (${JSON.stringify(got.findings ?? got.error)})`)
+    }
 
     check(strays.length === 0, `no fixture made a request outside the page and its files (${strays.join('; ')})`)
     check(errors.length === 0, `no page errors (${errors.join('; ')})`)
@@ -646,8 +799,8 @@ ${Array.from({ length: n }, (_, i) => `  <joint name="j${i}" type="revolute"><pa
 }
 
 /**
- * The MJCF fixtures: each is a folder of files and its main file. MuJoCo 3.17.0 compiles each one except missing_include and
- * circular (it refuses both); include_depth it compiles, but the importer stops includes 8 deep.
+ * The MJCF fixtures: each is a folder of files and its main file. MuJoCo 3.17.0 compiles each one except missing_include,
+ * circular and inertia_refused (it refuses them); include_depth it compiles, but the importer stops includes 8 deep.
  */
 function mjcfFixtures() {
   const joint = '<joint name="j0"/><geom size="0.1"/>'
@@ -765,6 +918,57 @@ function mjcfFixtures() {
       'main.xml': `<mujoco model="include_depth"><include file="d1.xml"/><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
       ...Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`d${i + 1}.xml`, i < 8 ? `<mujoco><include file="d${i + 2}.xml"/></mujoco>\n` : '<mujoco><worldbody/></mujoco>\n'])),
     } },
+    // each body's <inertial> as MuJoCo compiles it (angles in degrees, the default): a quat, a fullinertia in a turned <frame>
+    // on a body with two joints, an euler, one in the body and one in a frame (the last wins), and a body with none
+    inertia: { main: 'm.xml', files: { 'm.xml': `<mujoco model="inertia">
+  <worldbody>
+    <body name="base" pos="0 0 1">
+      <freejoint name="root"/>
+      <geom size="0.1"/>
+      <inertial pos="0.01 0.02 0.03" quat="0.9238795 0 0 0.3826834" mass="5" diaginertia="0.3 0.25 0.1"/>
+      <body name="arm" pos="0.2 0 0">
+        <joint name="a1" axis="0 0 1" pos="0.05 0 0"/>
+        <joint name="a2" axis="0 1 0"/>
+        <geom size="0.05"/>
+        <frame pos="0.1 0 0" euler="0 0 90">
+          <inertial pos="0.05 0 0" mass="1.5" fullinertia="0.04 0.03 0.02 0.001 0.002 0.003"/>
+        </frame>
+        <body name="tip" pos="0.3 0 0">
+          <joint name="t" axis="1 0 0"/>
+          <geom size="0.02"/>
+        </body>
+      </body>
+      <body name="paddle" pos="0 0.3 0">
+        <joint name="p" axis="0 1 0"/>
+        <geom type="box" size="0.1 0.01 0.05"/>
+        <inertial pos="0 0 0.01" euler="30 0 45" mass="0.2" diaginertia="0.002 0.003 0.004"/>
+      </body>
+      <body name="twice" pos="0 -0.3 0">
+        <joint name="w" axis="0 1 0"/>
+        <geom size="0.02"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+        <frame pos="0.1 0 0"><inertial pos="0 0 0.02" mass="2" diaginertia="0.02 0.03 0.04"/></frame>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+` } },
+    // inertials MuJoCo refuses (it refuses the whole file): each is left out and reported, and the rest still converts
+    inertia_refused: { main: 'm.xml', files: { 'm.xml': `<mujoco model="inertia_refused">
+  <compiler inertiafromgeom="true" balanceinertia="true" boundmass="0.001" boundinertia="1e-6"/>
+  <worldbody>
+    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+    <body name="base">
+      ${joint}
+      <body name="full_euler"><joint name="j1"/><inertial pos="0 0 0" mass="1" euler="0 0 30" fullinertia="1 1 1 0 0 0"/></body>
+      <body name="full_diag"><joint name="j2"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" fullinertia="1 1 1 0 0 0"/></body>
+      <body name="two"><joint name="j3"/><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/><inertial pos="0 0 0" mass="2" diaginertia="1 1 1"/></body>
+      <body name="no_mass"><joint name="j4"/><inertial pos="0 0 0" diaginertia="1 1 1"/></body>
+      <body name="good"><joint name="j5"/><inertial pos="0 0 0.1" mass="0.5" diaginertia="0.1 0.1 0.1"/></body>
+    </body>
+  </worldbody>
+</mujoco>
+` } },
     ambiguous: { main: 'right.xml', files: {
       'left.xml': `<mujoco model="left"><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
       'right.xml': `<mujoco model="right"><worldbody><body name="b">${joint}</body></worldbody></mujoco>\n`,
@@ -1064,6 +1268,37 @@ function sdfFixtures() {
 `,
       'wheel/meshes/tire.stl': stl(),
     } },
+    // inertials as libsdformat 14 reads them (1.11, for auto): a posed full tensor, a pose relative_to a frame (read in the link
+    // frame all the same), an <inertial> with only a mass (the rest default), a link with none, and one Gazebo computes
+    sdf_inertia: { main: 'm.sdf', files: { 'm.sdf': `<?xml version="1.0"?>
+<sdf version="1.11">
+  <model name="masses">
+    <frame name="f"><pose>1 0 0 0 0 0</pose></frame>
+    <link name="base">
+      <inertial>
+        <pose>0.1 0.2 0.3 0 0 1.5707963267948966</pose>
+        <mass>4</mass>
+        <inertia><ixx>0.4</ixx><ixy>0.01</ixy><ixz>0.02</ixz><iyy>0.5</iyy><iyz>0.03</iyz><izz>0.6</izz></inertia>
+      </inertial>
+    </link>
+    <link name="deg">
+      <pose>0 1 0 0 0 0</pose>
+      <inertial><pose relative_to="f" degrees="true">0 0 0.1 0 90 0</pose><mass>2</mass><inertia><ixx>0.2</ixx><iyy>0.2</iyy><izz>0.1</izz></inertia></inertial>
+    </link>
+    <link name="defaults"><pose>0 2 0 0 0 0</pose><inertial><mass>3</mass></inertial></link>
+    <link name="bare"><pose>0 3 0 0 0 0</pose></link>
+    <link name="computed">
+      <pose>0 4 0 0 0 0</pose>
+      <inertial auto="true"><density>500</density></inertial>
+      <collision name="c"><geometry><box><size>1 1 1</size></box></geometry></collision>
+    </link>
+    <joint name="j_deg" type="revolute"><parent>base</parent><child>deg</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint>
+    <joint name="j_defaults" type="revolute"><parent>base</parent><child>defaults</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint>
+    <joint name="j_bare" type="fixed"><parent>base</parent><child>bare</child></joint>
+    <joint name="j_computed" type="revolute"><parent>base</parent><child>computed</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint>
+  </model>
+</sdf>
+` } },
     sdf_world: { main: 'world.sdf', files: {
       'world.sdf': `<?xml version="1.0"?>
 <sdf version="1.4">
@@ -1113,5 +1348,84 @@ ${Array.from({ length: 9999 }, (_, i) => `<frame name="f${i + 2}"><pose relative
 ${link('base')}${link('arm', '<pose relative_to="f10000">0 0 0 0 0 0</pose>')}
 <joint name="j" type="revolute"><parent>base</parent><child>arm</child><axis><xyz>0 0 1</xyz>${limit(-1, 1)}</axis></joint></model></sdf>
 ` } },
+  }
+}
+
+/**
+ * The model check fixtures (src/utils/modelChecker.ts): one file each, and the findings it must give, as `severity code`
+ * with the names it must list. An empty list is the passing case. The URDF and MJCF verdicts are MuJoCo 3.17.0's (dump
+ * them with --dump-fixtures); the SDF ones follow libsdformat 14 and gz-math 7 (MassMatrix3::IsValid). `triangles` stands in
+ * for the importer's count of each collision mesh.
+ */
+function checkerFixtures() {
+  const inertial = (m, [ixx, iyy, izz, ixy = 0, ixz = 0, iyz = 0]) =>
+    `<inertial><origin xyz="0 0 0"/><mass value="${m}"/><inertia ixx="${ixx}" iyy="${iyy}" izz="${izz}" ixy="${ixy}" ixz="${ixz}" iyz="${iyz}"/></inertial>`
+  const good = inertial(1, [0.1, 0.1, 0.1])
+  const box = '<collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision>'
+  const urdf = ({ base = good, arm = good, tip = good, head = '', joint = '<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>', type = 'revolute' } = {}) =>
+    `<robot name="r">${head}<link name="base">${base}</link><link name="arm">${arm}</link><link name="tip">${tip}</link>
+<joint name="j" type="${type}"><parent link="base"/><child link="arm"/>${joint}</joint>
+<joint name="f" type="fixed"><parent link="arm"/><child link="tip"/><origin xyz="0 0 0.1"/></joint></robot>`
+  const mesh = (file, scale = '') => `<collision><geometry><mesh filename="${file}"${scale ? ` scale="${scale}"` : ''}/></geometry></collision>`
+  const mj = (body, compiler = '') => `<mujoco model="m">${compiler}<worldbody>${body}</worldbody></mujoco>`
+  const sdf = (inner) => `<?xml version="1.0"?><sdf version="1.9"><model name="m"><link name="a">${inner}</link></model></sdf>`
+  const sdfInertial = (m, [ixx, iyy, izz]) => `<inertial><mass>${m}</mass><inertia><ixx>${ixx}</ixx><iyy>${iyy}</iyy><izz>${izz}</izz></inertia></inertial>`
+  const u = (text, expect, triangles) => ({ file: 'r.urdf', text, expect, triangles })
+  return {
+    urdf_ok: u(urdf({ type: 'continuous', joint: '' }), []),
+    urdf_no_mass: u(urdf({ arm: '<inertial><origin xyz="0 0 0"/><inertia ixx="0.1" iyy="0.1" izz="0.1" ixy="0" ixz="0" iyz="0"/></inertial>' }), [['error mass', 'arm']]),
+    urdf_no_inertia: u(urdf({ arm: '<inertial><origin xyz="0 0 0"/><mass value="1"/><inertia ixx="0.1" iyy="0.1" izz="0.1"/></inertial>' }), [['error inertia-pd', 'arm']]),
+    urdf_not_pd: u(urdf({ arm: inertial(1, [0.1, 0.1, 0.1, 0.2]) }), [['error inertia-pd', 'arm']]),
+    urdf_not_pd_static: u(urdf({ base: inertial(1, [-0.1, 0.1, 0.1]) }), [['error inertia-pd', 'base']]),
+    urdf_triangle: u(urdf({ arm: inertial(1, [0.1, 0.1, 0.5]) }), [['error inertia-triangle', 'arm']]),
+    urdf_triangle_static: u(urdf({ tip: inertial(1, [0.1, 0.1, 0.5]) }), [['error inertia-triangle', 'tip']]),
+    urdf_triangle_balanced: u(urdf({ arm: inertial(1, [0.1, 0.1, 0.5]), head: '<mujoco><compiler balanceinertia="true"/></mujoco>' }), []),
+    urdf_massless: u(urdf({ arm: '<visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual>', tip: '' }), [['error moving-massless', 'arm']]),
+    urdf_massless_zero: u(urdf({ arm: inertial(0, [0, 0, 0]), tip: inertial(0, [0, 0, 0]) }), [['error moving-massless', 'arm']]),
+    urdf_massless_bounded: u(urdf({ arm: inertial(0, [0, 0, 0]), tip: '', head: '<mujoco><compiler boundmass="0.01" boundinertia="0.0001"/></mujoco>' }), []),
+    urdf_mass_in_child: u(urdf({ arm: inertial(0, [0, 0, 0]) }), []),
+    urdf_guessed: u(urdf({ arm: box, tip: '' }), [['warning moving-massless', 'arm']]),
+    urdf_guessed_child: u(urdf({ arm: '', tip: box }), [['warning moving-massless', 'arm']]),
+    urdf_negative_mass_static: u(urdf({ base: inertial(-1, [0.1, 0.1, 0.1]) }), [['warning mass', 'base']]),
+    urdf_from_shapes: u(urdf({ arm: inertial(1, [0.1, 0.1, 0.5]) + box, head: '<mujoco><compiler inertiafromgeom="true"/></mujoco>' }), [['warning mass']]),
+    urdf_from_shapes_no_collision: u(urdf({ arm: inertial(1, [0.1, 0.1, 0.5]), head: '<mujoco><compiler inertiafromgeom="true"/></mujoco>' }), [['error inertia-triangle', 'arm'], ['warning mass']]),
+    // with inertiafromgeom="true", fusestatic (on for URDF) merges tip into arm and drops tip's <inertial>; MuJoCo refuses
+    urdf_from_shapes_fused: u(urdf({ arm: '', head: '<mujoco><compiler inertiafromgeom="true"/></mujoco>' }), [['error moving-massless', 'arm'], ['warning mass']]),
+    urdf_from_shapes_unfused: u(urdf({ arm: '', head: '<mujoco><compiler inertiafromgeom="true" fusestatic="false"/></mujoco>' }), [['warning mass']]),
+    urdf_from_shapes_fused_shape: u(urdf({ arm: '', tip: good + box, head: '<mujoco><compiler inertiafromgeom="true"/></mujoco>' }), [['warning mass']]),
+    urdf_axis_zero: u(urdf({ joint: '<axis xyz="0 0 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/>' }), [['error axis', 'j']]),
+    urdf_axis_junk: u(urdf({ joint: '<axis xyz="0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>' }), [['error axis', 'j']]),
+    urdf_limits: u(urdf({ joint: '<axis xyz="0 0 1"/><limit lower="1" upper="-1" effort="1" velocity="1"/>' }), [['error limits', 'j']]),
+    urdf_limits_junk: u(urdf({ type: 'prismatic', joint: '<axis xyz="0 0 1"/><limit lower="x" upper="1" effort="1" velocity="1"/>' }), [['error limits', 'j']]),
+    urdf_mesh_scale: u(urdf({ tip: good + mesh('c.stl', '1 0 1') }), [['error mesh-scale', 'tip']], { 'c.stl': 10 }),
+    urdf_mesh_scale_ok: u(urdf({ tip: good + mesh('c.stl', '0.001 0.001 0.001') }), [], { 'c.stl': 10 }),
+    urdf_heavy: u(urdf({ tip: good + mesh('c.stl') }), [['warning collision-heavy', 'tip: c.stl (150,000)']], { 'c.stl': 150_000 }),
+    urdf_heavy_total: u(urdf({ arm: good + mesh('a.stl'), tip: good + mesh('b.stl') }), [['warning collision-heavy', 'arm: a.stl (600,000)', 'tip: b.stl (600,000)'], ['warning collision-heavy']], { 'a.stl': 600_000, 'b.stl': 600_000 }),
+    urdf_light: u(urdf({ tip: good + mesh('c.stl') }), [], { 'c.stl': 100_000 }),
+    mjcf_ok: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><geom size="0.1"/></body>'), expect: [] },
+    mjcf_massless: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><geom size="0.1" group="6"/></body>'), expect: [['error moving-massless', 'a']] },
+    mjcf_massless_density: { file: 'm.xml', text: mj('<body name="a"><joint type="slide"/><geom size="0.1" density="0"/></body>'), expect: [['error moving-massless', 'a']] },
+    mjcf_group_range: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><geom size="0.1" group="6"/></body>', '<compiler inertiagrouprange="0 6"/>'), expect: [] },
+    mjcf_static_child: { file: 'm.xml', text: mj('<body name="a"><joint type="ball"/><body name="b"><geom size="0.1"/></body></body>'), expect: [] },
+    mjcf_not_pd: { file: 'm.xml', text: mj('<body name="a"><inertial pos="0 0 0" mass="1" fullinertia="0.1 0.1 0.1 0.2 0 0"/></body>'), expect: [['error inertia-pd', 'a']] },
+    mjcf_triangle: { file: 'm.xml', text: mj('<body name="a"><freejoint/><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.5"/></body>'), expect: [['error inertia-triangle', 'a']] },
+    mjcf_negative_static: { file: 'm.xml', text: mj('<body name="a"><inertial pos="0 0 0" mass="1" diaginertia="-0.1 0.1 0.1"/></body>'), expect: [['warning inertia-pd', 'a']] },
+    mjcf_negative_moving: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><inertial pos="0 0 0" mass="-1" diaginertia="0.1 0.1 0.1"/></body>'), expect: [['error moving-massless', 'a'], ['warning mass', 'a']] },
+    mjcf_from_shapes: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.5"/><geom size="0.1"/></body>', '<compiler inertiafromgeom="true"/>'), expect: [['warning mass']] },
+    // a body with no geom with mass keeps its <inertial> under inertiafromgeom="true", and MuJoCo checks it
+    mjcf_from_shapes_no_geom: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.5"/></body>', '<compiler inertiafromgeom="true"/>'), expect: [['error inertia-triangle', 'a'], ['warning mass']] },
+    mjcf_from_shapes_massless_geom: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/><geom size="0.1" mass="0"/></body>', '<compiler inertiafromgeom="true"/>'), expect: [['warning mass']] },
+    mjcf_from_shapes_fused: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><body name="b"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/></body></body>', '<compiler inertiafromgeom="true" fusestatic="true"/>'), expect: [['error moving-massless', 'a'], ['warning mass']] },
+    mjcf_from_shapes_not_fused: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><body name="b"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/></body></body>', '<compiler inertiafromgeom="true"/>'), expect: [['warning mass']] },
+    // boundinertia raises b's inertia, so MuJoCo keeps b as its own body
+    mjcf_from_shapes_fused_adjusted: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><body name="b"><inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/></body></body>', '<compiler inertiafromgeom="true" fusestatic="true" boundinertia="0.2"/>'), expect: [['warning mass']] },
+    mjcf_massless_bounded: { file: 'm.xml', text: mj('<body name="a"><joint type="hinge"/><geom size="0.1" mass="0"/></body>', '<compiler boundmass="0.1" boundinertia="0.1"/>'), expect: [] },
+    sdf_ok: { file: 'm.sdf', text: sdf(sdfInertial(1, [0.1, 0.1, 0.1])), expect: [] },
+    sdf_zero: { file: 'm.sdf', text: sdf(sdfInertial(0, [0, 0, 0])), expect: [] },
+    sdf_negative_mass: { file: 'm.sdf', text: sdf(sdfInertial(-1, [0.1, 0.1, 0.1])), expect: [['error mass', 'a']] },
+    sdf_not_pd: { file: 'm.sdf', text: sdf(sdfInertial(1, [-0.1, 0.1, 0.1])), expect: [['error inertia-pd', 'a']] },
+    sdf_triangle: { file: 'm.sdf', text: sdf(sdfInertial(1, [0.1, 0.1, 0.5])), expect: [['error inertia-triangle', 'a']] },
+    sdf_default_mass: { file: 'm.sdf', text: sdf(''), expect: [['warning mass', 'a']] },
+    sdf_auto: { file: 'm.sdf', text: sdf('<inertial auto="true"/>'), expect: [] },
   }
 }

@@ -6,6 +6,8 @@ import URDFLoader from 'urdf-loader'
 import { configureMultiFormatMeshLoader, getImportedAssetResolver, importFailure, importRobotFiles } from '../src/utils/robotImporter'
 import { applyUnitsFix, checkUnits } from '../src/utils/unitsCheck'
 import { getRobotProfile } from '../src/config/robotRegistry'
+import { isMuJoCoModel, isSdfModel, parseRobotDescription } from '../src/utils/modelFormatParser'
+import { checkModel } from '../src/utils/modelChecker'
 
 export interface HarnessFile {
   /** Path as a folder drop gives it (webkitRelativePath), e.g. `unitree_h1/h1.xml`. */
@@ -40,6 +42,8 @@ export interface HarnessResult {
   notes?: string[]
   mainFile?: string
   xacroArgs?: { name: string; value: string | undefined }[]
+  /** The model check's findings (stage 1.2 importers). */
+  findings?: unknown[]
   /** A failed import's report and xacro arguments, as the dialog gets them. */
   failure?: { report: unknown[]; mainFile?: string; xacroArgs: { name: string; value: string | undefined }[] }
 }
@@ -81,7 +85,7 @@ async function run(list: HarnessFile[], options: Record<string, unknown> = {}, w
   const t0 = performance.now()
   try {
     // the options are ignored by an importer that takes none (v1), so the same harness measures before and after
-    const { profile, warnings, report, notes, mainFile, xacroArgs } = await (importRobotFiles as (f: File[], o?: unknown) => ReturnType<typeof importRobotFiles>)(files, options)
+    const { profile, warnings, report, notes, mainFile, xacroArgs, findings } = await (importRobotFiles as (f: File[], o?: unknown) => ReturnType<typeof importRobotFiles>)(files, options)
     const ms = performance.now() - t0
     const urdf = await (await fetch(getRobotProfile(profile.id).urdfPath)).text()
     const given = new Set(list.map((f) => f.path.toLowerCase()))
@@ -121,7 +125,7 @@ async function run(list: HarnessFile[], options: Record<string, unknown> = {}, w
     return { ok: true, ms, units, robotName: robot.robotName, profileName: profile.name, profileJoints: profile.joints.length,
       profileSlots: profile.joints.map((j) => j.sdkMotorIndex ?? -2),
       profile: { category: profile.category, nominalPelvisHeight: profile.nominalPelvisHeight, groundContactLinks: profile.groundContactLinks }, warnings, joints, poses, meshes, ...(want.urdf ? { urdf } : {}),
-      report: report?.toJson().items, notes, mainFile, xacroArgs }
+      report: report?.toJson().items, notes, mainFile, xacroArgs, findings }
   } catch (err) {
     const f = importFailure(err)
     return { ok: false, ms: performance.now() - t0, error: err instanceof Error ? err.message : String(err),
@@ -129,4 +133,21 @@ async function run(list: HarnessFile[], options: Record<string, unknown> = {}, w
   }
 }
 
-;(window as unknown as { __rocoImport: unknown }).__rocoImport = { run }
+/**
+ * One description file through its converter alone, with what the converter leaves in the context for the model check and
+ * the check's findings. `triangles` stands in for the importer's count of each collision mesh, by its filename as written.
+ */
+function convert(text: string, fileName: string, triangles?: Record<string, number>) {
+  const ctx: Parameters<typeof parseRobotDescription>[2] = { warnings: [] }
+  const urdf = parseRobotDescription(text, fileName, ctx)
+  const findings = checkModel(new DOMParser().parseFromString(urdf, 'application/xml'), {
+    format: isMuJoCoModel(text) ? 'mjcf' : isSdfModel(text) ? 'sdf' : 'urdf',
+    mjcf: ctx.mjcfInertia,
+    sdfAutoInertia: ctx.sdfAutoInertia,
+    sdfHelperLinks: ctx.sdfHelperLinks,
+    collisionTriangles: triangles ? (f) => (f in triangles ? { triangles: triangles[f], exact: true } : undefined) : undefined,
+  })
+  return { urdf, warnings: ctx.warnings, mjcfInertia: ctx.mjcfInertia, sdfAutoInertia: ctx.sdfAutoInertia, sdfHelperLinks: ctx.sdfHelperLinks, findings }
+}
+
+;(window as unknown as { __rocoImport: unknown }).__rocoImport = { run, convert }

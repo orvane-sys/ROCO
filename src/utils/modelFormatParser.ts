@@ -26,6 +26,40 @@ export interface ParseContext {
   xacroArgs?: Record<string, string>
   /** Filled by the xacro with each argument it declares or reads, in order, and its value then (undefined: needed, none given). */
   xacroArgsUsed?: Map<string, string | undefined>
+  /** Filled by the MJCF converter: the compiler settings MuJoCo applies to masses and inertias, for the model check. */
+  mjcfInertia?: MjcfInertiaContext
+  /** Filled by the SDF converter: links whose inertia Gazebo computes from their collision shapes (`auto="true"`). */
+  sdfAutoInertia?: string[]
+  /** Filled by the SDF converter: links it added that are not in the file (the world link, joint helpers). */
+  sdfHelperLinks?: string[]
+}
+
+/** MJCF `<compiler>` settings that change masses and inertias (MuJoCo 3.17 user_objects.cc, mjCBody::Compile). */
+export interface MjcfInertiaContext {
+  /** `true`: every body's inertia comes from its geoms; `auto`: only a body with no `<inertial>`; `false`: never. */
+  inertiafromgeom: 'false' | 'true' | 'auto'
+  /** A principal inertia that breaks A + B >= C is replaced by the mean of the three instead of refused. */
+  balanceinertia: boolean
+  /** Lower bounds applied to each body's mass and principal inertias before they are checked. */
+  boundmass: number
+  boundinertia: number
+  /** Static bodies are merged into their parents before the final compile (MJCF default off). */
+  fusestatic: boolean
+  /** Every body, in document order, as MuJoCo's moving-body check sees it (user_model.cc CheckBodyMassInertia). */
+  bodies: MjcfBody[]
+}
+
+/** One MJCF body and the URDF link that carries its `<inertial>`. */
+export interface MjcfBody {
+  link: string
+  /** The parent body's link; '' for a child of the worldbody. */
+  parent: string
+  /** Whether the body has any joint (free and ball included). */
+  moving: boolean
+  /** Whether it has a geom whose group is inside `<compiler inertiagrouprange>` (default 0 5), so MuJoCo can infer its inertia. */
+  geoms: boolean
+  /** Whether its inertial is a `fullinertia` (MuJoCo then refuses any eigenvalue below mjEPS). */
+  fullinertia: boolean
 }
 
 /** The prolog parts rootIs skips, sticky (`y`): each matches only where the scan stands. */

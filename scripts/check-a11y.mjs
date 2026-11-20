@@ -144,7 +144,7 @@ try {
     await page.close()
   }
 
-  // 4. the import dialog with its report and the xacro arguments form open
+  // 4. the import dialog with its model check, its report and the xacro arguments form open
   {
     let runs = 0
     for (const theme of ['dark', 'light', 'contrast']) {
@@ -160,6 +160,8 @@ try {
         runs++
         const found = await page.evaluate((tags) => axe.run(document.querySelector('[role=dialog]'), { runOnly: { type: 'tag', values: tags } }).then((r) => r.violations.flatMap((v) => v.nodes.map((n) => `${v.id} on ${n.target.join(' ')}: ${n.failureSummary?.split('\n').slice(1, 2).join(' ').trim() ?? ''}`))), TAGS)
         for (const v of found) check(false, `${at}: axe ${v}`)
+        const model = await page.getByRole('group', { name: 'Model check findings' }).innerText()
+        check(/Errors \(1\)/.test(model) && model.includes('arm') && !model.includes('Warnings'), `${at}: the model check shows one error, on the link arm (${JSON.stringify(model.slice(0, 120))})`)
         if (w === 320) {
           const wide = await page.evaluate(() => {
             const bad = [...document.querySelectorAll('[role=dialog] *')].filter((e) => e.getClientRects().length > 0 && e.getBoundingClientRect().right > innerWidth + 1)
@@ -176,8 +178,8 @@ try {
             stops.push(s)
           }
           const names = stops.map((s) => s.what).join(' | ')
-          check(['Download report', 'side', 'prefix', 'Import again with these values', 'Done', 'Close dialog'].every((n) => names.includes(n)),
-            `${at}: Tab reaches the report download, each argument, Import again, Done and Close (${names})`)
+          check(['Download report', 'Model check findings', 'Report items', 'side', 'prefix', 'Import again with these values', 'Done', 'Close dialog'].every((n) => names.includes(n)),
+            `${at}: Tab reaches the report download, the model check and report lists, each argument, Import again, Done and Close (${names})`)
           for (const s of stops) {
             check(s.inDialog, `${at}: ${s.what} is inside the dialog (focus stays in it)`)
             check(s.named, `${at}: ${s.what} has a name`)

@@ -1,12 +1,13 @@
 import * as THREE from 'three'
 import URDFLoader, { type URDFRobot } from 'urdf-loader'
-import { parseRobotDescription } from './modelFormatParser'
+import { isMuJoCoModel, isSdfModel, parseRobotDescription, type ParseContext } from './modelFormatParser'
+import { checkModel, type CheckFinding } from './modelChecker'
 import { AssetIndex, type Resolved } from './assetResolver'
 import { ImportReport } from './importReport'
 import { LIMITS, TEXT_FILE, refuse, sizeLimitFor } from './importLimits'
 import { Deadline, parseXmlSafe } from './safeXml'
 import { isZip, unpackZip } from './zipBundle'
-import { countTriangles } from './meshTriangles'
+import { countTriangles, type TriangleCount } from './meshTriangles'
 import { buildProfileFromParsedRobot, robotCategory } from './autoProfileBuilder'
 import { motorOrderNote } from './motorMatch'
 import { MOTOR_COUNT } from './unitreeBinaryCodec'
@@ -111,6 +112,8 @@ export interface ImportResult {
   mainFile: string
   /** The xacro's arguments, in the order it met them; empty for any other file. */
   xacroArgs: XacroArg[]
+  /** The model check (src/utils/modelChecker.ts): masses, inertias, axes, limits and meshes a simulator would refuse. */
+  findings: CheckFinding[]
 }
 
 /** One xacro argument for the dialog's form: its value in this import, or `undefined` when the file needs one and has none. */
@@ -274,7 +277,8 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
     textByUrl.set(filePath(f), text)
     textFileIndex.add(filePath(f), filePath(f))
   }
-  const parsedUrdf = parseRobotDescription(texts.get(mainFile) ?? '', mainFile.name, {
+  const mainText = texts.get(mainFile) ?? ''
+  const ctx: ParseContext = {
     warnings,
     deadline,
     fileName: mainPath,
@@ -289,7 +293,8 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
       const text = hit.url ? textByUrl.get(hit.url) : undefined
       return text === undefined || !hit.path ? undefined : { text, path: hit.path }
     },
-  })
+  }
+  const parsedUrdf = parseRobotDescription(mainText, mainFile.name, ctx)
 
   // 3. Resolve every mesh against the imported files and write its path into the URDF, so the twin loads exactly
   // the file it resolved to. Problems show up in the dialog instead of as a half-empty robot later.
@@ -313,11 +318,13 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
   const count = (n: number) => n.toLocaleString('en-US')
   let triangles = 0
   let exact = true
+  const counted = new Map<string, TriangleCount>()
   for (const url of new Set(Array.from(meshes.values(), (h) => h.url))) {
     deadline.check('counting mesh triangles')
     const f = url ? byPath.get(url) : undefined
     const got = f ? await countTriangles(f, f.name) : null
     if (!f || !got) continue
+    counted.set(filePath(f), got)
     triangles += got.triangles
     exact &&= got.exact
     if (got.triangles > LIMITS.trianglesMesh) {
@@ -330,6 +337,21 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
   if (triangles > LIMITS.trianglesTotal) {
     report.add('limit', `The meshes have ${exact ? '' : 'at least '}${count(triangles)} triangles in all, more than ${count(LIMITS.trianglesTotal)}, so the robot may draw slowly.`)
   }
+
+  // The model check reads the URDF as converted, its mesh filenames now the imported paths (each segment URI-encoded).
+  const findings = checkModel(urdfDoc, {
+    format: isMuJoCoModel(mainText) ? 'mjcf' : isSdfModel(mainText) ? 'sdf' : 'urdf',
+    mjcf: ctx.mjcfInertia,
+    sdfAutoInertia: ctx.sdfAutoInertia,
+    sdfHelperLinks: ctx.sdfHelperLinks,
+    collisionTriangles: (filename) => {
+      try {
+        return counted.get(filename.split('/').map(decodeURIComponent).join('/'))
+      } catch {
+        return undefined
+      }
+    },
+  })
 
   // 4. Parse the URDF for kinematics only. Meshes are loaded later by the digital twin, so skip them here
   // instead of downloading every file twice into a robot that is thrown away.
@@ -411,5 +433,5 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
 
   const notes = warnings.slice()
   warnings.push(...report.lines())
-  return { profile: getRobotProfile(profile.id), warnings, report, notes, mainFile: mainPath, xacroArgs: argList(xacroArgsUsed) }
+  return { profile: getRobotProfile(profile.id), warnings, report, notes, mainFile: mainPath, xacroArgs: argList(xacroArgsUsed), findings }
 }

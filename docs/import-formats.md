@@ -90,7 +90,9 @@ The converter follows MuJoCo 3.17's compiler, checked against `mujoco` itself. I
 - `frame`;
 - every orientation form (`quat`, `axisangle`, `euler` with `eulerseq`, `xyaxes`, `zaxis`), in degrees or radians;
 - `fromto` on capsules, cylinders, boxes and ellipsoids;
-- mesh `scale`, `meshdir`, `assetdir`, `strippath` and `autolimits`.
+- mesh `scale`, `meshdir`, `assetdir`, `strippath` and `autolimits`;
+- each body's `<inertial>` (mass, centre of mass and inertia), kept for the model check. An `<inertial>` MuJoCo refuses,
+  such as a `fullinertia` with an orientation, is left out and reported under **Problems**.
 
 A body with several joints becomes a chain of helper links (`<body>__j2`, …) with one joint each. The view shows geom groups
 0–2, as MuJoCo's viewer does; if no geom is in those groups, every group is drawn.
@@ -118,7 +120,9 @@ The converter reads SDFormat 1.4 to 1.11:
 - each pose is read against its `relative_to` frame (or, before 1.7, its `frame`), or else its element's default frame;
 - `<frame>` elements;
 - nested models, flattened with `::` names, as Gazebo names them;
-- `<include>` of models from the import.
+- `<include>` of models from the import;
+- each link's `<inertial>`, read as Gazebo reads it: in the link's frame, with mass 1 kg and inertia 1 kg·m² on each axis
+  when they are not given.
 
 When a file holds several models, the one with the most joints is used, and the report says so.
 
@@ -134,12 +138,14 @@ joints.
 | Ellipsoid | a sphere of its largest radius |
 | Capsule | a cylinder with a sphere on each end |
 | Gazebo material scripts | the colour given beside them, or the default |
+| Inertial pose `relative_to` another frame | read in the link's frame, as Gazebo reads it |
 
 **Reported problems:**
 - a pose that refers to a missing frame, or poses that refer to each other in a loop (the model frame is used);
 - a joint that names a missing link, or joints that form a closed loop (one is left out);
 - models included from outside the import, such as `model://sun` (not drawn);
-- visual shapes other than box, sphere, cylinder, capsule, ellipsoid, mesh and plane, such as a heightmap (not drawn).
+- visual shapes other than box, sphere, cylinder, capsule, ellipsoid, mesh and plane, such as a heightmap (not drawn);
+- an `<inertial auto="true">`, which Gazebo computes from the collision shapes (the link gets no inertial).
 
 ### Zip files
 
@@ -230,7 +236,15 @@ Dropping files on the 3D view opens the import dialog with them, so the report s
 The corpus check compares each robot with what the reference tools read: `mujoco` 3.17.0 for MJCF, and Python `xacro` 2.1.1
 and the URDF itself for the rest. It compares:
 - joint names, types, axes and limits, which must be equal;
-- every link's pose with all joints at zero, which must be within 1e-5 m and 1e-5 rad.
+- every link's pose with all joints at zero, which must be within 1e-5 m and 1e-5 rad;
+- the model check, which must show a mass or inertia error exactly when MuJoCo refuses the robot's masses or inertias. A
+  URDF is given to MuJoCo with only the parts that bear on mass: no visual shapes, and collision shapes only on links with no
+  `<inertial>`. One corpus robot, anymal_c, is refused by MuJoCo itself, and the model check flags it too.
+
+With `--mutate`, `reference.py` also writes three broken copies of each robot, each with one change on its first moving link
+that has an `<inertial>`: zero mass, an inertia that breaks A + B ≥ C, and a negative principal moment. The corpus check
+imports each copy and holds the model check to MuJoCo's verdict on it, which is not always a refusal: a link whose mass is
+carried by a link fixed to it may have zero mass.
 
 The SDF converter is checked by hand, not in CI: `node scripts/check-import-corpus.mjs --sdf DIR` turns the corpus URDFs
 into SDF with Gazebo's `gz sdf -p` and compares them the same way.
@@ -242,7 +256,7 @@ them:
 ```bash
 python3 tools/corpus/fetch.py                  # about 300 MB at most; --only NAME for one robot
 python3 -m pip install mujoco==3.17.0 xacro==2.1.1
-python3 -I tools/corpus/reference.py
+python3 -I tools/corpus/reference.py           # --mutate for the broken copies
 npm run check:import
 ```
 

@@ -1,5 +1,5 @@
 // SDFormat (Gazebo's .sdf) to URDF, for the twin. Like the MJCF converter it keeps what drawing and kinematics need (links,
-// joints, visuals, meshes, colours) and reports everything else. Frames follow the SDFormat specification (1.4-1.11): each pose
+// joints, visuals, meshes, colours), and each link's <inertial> for the model check, and reports everything else. Frames follow the SDFormat specification (1.4-1.11): each pose
 // is read against its `relative_to` frame (or, before 1.7, its `frame`), else its element's default frame; nested models are
 // flattened with `::` names, as Gazebo names them; `<include>`d models come from the import.
 import { LIMITS, refuse } from './importLimits'
@@ -445,10 +445,34 @@ export function convertSdfToUrdf(sdfText: string, modelName = 'sdf_robot', ctx: 
     }
     return out
   }
+  // 8. Inertials, read as libsdformat 14 reads them (Link.cc): in the link's frame, mass 1 and ixx = iyy = izz = 1 when not given.
+  const inertialOf = (link: Entry): string[] => {
+    const el = kid(link.el, 'inertial')
+    if (!el) return []
+    if (isTrue(el.getAttribute('auto'))) {
+      ;(ctx.sdfAutoInertia ??= []).push(link.name)
+      note('unsupported', 'An inertial Gazebo computes from the collision shapes (auto="true") is not computed; the link gets none.', link.name)
+      return []
+    }
+    const pose = kid(el, 'pose')
+    const rel = pose?.getAttribute('relative_to') || pose?.getAttribute('frame')
+    if (rel && qualify(link.scope, rel) !== link.name) {
+      note('approx', `An inertial pose relative to "${rel}" is read in its link's frame, as Gazebo reads it.`, link.name)
+    }
+    const inertia = kid(el, 'inertia')
+    const num = (tag: string, fallback: number) => nums(text(inertia, tag))[0] ?? fallback
+    const mass = nums(text(el, 'mass'))[0] ?? 1
+    return [
+      `    <inertial>\n      ${origin(readPose(pose))}\n      <mass value="${fmt([mass])}"/>\n` +
+        `      <inertia ixx="${fmt([num('ixx', 1)])}" ixy="${fmt([num('ixy', 0)])}" ixz="${fmt([num('ixz', 0)])}" iyy="${fmt([num('iyy', 1)])}"` +
+        ` iyz="${fmt([num('iyz', 0)])}" izz="${fmt([num('izz', 1)])}"/>\n    </inertial>`,
+    ]
+  }
   const linkXml = (name: string, visuals: string[]) => (visuals.length ? `  <link name="${esc(name)}">\n${visuals.join('\n')}\n  </link>` : `  <link name="${esc(name)}"/>`)
+  ctx.sdfHelperLinks = [...(worldLink ? [worldLink] : []), ...helperLinks]
   const linkParts = [
     ...(worldLink ? [linkXml(worldLink, [])] : []),
-    ...links.map((l) => linkXml(l.name, visualsOf(l))),
+    ...links.map((l) => linkXml(l.name, [...inertialOf(l), ...visualsOf(l)])),
     ...helperLinks.map((h) => linkXml(h, [])),
   ]
   if (ellipsoids) note('approx', 'An ellipsoid is drawn as a sphere of its largest radius.')

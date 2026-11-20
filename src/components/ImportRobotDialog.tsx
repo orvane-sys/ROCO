@@ -3,6 +3,7 @@ import { Dialog } from './Dialog'
 import { FolderUp, FileCode, Upload, CheckCircle2, AlertCircle, Loader2, Download, RotateCcw } from 'lucide-react'
 import { collectDroppedFiles, importFailure, importRobotFiles, type ImportOptions, type XacroArg } from '../utils/robotImporter'
 import { REPORT_KINDS, type ImportReport, type ReportKind } from '../utils/importReport'
+import type { CheckFinding } from '../utils/modelChecker'
 import { downloadText, fileStamp } from '../utils/download'
 import type { RobotProfile } from '../config/robotRegistry'
 
@@ -23,14 +24,26 @@ const KIND_LABEL: Record<ReportKind, string> = {
   fix: 'Fixed',
 }
 
-/** What the last import left to show: its report, notes and the xacro's arguments, whether it worked or not. */
+/** What the last import left to show: its report, notes, model check and the xacro's arguments, whether it worked or not. */
 interface Details {
   report: ImportReport | null
   notes: string[]
   mainFile?: string
   xacroArgs: XacroArg[]
+  /** The model check of an import that worked; null when there is none. */
+  findings: CheckFinding[] | null
 }
-const NO_DETAILS: Details = { report: null, notes: [], xacroArgs: [] }
+const NO_DETAILS: Details = { report: null, notes: [], xacroArgs: [], findings: null }
+
+/** The model check as text, for the downloaded report. */
+const findingsText = (findings: CheckFinding[]): string[] =>
+  findings.length
+    ? findings.flatMap((f) => [
+        `${f.severity === 'error' ? 'Error' : 'Warning'} (${f.code}): ${f.message}`,
+        ...(f.where.length ? [`  where: ${f.where.join(', ')}`] : []),
+        `  fix: ${f.fix}`,
+      ])
+    : ['No problems found.']
 
 export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFiles }: ImportRobotDialogProps) {
   const [isDragging, setIsDragging] = useState(false)
@@ -63,13 +76,13 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
     setIsLoading(true)
 
     try {
-      const { profile, report, notes, mainFile, xacroArgs } = await importRobotFiles(list, options)
+      const { profile, report, notes, mainFile, xacroArgs, findings } = await importRobotFiles(list, options)
       setSuccessProfile(profile)
-      setDetails({ report, notes, mainFile, xacroArgs })
+      setDetails({ report, notes, mainFile, xacroArgs, findings })
       setIsLoading(false)
       onImportSuccess?.(profile)
-      // Close on a clean import; keep the dialog open so the user can read the report or change the xacro's arguments.
-      if (report.items.length === 0 && notes.length === 0 && xacroArgs.length === 0) {
+      // Close on a clean import; keep the dialog open so the user can read the report, the model check or change the xacro's arguments.
+      if (report.items.length === 0 && notes.length === 0 && xacroArgs.length === 0 && findings.length === 0) {
         setTimeout(() => {
           onClose()
         }, 900)
@@ -86,7 +99,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
             : 'Failed to parse and import robot description.'
       )
       const failed = importFailure(err)
-      if (failed) setDetails({ report: failed.report, notes: [], mainFile: failed.mainFile, xacroArgs: failed.xacroArgs })
+      if (failed) setDetails({ report: failed.report, notes: [], mainFile: failed.mainFile, xacroArgs: failed.xacroArgs, findings: null })
       setIsLoading(false)
     }
   }
@@ -117,7 +130,8 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
       '',
     ]
     const notes = details.notes.length ? ['', 'Notes:', ...details.notes, ''] : []
-    downloadText(`roco_import_report_${fileStamp()}.txt`, head.join('\n') + '\n' + (details.report?.toText() ?? 'Nothing to report.\n') + notes.join('\n'))
+    const check = details.findings ? ['', 'Model check:', ...findingsText(details.findings), ''] : []
+    downloadText(`roco_import_report_${fileStamp()}.txt`, head.join('\n') + '\n' + (details.report?.toText() ?? 'Nothing to report.\n') + notes.join('\n') + check.join('\n'))
   }
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -130,6 +144,18 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
 
   const report = details.report
   const hasReport = (report?.items.length ?? 0) > 0 || details.notes.length > 0
+  const findings = details.findings
+  const hasFindings = (findings?.length ?? 0) > 0
+  const downloadButton = (
+    <button
+      type="button"
+      onClick={downloadReport}
+      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-surface hover:bg-high border border-line-strong font-semibold text-ink"
+    >
+      <Download className="w-3.5 h-3.5" aria-hidden="true" />
+      Download report
+    </button>
+  )
   const missingArgs = details.xacroArgs.filter((a) => a.value === undefined && !(edited(a.name) ?? '').length)
 
   return (
@@ -197,19 +223,51 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
           </div>
         )}
 
+        {/* The model check: masses, inertias, axes, limits and meshes a simulator would refuse (src/utils/modelChecker.ts) */}
+        {!isLoading && findings && (
+          <section aria-label="Model check" className="p-3 rounded-lg bg-raised border border-line-strong text-xs">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <h3 className="font-semibold text-ink">Model check</h3>
+              {(hasFindings || hasReport) && downloadButton}
+            </div>
+            {!hasFindings ? (
+              <p className="text-ink-soft">No problems found in masses, inertias, joint axes, joint limits or mesh scales.</p>
+            ) : (
+              <div tabIndex={0} role="group" aria-label="Model check findings" className="max-h-56 overflow-y-auto space-y-2 pr-1 rounded">
+                {(['error', 'warning'] as const).map((severity) => {
+                  const items = findings.filter((f) => f.severity === severity)
+                  if (items.length === 0) return null
+                  return (
+                    <div key={severity}>
+                      <h4 className={`font-semibold ${severity === 'error' ? 'text-crit-ink' : 'text-warn-ink'}`}>
+                        {severity === 'error' ? 'Errors' : 'Warnings'} ({items.length})
+                      </h4>
+                      <ul className="list-disc pl-4 space-y-1 mt-0.5 text-ink-soft">
+                        {items.map((f, i) => (
+                          <li key={i} className="break-words">
+                            <span className="text-ink">{f.message}</span>
+                            {f.where.length > 0 && <span className="block font-mono text-[11px]">{f.where.join(', ')}</span>}
+                            <span className="block">{f.fix}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {(report?.byKind('error').length ?? 0) > 0 && (
+              <p className="mt-2 text-ink-soft">Missing files are listed under Problems in the import report below.</p>
+            )}
+          </section>
+        )}
+
         {/* What the import fixed, approximated or could not use, grouped by kind */}
         {!isLoading && hasReport && (
           <section aria-label="Import report" className="p-3 rounded-lg bg-raised border border-line-strong text-xs">
             <div className="flex items-center justify-between gap-2 mb-2">
               <h3 className="font-semibold text-ink">Import report</h3>
-              <button
-                type="button"
-                onClick={downloadReport}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-surface hover:bg-high border border-line-strong font-semibold text-ink"
-              >
-                <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                Download report
-              </button>
+              {!findings && downloadButton}
             </div>
             {/* focusable so the list scrolls from the keyboard when it is longer than its box */}
             <div tabIndex={0} role="group" aria-label="Report items" className="max-h-56 overflow-y-auto space-y-2 pr-1 rounded">
@@ -303,7 +361,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
           </form>
         )}
 
-        {!isLoading && successProfile && (hasReport || details.xacroArgs.length > 0) && (
+        {!isLoading && successProfile && (hasReport || hasFindings || details.xacroArgs.length > 0) && (
           <button
             type="button"
             onClick={onClose}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record what reference tools read from each corpus model, so ROCO's importers can be checked against them.
 
-    python3 -I tools/corpus/reference.py [--only NAME ...] [--cache DIR] [--lock FILE]
+    python3 -I tools/corpus/reference.py [--only NAME ...] [--cache DIR] [--lock FILE] [--mutate]
     python3 -I tools/corpus/reference.py --self-test
 
 Run it with an interpreter that has mujoco and xacro installed (pip), after tools/corpus/fetch.py. It writes one JSON
@@ -14,6 +14,14 @@ per model to <cache>/reference/<name>.json:
   - sdf:   `gz sdf -p`, when gz is installed.
 Every urdf, xacro and mjcf record also has `poses`: each named link's (body's) world position and quaternion
 [w, x, y, z] with every joint at zero (MJCF: at qpos0), so an importer's frames can be checked to 1e-5.
+Every urdf, xacro and mjcf record also has `mass_check`, MuJoCo's verdict on the model's masses and inertias, which
+ROCO's model check (src/utils/modelChecker.ts) must agree with: {"ok": true} or {"ok": false, "error", "comparable"}.
+An MJCF is compiled as it is; a URDF as an inertia-only copy (visuals dropped, collisions kept only on links whose mass
+MuJoCo infers from them, collision meshes MuJoCo cannot read dropped and noted), so a mesh MuJoCo cannot read does not
+hide the verdict. A refusal for anything but mass or inertia, or after a mesh was dropped, is "comparable": false.
+--mutate also writes 3 mutants per model to <cache>/mutants/<name>/ (zero mass, an inertia that breaks A + B >= C, a
+negative principal moment, each on the first moving link with an inertial) and records each one's verdict under
+`mutants`.
 A model that cannot be read is recorded as {"ok": false, "reason": ...}; that is data, not a crash. The run exits 0
 once every model is recorded, and 1 only on a usage error.
 """
@@ -22,6 +30,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -188,8 +197,162 @@ def read_mjcf(model_file):
             'geoms': int(m.ngeom), 'actuators': int(m.nu)}
 
 
-def reference(model, model_file, checkout):
-    """The reference record for one model. Never raises."""
+# MuJoCo 3.17.0's refusals of a body's mass or inertia (user_objects.cc mjCBody/mjCInertial, user_model.cc
+# CheckBodyMassInertia): "mass and inertia of moving bodies must be larger than mjMINVAL", "mass and inertia cannot be
+# negative", "inertia must have positive eigenvalues" and "inertia must satisfy A + B >= C; use 'balanceinertia' to fix".
+MASS_ERROR = re.compile(r'mass and inertia|inertia must')
+URDF_MOVING = ('revolute', 'continuous', 'prismatic', 'floating', 'planar')
+MUJOCO_MESHES = ('.stl', '.obj', '.msh')
+MUTANTS = ('zero-mass', 'triangle', 'negative-moment')
+
+
+def compile_verdict(xml_text, notes=()):
+    """MuJoCo's verdict on a model written out to a scratch file: {"ok": true} or why it refused, and whether that refusal
+    is about mass or inertia with nothing dropped on the way ("comparable")."""
+    import mujoco
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'model.xml'
+        path.write_text(xml_text, encoding='utf-8')
+        try:
+            mujoco.MjModel.from_xml_path(str(path))
+            out = {'ok': True}
+        except Exception as exc:
+            error = ' '.join(str(exc).split())[:400]
+            out = {'ok': False, 'error': error, 'comparable': bool(MASS_ERROR.search(error)) and not notes}
+    if notes:
+        out['notes'] = list(notes)[:20]
+    return out
+
+
+def inertia_only_urdf(root, model_file, packages):
+    """A copy of a URDF that MuJoCo can compile wherever it is written: visuals dropped; collisions kept only on links that
+    have no <inertial> (or on every link under <compiler inertiafromgeom="true">), with their meshes at absolute paths, and
+    a mesh MuJoCo cannot read dropped and noted."""
+    root = ET.fromstring(ET.tostring(root))
+    compilers = [c for m in root.findall('mujoco') for c in m.findall('compiler')]
+    from_geom = any((c.get('inertiafromgeom') or '').strip().lower() == 'true' for c in compilers)
+    notes = []
+    for link in root.findall('link'):
+        for v in link.findall('visual'):
+            link.remove(v)
+        keep = from_geom or link.find('inertial') is None
+        for c in link.findall('collision'):
+            mesh = c.find('geometry/mesh')
+            if not keep:
+                link.remove(c)
+            elif mesh is not None:
+                p = resolve_mesh(mesh.get('filename', ''), model_file, packages)
+                if p and os.path.isfile(p) and p.lower().endswith(MUJOCO_MESHES):
+                    mesh.set('filename', os.path.abspath(p))
+                else:
+                    link.remove(c)
+                    notes.append(f"{link.get('name')}: collision mesh {mesh.get('filename')} dropped")
+    if not compilers:
+        compilers = [ET.SubElement(ET.SubElement(root, 'mujoco'), 'compiler')]
+    for c in compilers:
+        for k in ('meshdir', 'assetdir', 'texturedir'):
+            c.attrib.pop(k, None)
+        c.set('strippath', 'false')
+    return ET.tostring(root, encoding='unicode'), notes
+
+
+def mjcf_anywhere(root, model_file):
+    """A copy of an MJCF whose asset folders and includes are absolute, so it compiles wherever it is written."""
+    root = ET.fromstring(ET.tostring(root))
+    base = os.path.dirname(os.path.abspath(model_file))
+    compilers = root.findall('compiler') or [ET.SubElement(root, 'compiler')]
+    for c in compilers:
+        asset = c.get('assetdir', '')
+        for k in ('meshdir', 'texturedir'):
+            c.set(k, os.path.join(base, c.get(k, asset)))
+        c.attrib.pop('assetdir', None)
+    for inc in root.iter('include'):
+        if inc.get('file'):
+            inc.set('file', os.path.join(base, inc.get('file')))
+    return ET.tostring(root, encoding='unicode')
+
+
+def mass_check(fmt, root, model_file, packages=None):
+    if fmt == 'mjcf':
+        return compile_verdict(mjcf_anywhere(root, model_file))
+    text, notes = inertia_only_urdf(root, model_file, packages or {})
+    return compile_verdict(text, notes)
+
+
+def mutant_target(fmt, root):
+    """The first moving link (MJCF: body) that has an inertial with a mass and an inertia, or None."""
+    if fmt == 'mjcf':
+        for b in root.iter('body'):
+            i = b.find('inertial')
+            if any(ch.tag in ('joint', 'freejoint') for ch in b) and i is not None and i.get('mass') is not None and \
+                    (i.get('diaginertia') or i.get('fullinertia')):
+                return b, b.get('name') or '(unnamed body)'
+        return None
+    moving = {j.find('child').get('link') for j in root.findall('joint')
+              if j.get('type') in URDF_MOVING and j.find('child') is not None}
+    for link in root.findall('link'):
+        if link.get('name') in moving and link.find('inertial/mass') is not None and link.find('inertial/inertia') is not None:
+            return link, link.get('name')
+    return None
+
+
+def mutate(fmt, root, kind):
+    """A copy of the model with one mutation on mutant_target's link, and that link's name; None when there is no target."""
+    root = ET.fromstring(ET.tostring(root))
+    found = mutant_target(fmt, root)
+    if found is None:
+        return None
+    el, name = found
+
+    def g(v):
+        return f'{v:.9g}'
+    if fmt == 'mjcf':
+        i = el.find('inertial')
+        vals = floats(i.get('diaginertia') or i.get('fullinertia') or '') or []
+        s = sum(abs(v) for v in vals[:3]) / 3 if len(vals) >= 3 else 0
+        s = s if s > 1e-9 else 1e-3
+        if kind == 'zero-mass':
+            i.set('mass', '0')
+        elif kind == 'triangle':
+            i.attrib.pop('fullinertia', None)
+            i.set('diaginertia', f'{g(s)} {g(s)} {g(3 * s)}')
+        else:
+            for k in ('diaginertia', 'quat', 'axisangle', 'xyaxes', 'zaxis', 'euler'):   # fullinertia takes no orientation
+                i.attrib.pop(k, None)
+            i.set('fullinertia', f'{g(s)} {g(s)} {g(s)} {g(2 * s)} 0 0')
+    else:
+        inertia = el.find('inertial/inertia')
+        vals = [abs(float(inertia.get(k) or 0)) for k in ('ixx', 'iyy', 'izz')]
+        s = sum(vals) / 3
+        s = s if s > 1e-9 else 1e-3
+        if kind == 'zero-mass':
+            el.find('inertial/mass').set('value', '0')
+        elif kind == 'triangle':
+            inertia.attrib.update(ixx=g(s), iyy=g(s), izz=g(3 * s), ixy='0', ixz='0', iyz='0')
+        else:
+            inertia.attrib.update(ixx=g(s), iyy=g(s), izz=g(s), ixy=g(2 * s), ixz='0', iyz='0')
+    return root, name
+
+
+def write_mutants(fmt, root, model_file, packages, out_dir):
+    """Writes each mutant to out_dir as the file ROCO imports, and returns their records with MuJoCo's verdicts."""
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    records = []
+    for kind in MUTANTS:
+        m = mutate(fmt, root, kind)
+        if m is None:
+            break
+        mroot, link = m
+        file = f"{kind}.{'xml' if fmt == 'mjcf' else 'urdf'}"
+        (out_dir / file).write_text(ET.tostring(mroot, encoding='unicode') + '\n', encoding='utf-8')
+        records.append({'kind': kind, 'link': link, 'file': file, 'mass_check': mass_check(fmt, mroot, model_file, packages)})
+    return records
+
+
+def reference(model, model_file, checkout, mutate_to=None):
+    """The reference record for one model. Never raises. With mutate_to (a folder), its mutants are written there too."""
     t0 = time.perf_counter()
     rec = {'name': model['name'], 'group': model['group'], 'format': model['format'], 'commit': model['commit'],
            'path': model['path']}
@@ -197,8 +360,10 @@ def reference(model, model_file, checkout):
         if not Path(model_file).is_file():
             raise FileNotFoundError('model file is missing; run tools/corpus/fetch.py first')
         fmt = model['format']
+        verdict = None
         if fmt == 'mjcf':
             rec.update(read_mjcf(model_file))
+            verdict = ('mjcf', ET.parse(model_file).getroot(), None)
         elif fmt in ('urdf', 'xacro'):
             packages = package_map(checkout)
             if fmt == 'xacro':
@@ -207,6 +372,7 @@ def reference(model, model_file, checkout):
                 text, tool = Path(model_file).read_text(encoding='utf-8'), 'xml.etree'
             rec['tool'] = tool
             rec.update(read_urdf(text, model_file, packages))
+            verdict = ('urdf', ET.fromstring(text), packages)
         elif fmt == 'sdf':
             gz = shutil.which('gz')
             if not gz:
@@ -218,6 +384,11 @@ def reference(model, model_file, checkout):
             rec['sdf_bytes'] = len(r.stdout)
         else:
             raise RuntimeError(f'no reference tool for {fmt} yet')
+        if verdict and importlib.util.find_spec('mujoco'):
+            kind, root, packages = verdict
+            rec['mass_check'] = mass_check(kind, root, model_file, packages)
+            if mutate_to is not None:
+                rec['mutants'] = write_mutants(kind, root, model_file, packages, Path(mutate_to))
         rec['ok'] = True
     except Exception as exc:   # a model that cannot be read is a result, not a crash
         rec['ok'] = False
@@ -234,7 +405,10 @@ def summary(rec):
     else:
         size = (f"links  {rec['links']:3}  joints {len(rec['joints']):3} ({rec['movable_joints']} movable)  "
                 f"mesh refs {rec['mesh_refs_resolved']}/{rec['mesh_refs']} resolve")
-    return f"{rec['name']:18} {rec['format']:5} ok    {size}  [{rec['tool']}, {rec['seconds']} s]"
+    mc = rec.get('mass_check')
+    mass = '' if mc is None else '  mass ok' if mc['ok'] else f"  mass REFUSED{'' if mc['comparable'] else ' (not comparable)'}"
+    mutants = ''.join(f"  {m['kind']} {'ok' if m['mass_check']['ok'] else 'refused'}" for m in rec.get('mutants', []))
+    return f"{rec['name']:18} {rec['format']:5} ok    {size}{mass}{mutants}  [{rec['tool']}, {rec['seconds']} s]"
 
 
 def self_test():
@@ -319,6 +493,54 @@ def self_test():
                   'MJCF body poses at qpos0 are recorded')
             (tmp / 'mbad.xml').write_text('<mujoco><worldbody><geom type="nosuch"/></worldbody></mujoco>')
             check(not reference(dict(base, format='mjcf'), tmp / 'mbad.xml', tmp)['ok'], 'a bad MJCF is not ok')
+
+            # mass_check and the mutants
+            inertial = '<inertial><mass value="1"/><inertia ixx="0.01" iyy="0.02" izz="0.02" ixy="0" ixz="0" iyz="0"/></inertial>'
+            (tmp / 'mass.urdf').write_text(
+                f'<robot name="m"><link name="a"/><link name="b">{inertial}<visual><geometry><mesh filename="meshes/a.stl"/>'
+                '</geometry></visual><collision><geometry><mesh filename="meshes/gone.dae"/></geometry></collision></link>'
+                '<link name="c"><collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision>'
+                '<collision><geometry><mesh filename="meshes/b.dae"/></geometry></collision></link>'
+                '<joint name="j1" type="revolute"><parent link="a"/><child link="b"/><axis xyz="0 0 1"/>'
+                '<limit lower="-1" upper="1" effort="1" velocity="1"/></joint>'
+                '<joint name="j2" type="revolute"><parent link="b"/><child link="c"/><axis xyz="0 0 1"/>'
+                '<limit lower="-1" upper="1" effort="1" velocity="1"/></joint></robot>')
+            r = reference(base, tmp / 'mass.urdf', tmp, tmp / 'mut')
+            check(r['ok'] and r['mass_check']['ok'] and r['mass_check']['notes'] == ['c: collision mesh meshes/b.dae dropped'],
+                  'a sound URDF compiles inertia-only: visuals and the collisions of links with an inertial dropped, a .dae noted')
+            only, _ = inertia_only_urdf(ET.parse(tmp / 'mass.urdf').getroot(), str(tmp / 'mass.urdf'), {})
+            check('<visual' not in only and 'gone.dae' not in only and '<box' in only and 'strippath="false"' in only,
+                  'the inertia-only copy keeps only the collisions MuJoCo infers mass from')
+            muts = {m['kind']: m for m in r.get('mutants', [])}
+            want = {'zero-mass': 'mass and inertia of moving bodies', 'triangle': 'A + B >= C',
+                    'negative-moment': 'positive eigenvalues'}
+            for kind, msg in want.items():
+                mc = muts.get(kind, {}).get('mass_check', {})
+                check(not mc.get('ok', True) and msg in mc.get('error', '') and muts[kind]['link'] == 'b'
+                      and (tmp / 'mut' / f'{kind}.urdf').is_file(), f'URDF mutant {kind} on link b: MuJoCo says "{msg}"')
+            check(mutate('urdf', ET.fromstring('<robot><link name="a"/></robot>'), 'zero-mass') is None,
+                  'a model with no moving link that has an inertial has no mutant')
+            (tmp / 'mass.xml').write_text(
+                '<mujoco><worldbody><body name="a"><freejoint/><inertial pos="0 0 0" quat="0 1 0 0" mass="1" diaginertia="0.01 0.02 0.02"/>'
+                '<body name="b"><joint/><geom size="0.1"/></body></body></worldbody></mujoco>')
+            r = reference(dict(base, format='mjcf'), tmp / 'mass.xml', tmp, tmp / 'mutx')
+            check(r['ok'] and r['mass_check'] == {'ok': True}, 'a sound MJCF passes the mass check')
+            muts = {m['kind']: m for m in r.get('mutants', [])}
+            for kind, msg in want.items():
+                mc = muts.get(kind, {}).get('mass_check', {})
+                check(not mc.get('ok', True) and msg in mc.get('error', '') and mc.get('comparable') and muts[kind]['link'] == 'a',
+                      f'MJCF mutant {kind} on body a: MuJoCo says "{msg}"')
+            (tmp / 'carried.xml').write_text(
+                '<mujoco><worldbody><body name="a"><joint/><inertial pos="0 0 0" mass="1" diaginertia="0.01 0.02 0.02"/>'
+                '<body name="b"><geom size="0.1"/></body></body></worldbody></mujoco>')
+            r = reference(dict(base, format='mjcf'), tmp / 'carried.xml', tmp, tmp / 'mutc')
+            check([m['mass_check']['ok'] for m in r.get('mutants', [])][:1] == [True],
+                  'negative: zero mass on a body whose fixed child has mass is accepted, as MuJoCo does')
+            bad = compile_verdict('<mujoco><worldbody><geom type="nosuch"/></worldbody></mujoco>')
+            check(not bad['ok'] and not bad['comparable'], 'a refusal for anything but mass or inertia is not comparable')
+            dropped = compile_verdict('<mujoco><worldbody><body><joint/></body></worldbody></mujoco>', ['x dropped'])
+            check(not dropped['ok'] and not dropped['comparable'] and 'mjMINVAL' in dropped['error'],
+                  'a mass refusal after a mesh was dropped is not comparable')
         else:
             skipped.append('mujoco')
 
@@ -336,6 +558,7 @@ def main(argv=None):
     ap.add_argument('--cache', default=str(fetch.DEFAULT_CACHE))
     ap.add_argument('--only', action='append', metavar='NAME')
     ap.add_argument('--self-test', action='store_true')
+    ap.add_argument('--mutate', action='store_true', help='also write 3 mass and inertia mutants per model, with their verdicts')
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
@@ -355,7 +578,7 @@ def main(argv=None):
     ok = 0
     for m in models:
         checkout = cache / fetch.checkout_name(m['repo'], m['commit'])
-        rec = reference(m, checkout / m['path'], checkout)
+        rec = reference(m, checkout / m['path'], checkout, cache / 'mutants' / m['name'] if a.mutate else None)
         (out / f"{m['name']}.json").write_text(json.dumps(rec, indent=1) + '\n', encoding='utf-8')
         ok += rec['ok']
         print('[reference] ' + summary(rec))
