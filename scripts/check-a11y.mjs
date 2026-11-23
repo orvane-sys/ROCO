@@ -6,6 +6,8 @@
 //      scroll at 320 px, and the keyboard stays in the dialog with each stop named, marked and uncovered
 //   5. the 3D view posed by hand: axe with the joint panel open in all three themes at 320, 768 and 1600 px, every slider named and
 //      its value said in words, and the keyboard reaches and moves the sliders
+//   6. the import dialog's GitHub card, shared link and error (GitHub answered by fakes): axe in all three themes at 320, 768 and
+//      1600 px, nothing off the side at 320 px, and the keyboard reaches each of its controls
 // It needs a screen reader for the rest; docs/screen-reader-test.md is the script for that.
 //
 //   npm run build && npm run check:a11y
@@ -38,7 +40,7 @@ const stopOf = () => {
   }
 }
 
-async function open(width, height, theme = 'dark') {
+async function open(width, height, theme = 'dark', query = '') {
   const page = await browser.newPage({ viewport: { width, height } })
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
@@ -52,7 +54,7 @@ async function open(width, height, theme = 'dark') {
     },
     [theme]
   )
-  await page.goto(url)
+  await page.goto(url + query)
   await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
   page.errors = errors
   return page
@@ -252,6 +254,88 @@ try {
       }
     }
     check(runs === 9, `axe ran on the posed view ${runs} times`)
+  }
+  // 6. the import dialog's GitHub card with its shared link, then its error; GitHub's two hosts are answered by fakes
+  {
+    const SHA = 'c'.repeat(40)
+    const files = {
+      'gh_bot_description/package.xml': '<package><name>gh_bot_description</name></package>',
+      'gh_bot_description/urdf/gh_bot.urdf': '<robot name="gh_bot"><link name="base"/></robot>',
+    }
+    const GH = `gh:acme/bots@${SHA}/gh_bot_description/urdf/gh_bot.urdf`
+    const fake = (route) => {
+      const u = new URL(route.request().url())
+      const headers = { 'access-control-allow-origin': '*', 'content-type': 'text/plain' }
+      if (u.host === 'api.github.com' && u.pathname === `/repos/acme/bots/git/trees/${SHA}`) {
+        const tree = Object.entries(files).map(([path, body]) => ({ path, type: 'blob', size: Buffer.byteLength(body) }))
+        return route.fulfill({ status: 200, headers, body: JSON.stringify({ tree: [...tree, { path: 'gh_bot_description', type: 'tree' }, { path: 'gh_bot_description/urdf', type: 'tree' }], truncated: false }) })
+      }
+      const prefix = `/acme/bots/${SHA}/`
+      if (u.host === 'raw.githubusercontent.com' && u.pathname.startsWith(prefix) && files[u.pathname.slice(prefix.length)]) {
+        return route.fulfill({ status: 200, headers, body: files[u.pathname.slice(prefix.length)] })
+      }
+      return route.fulfill({ status: 404, headers, body: 'Not Found' })
+    }
+    const axeOn = (page) => page.evaluate((tags) => axe.run(document.querySelector('[role=dialog]'), { runOnly: { type: 'tag', values: tags } }).then((r) => r.violations.flatMap((v) => v.nodes.map((n) => `${v.id} on ${n.target.join(' ')}: ${n.failureSummary?.split('\n').slice(1, 2).join(' ').trim() ?? ''}`))), TAGS)
+    const offSide = (page) => page.evaluate(() => {
+      const bad = [...document.querySelectorAll('[role=dialog] *')].filter((e) => e.getClientRects().length > 0 && e.getBoundingClientRect().right > innerWidth + 1)
+      return { sideways: document.documentElement.scrollWidth > innerWidth, first: bad[0] ? `${bad[0].tagName}.${String(bad[0].className).slice(0, 50)}` : '' }
+    })
+    let runs = 0
+    for (const theme of ['dark', 'light', 'contrast']) {
+      for (const [w, h] of [
+        [320, 700],
+        [768, 900],
+        [1600, 900],
+      ]) {
+        const at = `GitHub card, ${theme} ${w}px`
+        const p = await open(w, h, theme, `&model=${encodeURIComponent(GH)}`)
+        try {
+          await p.route(/^https:\/\/(api\.github\.com|raw\.githubusercontent\.com)\//, fake)
+          const dlg = p.locator('[role=dialog]')
+          await dlg.getByRole('button', { name: 'Look up' }).click()
+          const card = dlg.getByRole('region', { name: 'GitHub files' })
+          await card.waitFor({ timeout: PAGE_READY_MS })
+          await card.getByRole('button', { name: 'Copy link' }).click()
+          await card.getByRole('textbox', { name: 'Link to this model' }).waitFor()
+          await p.evaluate(axeSource)
+          runs++
+          for (const v of await axeOn(p)) check(false, `${at}: axe ${v}`)
+          if (w === 320) {
+            const wide = await offSide(p)
+            check(!wide.sideways && !wide.first, `${at}: nothing in the dialog runs off the side (${wide.first})`)
+          }
+          if (theme === 'dark' && w === 768) {
+            const stops = []
+            await p.locator('#gh-link').focus()
+            for (let i = 0; i < 12; i++) {
+              const s = await p.evaluate(stopOf)
+              if (s === null || stops.some((t) => t.what === s.what)) break
+              stops.push(s)
+              await p.keyboard.press('Tab')
+            }
+            const names = stops.map((s) => s.what).join(' | ')
+            check(['input#gh-link', 'Look up', 'Fetch and import', 'Copy link', 'Link to this model'].every((n) => names.includes(n)),
+              `${at}: Tab reaches the link field, Look up, Fetch and import, Copy link and the link (${names})`)
+            for (const s of stops) check(s.named && s.inDialog && s.sized && s.inView && !s.covered && s.mark, `${at}: ${s.what} is named, on screen, uncovered and marked (${JSON.stringify(s)})`)
+          }
+          // the error state: a link that is not GitHub's
+          await p.locator('#gh-link').fill('https://example.com/acme/bots/blob/main/r.urdf')
+          await dlg.getByRole('button', { name: 'Look up' }).click()
+          await dlg.getByText(/not a GitHub link ROCO can read/).waitFor({ timeout: PAGE_READY_MS })
+          runs++
+          for (const v of await axeOn(p)) check(false, `${at}, error: axe ${v}`)
+          if (w === 320) {
+            const wide = await offSide(p)
+            check(!wide.sideways && !wide.first, `${at}, error: nothing in the dialog runs off the side (${wide.first})`)
+          }
+          check(p.errors.length === 0, `${at}: no page errors (${p.errors[0] ?? ''})`)
+        } finally {
+          await p.close()
+        }
+      }
+    }
+    check(runs === 18, `axe ran on the GitHub card and its error ${runs} times`)
   }
 } finally {
   await close()

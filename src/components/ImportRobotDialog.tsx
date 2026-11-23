@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { Dialog } from './Dialog'
-import { FolderUp, FileCode, Upload, CheckCircle2, AlertCircle, Loader2, Download, RotateCcw } from 'lucide-react'
+import { FolderUp, FileCode, Upload, CheckCircle2, AlertCircle, Loader2, Download, RotateCcw, Link2 } from 'lucide-react'
 import { collectDroppedFiles, importFailure, importRobotFiles, type ImportOptions, type XacroArg } from '../utils/robotImporter'
 import { REPORT_KINDS, type ImportReport, type ReportKind } from '../utils/importReport'
 import type { CheckFinding } from '../utils/modelChecker'
+import type { GithubPlan } from '../utils/githubSource'
 import { downloadText, fileStamp } from '../utils/download'
 import type { RobotProfile } from '../config/robotRegistry'
 
@@ -13,6 +14,8 @@ interface ImportRobotDialogProps {
   onImportSuccess?: (profile: RobotProfile) => void
   /** Files dropped on the 3D view: imported once when the dialog opens, so their report is shown here. */
   initialFiles?: File[] | null
+  /** A shared link's `?model=` value: it only fills the GitHub field; nothing is downloaded until Look up is clicked. */
+  initialGithub?: string | null
 }
 
 const KIND_LABEL: Record<ReportKind, string> = {
@@ -45,7 +48,16 @@ const findingsText = (findings: CheckFinding[]): string[] =>
       ])
     : ['No problems found.']
 
-export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFiles }: ImportRobotDialogProps) {
+const LFS_PROBLEM = 'Stored in Git LFS, which ROCO does not download, so it is missing'
+const LFS_HINT = 'Download the repository with Git LFS and import its folder.'
+const LINK_PROBLEM = 'A symbolic link, which ROCO does not follow, so what it points to is missing'
+const LINK_HINT = 'Link to the file it points to, or download the repository and import its folder.'
+/** Files a GitHub import could not have: Git LFS pointers and symbolic links. */
+type LeftOut = { lfs: string[]; links: string[] }
+const NONE_LEFT: LeftOut = { lfs: [], links: [] }
+const mb = (bytes: number) => (bytes / 2 ** 20).toFixed(1)
+
+export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFiles, initialGithub }: ImportRobotDialogProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,10 +76,30 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
   // the import function of the latest render, and the dropped files already imported (each drop is imported once)
   const processRef = useRef<((files: File[]) => Promise<void>) | null>(null)
   const importedDrop = useRef<File[] | null>(null)
+  // a GitHub link: looked up (no mesh downloaded yet), then downloaded and imported on Fetch and import
+  const [ghUrl, setGhUrl] = useState(initialGithub ?? '')
+  const [ghBusy, setGhBusy] = useState<'look' | 'fetch' | null>(null)
+  const [ghPlan, setGhPlan] = useState<GithubPlan | null>(null)
+  const [ghError, setGhError] = useState<string | null>(null)
+  const [ghProgress, setGhProgress] = useState<{ done: number; total: number } | null>(null)
+  const [shareLink, setShareLink] = useState<{ url: string; copied: boolean } | null>(null)
+  const ghAbort = useRef<AbortController | null>(null)
+  // files a GitHub import could not have (Git LFS, symbolic links), for "Import again"
+  const lastLeft = useRef<LeftOut>(NONE_LEFT)
+  useEffect(() => () => ghAbort.current?.abort(), [])
 
-  const handleProcessFiles = async (files: FileList | File[], options: ImportOptions = {}) => {
+  /**
+   * `left`: files of a GitHub import left out, listed in the report: Git LFS pointers under Problems, symbolic links under
+   * Not supported (a missing file they point to is already a problem of its own).
+   */
+  const handleProcessFiles = async (files: FileList | File[], options: ImportOptions = {}, left: LeftOut = NONE_LEFT) => {
     const list = Array.from(files)
     lastFiles.current = list
+    lastLeft.current = left
+    const addLeftOut = (r: ImportReport) => {
+      left.lfs.forEach((where) => r.add('error', LFS_PROBLEM, { where, hint: LFS_HINT }))
+      left.links.forEach((where) => r.add('unsupported', LINK_PROBLEM, { where, hint: LINK_HINT }))
+    }
     lastArgs.current = options.xacroArgs ?? {}
     setError(null)
     setSuccessProfile(null)
@@ -77,6 +109,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
 
     try {
       const { profile, report, notes, mainFile, xacroArgs, findings } = await importRobotFiles(list, options)
+      addLeftOut(report)
       setSuccessProfile(profile)
       setDetails({ report, notes, mainFile, xacroArgs, findings })
       setIsLoading(false)
@@ -99,6 +132,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
             : 'Failed to parse and import robot description.'
       )
       const failed = importFailure(err)
+      if (failed) addLeftOut(failed.report)
       if (failed) setDetails({ report: failed.report, notes: [], mainFile: failed.mainFile, xacroArgs: failed.xacroArgs, findings: null })
       setIsLoading(false)
     }
@@ -117,7 +151,66 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
 
   const importAgain = () => {
     const xacroArgs = { ...lastArgs.current, ...argEdits }
-    void handleProcessFiles(lastFiles.current, { mainFile: details.mainFile, xacroArgs })
+    void handleProcessFiles(lastFiles.current, { mainFile: details.mainFile, xacroArgs }, lastLeft.current)
+  }
+
+  /** A new GitHub step: the one before it (a look-up or a download) is stopped and its answer ignored. */
+  const startGithub = () => {
+    ghAbort.current?.abort()
+    const c = new AbortController()
+    ghAbort.current = c
+    setGhError(null)
+    setShareLink(null)
+    return c
+  }
+  const githubFailed = (c: AbortController, e: unknown, fallback: string) => {
+    if (c.signal.aborted) return
+    console.error('GitHub import error:', e)
+    setGhError(e instanceof Error && e.message ? e.message : fallback)
+  }
+  const lookUpGithub = async () => {
+    const c = startGithub()
+    setGhPlan(null)
+    setGhBusy('look')
+    try {
+      const { lookUp } = await import('../utils/githubSource')
+      const plan = await lookUp(ghUrl, c.signal)
+      if (!c.signal.aborted) setGhPlan(plan)
+    } catch (e) {
+      githubFailed(c, e, 'The look-up failed.')
+    } finally {
+      if (ghAbort.current === c) setGhBusy(null)
+    }
+  }
+  const fetchGithub = async () => {
+    if (!ghPlan) return
+    const c = startGithub()
+    setGhBusy('fetch')
+    setGhProgress(null)
+    try {
+      const { fetchPlan } = await import('../utils/githubSource')
+      const got = await fetchPlan(ghPlan, c.signal, (done, total) => setGhProgress({ done, total }))
+      if (c.signal.aborted) return
+      setGhBusy(null)
+      await handleProcessFiles(got.files, got.mainFile ? { mainFile: got.mainFile } : {}, { lfs: got.lfs, links: got.links })
+    } catch (e) {
+      githubFailed(c, e, 'The download failed.')
+    } finally {
+      if (ghAbort.current === c) setGhBusy(null)
+    }
+  }
+  const copyGithubLink = async () => {
+    if (!ghPlan) return
+    const { sharedModel } = await import('../utils/githubSource')
+    const url = `${location.origin}${location.pathname}?${new URLSearchParams({ model: sharedModel(ghPlan.owner, ghPlan.repo, ghPlan.sha, ghPlan.path) })}`
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(url)
+      copied = true
+    } catch {
+      // no clipboard (an insecure page, or refused): the link is shown to copy by hand
+    }
+    setShareLink({ url, copied })
   }
 
   const downloadReport = () => {
@@ -403,7 +496,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
 
           <button
             type="button"
-            disabled={isLoading}
+            disabled={isLoading || ghBusy === 'fetch'}
             onClick={() => folderInputRef.current?.click()}
             className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-raised hover:bg-high border border-line-strong text-xs font-semibold text-ink transition-colors disabled:opacity-50 cursor-pointer"
           >
@@ -413,7 +506,7 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
 
           <button
             type="button"
-            disabled={isLoading}
+            disabled={isLoading || ghBusy === 'fetch'}
             onClick={() => filesInputRef.current?.click()}
             className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-accent-solid hover:bg-accent-solid/85 text-xs font-semibold text-on-accent transition-colors disabled:opacity-50 cursor-pointer"
           >
@@ -421,6 +514,127 @@ export function ImportRobotDialog({ isOpen, onClose, onImportSuccess, initialFil
             Select Model Files
           </button>
         </div>
+
+        {/* A public GitHub repository: look the link up, see what it would download, then download and import it */}
+        <form
+          aria-label="Import from GitHub"
+          className="flex flex-col gap-2 pt-3 border-t border-line-strong"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void lookUpGithub()
+          }}
+        >
+          <label htmlFor="gh-link" className="text-xs font-semibold text-ink">
+            Import from GitHub
+          </label>
+          <div className="flex items-center gap-2 min-w-0">
+            <input
+              id="gh-link"
+              type="text"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              value={ghUrl}
+              // a download already confirmed on the card keeps its link
+              readOnly={ghBusy === 'fetch'}
+              onChange={(e) => {
+                setGhUrl(e.target.value)
+                setGhPlan(null)
+                setGhError(null)
+                // a look-up of the link before this edit is stopped, so its card never shows under the new link
+                if (ghBusy === 'look') {
+                  ghAbort.current?.abort()
+                  setGhBusy(null)
+                }
+              }}
+              placeholder="https://github.com/owner/repo/blob/main/urdf/robot.urdf"
+              aria-describedby="gh-help"
+              className="flex-1 min-w-0 px-2 py-1.5 rounded bg-surface border border-line-strong text-ink font-mono text-xs"
+            />
+            <button
+              type="submit"
+              disabled={isLoading || ghBusy !== null || ghUrl.trim() === ''}
+              className="shrink-0 px-3 py-1.5 rounded bg-raised hover:bg-high border border-line-strong text-xs font-semibold text-ink disabled:opacity-50"
+            >
+              Look up
+            </button>
+          </div>
+          <p id="gh-help" className="text-[11px] text-ink-muted">
+            A link to a robot file or folder in a public repository. ROCO shows what it would download before downloading it.
+          </p>
+          <div aria-live="polite" className="text-xs">
+            {ghBusy === 'look' && <p className="text-ink-soft">Looking up the link…</p>}
+            {ghBusy === 'fetch' && <p className="text-ink-soft">Downloading{ghProgress ? ` ${ghProgress.done} of ${ghProgress.total} files` : ''}…</p>}
+            {ghError && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-crit-soft/60 border border-crit-line/60 text-crit-ink">
+                <AlertCircle className="w-4 h-4 text-crit shrink-0 mt-0.5" aria-hidden="true" />
+                <span className="flex-1 break-words min-w-0">{ghError}</span>
+              </div>
+            )}
+          </div>
+          {ghPlan && (
+            <section aria-label="GitHub files" className="p-3 rounded-lg bg-raised border border-line-strong text-xs flex flex-col gap-2">
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+                <dt className="text-ink-muted">Repository</dt>
+                <dd className="font-mono text-ink break-all">{ghPlan.owner}/{ghPlan.repo}</dd>
+                <dt className="text-ink-muted">Commit</dt>
+                <dd className="font-mono text-ink">{ghPlan.sha.slice(0, 7)}</dd>
+                <dt className="text-ink-muted">{ghPlan.isFile ? 'File' : 'Folder'}</dt>
+                <dd className="font-mono text-ink break-all">{ghPlan.path || '(top of the repository)'}</dd>
+                <dt className="text-ink-muted">Download</dt>
+                <dd className="text-ink">
+                  {ghPlan.files.length} file{ghPlan.files.length === 1 ? '' : 's'}, {mb(ghPlan.bytes)} MB
+                </dd>
+              </dl>
+              {ghPlan.lfs.length > 0 && (
+                <p className="text-warn-ink break-words">
+                  {ghPlan.lfs.length === 1 ? 'One file is' : `${ghPlan.lfs.length} files are`} stored in Git LFS and will be missing:{' '}
+                  <span className="font-mono">{ghPlan.lfs.slice(0, 3).join(', ')}{ghPlan.lfs.length > 3 ? ', …' : ''}</span>
+                </p>
+              )}
+              {ghPlan.links.length > 0 && (
+                <p className="text-warn-ink break-words">
+                  {ghPlan.links.length === 1 ? 'One file is a symbolic link' : `${ghPlan.links.length} files are symbolic links`}, which ROCO does not follow, so what{' '}
+                  {ghPlan.links.length === 1 ? 'it points' : 'they point'} to will be missing:{' '}
+                  <span className="font-mono">{ghPlan.links.slice(0, 3).join(', ')}{ghPlan.links.length > 3 ? ', …' : ''}</span>
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isLoading || ghBusy !== null}
+                  onClick={() => void fetchGithub()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent-solid hover:bg-accent-solid/85 text-on-accent font-semibold disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  Fetch and import
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyGithubLink()}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-surface hover:bg-high border border-line-strong font-semibold text-ink"
+                >
+                  <Link2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  Copy link
+                </button>
+              </div>
+              {shareLink && (
+                <div className="flex flex-col gap-1">
+                  <p className="text-ink-soft" role="status">
+                    {shareLink.copied ? 'Link copied.' : 'Copy this link:'} Opening it fills this field; nothing is downloaded until Look up.
+                  </p>
+                  <input
+                    readOnly
+                    aria-label="Link to this model"
+                    value={shareLink.url}
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="w-full min-w-0 px-2 py-1 rounded bg-surface border border-line-strong text-ink font-mono text-[11px]"
+                  />
+                </div>
+              )}
+            </section>
+          )}
+        </form>
       </div>
     </Dialog>
   )

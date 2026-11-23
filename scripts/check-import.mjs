@@ -733,6 +733,396 @@ function urdfInertial(urdf, link) {
   }
 }
 
+// --- GitHub links (src/utils/githubSource.ts) ------------------------------------------------------------------------------
+// Node's fetch is replaced by a made-up repository, so nothing reaches GitHub; every request is logged to count the calls and to
+// check that only the two hosts the page's CSP allows are asked, without cookies or a referrer.
+{
+  const gh = await load('src/utils/githubSource.ts')
+  const realFetch = globalThis.fetch
+  const SHA = 'a'.repeat(40)
+  const MiB = 2 ** 20
+  const URDF = `<robot name="bot"><link name="base"><visual><geometry><mesh filename="package://bot_description/meshes/base.stl"/></geometry></visual></link>
+<joint name="j1" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+<link name="arm"><visual><geometry><mesh filename="package://other_pkg/meshes/arm.stl"/></geometry></visual></link></robot>`
+  const LFS_POINTER = 'version https://git-lfs.github.com/spec/v1\noid sha256:' + '0'.repeat(64) + '\nsize 123456\n'
+  // the repository of most cases: the linked package, another package it names, and one it does not
+  const bots = () => ({
+    'bot_description/package.xml': '<package><name>bot_description</name></package>',
+    'bot_description/urdf/bot.urdf': URDF,
+    'bot_description/meshes/base.stl': 'solid base\nendsolid base\n',
+    'bot_description/README.md': '# not read',
+    'common/other_pkg/package.xml': '<package><name>other_pkg</name></package>',
+    'common/other_pkg/meshes/arm.stl': 'solid arm\nendsolid arm\n',
+    'unrelated_pkg/package.xml': '<package><name>unrelated_pkg</name></package>',
+    'unrelated_pkg/meshes/x.stl': 'solid x\nendsolid x\n',
+  })
+  // files: path -> text, or { size } for a file only listed (never downloaded); refs: branch or tag -> commit
+  let repo = { files: bots(), links: {}, refs: { main: SHA }, truncated: false, answer: null, sizes: {} }
+  let log = []
+  let inFlight = 0
+  let maxInFlight = 0
+  const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
+  globalThis.fetch = async (url, init = {}) => {
+    log.push({ url: String(url), init })
+    if (init.signal?.aborted) throw new DOMException('This operation was aborted', 'AbortError')
+    const u = new URL(String(url))
+    const special = repo.answer?.(u)
+    if (special) return special
+    if (u.host === 'api.github.com') {
+      const commit = /^\/repos\/acme\/bots\/commits\/(.+)$/.exec(u.pathname)
+      if (commit) {
+        // GitHub reads refs/heads/<name> and refs/tags/<name> as the branch or tag <name> (seen 2026-11-23)
+        const ref = commit[1].split('/').map(decodeURIComponent).join('/').replace(/^refs\/(?:heads|tags)\/(?=.)/, '')
+        return repo.refs[ref] ? new Response(repo.refs[ref], { headers: { 'content-type': 'application/vnd.github.sha' } }) : json(422, { message: `No commit found for SHA: ${ref}` })
+      }
+      if (u.pathname === `/repos/acme/bots/git/trees/${SHA}` && u.search === '?recursive=1') {
+        const dirs = new Set()
+        const tree = Object.entries(repo.files).map(([path, body]) => {
+          for (let d = path; d.includes('/'); ) dirs.add((d = d.slice(0, d.lastIndexOf('/'))))
+          return { path, mode: '100644', type: 'blob', sha: 'f'.repeat(40), size: repo.sizes[path] ?? (typeof body === 'string' ? Buffer.byteLength(body) : body.size) }
+        })
+        // a symbolic link is a blob of mode 120000 whose content is the path it points to
+        for (const [path, target] of Object.entries(repo.links)) {
+          for (let d = path; d.includes('/'); ) dirs.add((d = d.slice(0, d.lastIndexOf('/'))))
+          tree.push({ path, mode: '120000', type: 'blob', sha: 'd'.repeat(40), size: Buffer.byteLength(target) })
+        }
+        for (const path of dirs) tree.push({ path, mode: '040000', type: 'tree', sha: 'e'.repeat(40) })
+        return json(200, { sha: SHA, tree, truncated: repo.truncated })
+      }
+      // a commit the repository does not have (seen 2026-11-23)
+      if (/^\/repos\/acme\/bots\/git\/trees\/[0-9a-f]{40}$/.test(u.pathname)) return json(422, { message: 'Invalid object requested. SHA must identify a commit or a tree.' })
+      return json(404, { message: 'Not Found' })
+    }
+    if (u.host === 'raw.githubusercontent.com') {
+      const p = u.pathname.split('/').map(decodeURIComponent)
+      const at = p.slice(4).join('/')
+      const body = p[1] === 'acme' && p[2] === 'bots' && p[3] === SHA ? (repo.files[at] ?? repo.links[at]) : undefined
+      if (typeof body !== 'string') return new Response('404: Not Found', { status: 404 })
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((r) => setTimeout(r, 2))
+      inFlight--
+      return new Response(body)
+    }
+    throw new TypeError('fetch failed')
+  }
+  const fresh = (patch = {}) => {
+    repo = { files: bots(), links: {}, refs: { main: SHA }, truncated: false, answer: null, sizes: {}, ...patch }
+    log = []
+    maxInFlight = 0
+  }
+  const apiCalls = () => log.filter((r) => r.url.startsWith('https://api.github.com/')).length
+  const rawCalls = () => log.filter((r) => r.url.startsWith('https://raw.githubusercontent.com/')).map((r) => decodeURIComponent(r.url.split(`/${SHA}/`)[1]))
+  const failsWith = async (code, run) => {
+    try {
+      await run()
+      return 'no error'
+    } catch (e) {
+      return e?.code === code ? true : `${e?.name} ${e?.code ?? ''} ${e?.message}`
+    }
+  }
+  const blob = 'https://github.com/acme/bots/blob/main/bot_description/urdf/bot.urdf'
+
+  // reading links: nothing is fetched
+  fresh()
+  const p1 = gh.parseGithubUrl(blob)
+  check(p1.owner === 'acme' && p1.repo === 'bots' && p1.rest.join('/') === 'main/bot_description/urdf/bot.urdf' && !p1.folder && !p1.sha, `github: a blob link is read (${JSON.stringify(p1)})`)
+  const good = {
+    'https://www.github.com/acme/bots/tree/main': 'main',
+    'https://github.com/acme/bots/tree/main/': 'main',
+    'github.com/acme/bots/blob/main/my%20robot.urdf': 'main/my robot.urdf',
+    'https://raw.githubusercontent.com/acme/bots/main/urdf/r.urdf': 'main/urdf/r.urdf',
+    'https://github.com/acme/bots.v2/blob/main/.config/r.urdf?plain=1#L3': 'main/.config/r.urdf',
+    [`gh:acme/bots@${SHA}/bot_description/urdf/bot.urdf`]: 'bot_description/urdf/bot.urdf',
+    // the top of a repository, as Copy link gives it for a folder link to the top
+    [`gh:acme/bots@${SHA}/`]: '',
+    // github.com's Raw link, and the Raw button's raw.githubusercontent.com link that names the branch in full
+    'https://github.com/acme/bots/raw/main/urdf/r.urdf': 'main/urdf/r.urdf',
+    'https://github.com/acme/bots/raw/refs/heads/main/r.urdf': 'refs/heads/main/r.urdf',
+    'https://raw.githubusercontent.com/acme/bots/refs/heads/main/urdf/r.urdf': 'refs/heads/main/urdf/r.urdf',
+  }
+  for (const [link, rest] of Object.entries(good)) {
+    let got
+    try {
+      got = gh.parseGithubUrl(link).rest.join('/')
+    } catch (e) {
+      got = e.message
+    }
+    check(got === rest, `github: ${link} is read as ${rest} (got ${got})`)
+  }
+  const rawLink = (() => {
+    try {
+      return gh.parseGithubUrl('https://github.com/acme/bots/raw/main/urdf/r.urdf')
+    } catch (e) {
+      return { folder: e.message }
+    }
+  })()
+  check(rawLink.folder === false && !rawLink.sha, `github: a github.com /raw/ link is a file, like /blob/ (${JSON.stringify(rawLink)})`)
+  const shared = gh.sharedModel('acme', 'bots', SHA, 'urdf/my robot#1.urdf')
+  const back = gh.parseGithubUrl(shared)
+  check(back.sha === SHA && back.rest.join('/') === 'urdf/my robot#1.urdf', `github: a shared link reads back to the same commit and path (${shared})`)
+  const bad = [
+    '',
+    'http://github.com/acme/bots/blob/main/r.urdf',
+    'https://gitlab.com/acme/bots/blob/main/r.urdf',
+    'https://github.com.evil.example/acme/bots/blob/main/r.urdf',
+    'https://github.com/acme/bots/blob/main/../../other/x.urdf',
+    'https://github.com/acme/bots/blob/main/%2e%2E/x.urdf',
+    'https://github.com/acme/bots/blob/main/a\\..\\x.urdf',
+    'https://github.com/acme/bots/blob/main/a%2Fb.urdf',
+    'https://github.com/acme/bots/blob/main/a%00.urdf',
+    'https://github.com/acme/bots/blob/main//r.urdf',
+    'https://github.com/ac_me/bots/blob/main/r.urdf',
+    'https://github.com/acme/bo ts/blob/main/r.urdf',
+    'https://github.com:8443/acme/bots/blob/main/r.urdf',
+    // a user name before the host (written in two parts, so it does not read as an email address)
+    `https://user${'@'}github.com/acme/bots/blob/main/r.urdf`,
+    'https://github.com/acme/bots',
+    'https://github.com/acme/bots/blob/main',
+    'https://github.com/acme/bots/commits/main/r.urdf',
+    'https://raw.githubusercontent.com/acme/bots/main',
+    'javascript:alert(1)',
+    'gh:acme/bots@abc1234/r.urdf',
+    `gh:acme/bots@${SHA}/../x.urdf`,
+    `gh:acme/bots@${SHA}/a/%2e%2e/x.urdf`,
+    `gh:../bots@${SHA}/r.urdf`,
+    `gh:acme/bots@${SHA}`,
+    `gh:acme/bots@${SHA}//`,
+    'https://github.com/acme/bots/raw/main',
+    'https://raw.githubusercontent.com/acme/bots/refs/heads/main',
+    'https://github.com/acme/bots/tree/refs/heads',
+    `https://github.com/acme/bots/blob/main/${'x'.repeat(2040)}.urdf`,
+  ]
+  const accepted = []
+  for (const link of bad) {
+    const r = await failsWith('url', () => gh.lookUp(link))
+    if (r !== true) accepted.push(`${JSON.stringify(link.slice(0, 60))}: ${r}`)
+  }
+  check(accepted.length === 0 && log.length === 0, `github: ${bad.length} bad links are refused before any request (${accepted.join(' | ')}; ${log.length} requests)`)
+
+  // a file in a package: one call for the branch, one for the file list; only the description files are downloaded
+  fresh()
+  const plan = await gh.lookUp(blob)
+  const lookedRaw = rawCalls()
+  check(plan.calls === 2 && apiCalls() === 2 && plan.sha === SHA && plan.isFile && plan.path === 'bot_description/urdf/bot.urdf',
+    `github: a blob link takes 2 API calls (calls ${plan.calls}, requests ${apiCalls()}, ${plan.sha.slice(0, 7)} ${plan.path})`)
+  check(log[0].url === 'https://api.github.com/repos/acme/bots/commits/main' && log[0].init.headers?.Accept === 'application/vnd.github.sha'
+    && log[1].url === `https://api.github.com/repos/acme/bots/git/trees/${SHA}?recursive=1`, `github: the branch, then the file list (${log.slice(0, 2).map((r) => r.url).join(', ')})`)
+  check(JSON.stringify(plan.scopes) === JSON.stringify(['bot_description', 'common/other_pkg']),
+    `github: the package and the other package it names are taken, an unrelated one is not (${JSON.stringify(plan.scopes)})`)
+  check(JSON.stringify(lookedRaw.sort()) === JSON.stringify(['bot_description/package.xml', 'bot_description/urdf/bot.urdf', 'common/other_pkg/package.xml']),
+    `github: a look-up downloads only description files (${lookedRaw.join(', ')})`)
+  const planned = plan.files.map((f) => f.path)
+  check(planned.length === 5 && !planned.some((p) => p.endsWith('README.md') || p.startsWith('unrelated_pkg/'))
+    && planned.slice(0, 3).every((p) => p.endsWith('.xml') || p.endsWith('.urdf')) && plan.bytes === plan.files.reduce((n, f) => n + f.size, 0),
+    `github: the plan lists the 5 files the importer reads, description files first (${planned.join(', ')})`)
+  log = []
+  const steps = []
+  const got = await gh.fetchPlan(plan, undefined, (done, total) => steps.push(`${done}/${total}`))
+  const fetchedRaw = rawCalls()
+  check(JSON.stringify(fetchedRaw.sort()) === JSON.stringify(['bot_description/meshes/base.stl', 'common/other_pkg/meshes/arm.stl']) && apiCalls() === 0,
+    `github: Fetch downloads only the meshes, with no API call (${fetchedRaw.join(', ')}; ${apiCalls()} API calls)`)
+  const rel = got.files.map((f) => f.webkitRelativePath).sort()
+  check(got.files.length === 5 && rel.includes('bots/bot_description/urdf/bot.urdf') && rel.includes('bots/common/other_pkg/meshes/arm.stl')
+    && got.mainFile === 'bots/bot_description/urdf/bot.urdf' && got.lfs.length === 0 && steps[0] === '3/5' && steps.at(-1) === '5/5',
+    `github: the files come as a folder upload of the repository would, with the linked file as the main file (${rel.join(', ')}; main ${got.mainFile}; progress ${steps.join(' ')})`)
+  const text = await got.files.find((f) => f.name === 'bot.urdf').text()
+  check(text === URDF, 'github: a downloaded file holds what the repository holds')
+
+  // every request, of every case below too, goes to one of the two hosts, with no cookies and no referrer
+  const all = []
+  const keep = (from) => all.push(...from)
+  keep(log)
+
+  // a branch whose name holds a slash: tried at each split until GitHub knows it
+  fresh({ refs: { 'feature/x': SHA } })
+  const slashed = await gh.lookUp('https://github.com/acme/bots/blob/feature/x/bot_description/urdf/bot.urdf').catch((e) => ({ calls: -1, path: e.message }))
+  check(slashed.calls === 3 && slashed.path === 'bot_description/urdf/bot.urdf' && log[1].url === 'https://api.github.com/repos/acme/bots/commits/feature/x',
+    `github: a branch with a slash is found on the second try (calls ${slashed.calls}, ${log.slice(0, 2).map((r) => r.url.split('/commits/')[1]).join(', ')})`)
+  keep(log)
+  fresh({ refs: {} })
+  let r = await failsWith('not found', () => gh.lookUp('https://github.com/acme/bots/blob/nope/a/b/c.urdf'))
+  check(r === true && apiCalls() === 3 && rawCalls().length === 0, `github: an unknown branch stops after 3 tries (${r}; ${apiCalls()} calls)`)
+  keep(log)
+
+  // a commit in the link, or a shared link: no call for the branch
+  fresh()
+  const byCommit = await gh.lookUp(`https://github.com/acme/bots/tree/${SHA}/bot_description`)
+  check(byCommit.calls === 1 && !byCommit.isFile && byCommit.path === 'bot_description' && !log[0].url.includes('/commits/'),
+    `github: a link with a full commit makes only the file-list call (calls ${byCommit.calls}, folder ${byCommit.path})`)
+  keep(log)
+  fresh()
+  const byShare = await gh.lookUp(gh.sharedModel('acme', 'bots', SHA, 'bot_description/urdf/bot.urdf'))
+  check(byShare.calls === 1 && byShare.isFile && apiCalls() === 1, `github: a shared link makes only the file-list call (calls ${byShare.calls})`)
+  const top = await gh.lookUp(`https://github.com/acme/bots/tree/${SHA}`)
+  check(top.path === '' && top.scopes[0] === '' && top.files.length === 8 - 1, `github: a link to the top of a repository takes every file the importer reads (${top.files.length})`)
+  keep(log)
+  // Copy link on the top of a repository gives a shared link that reads back to the top
+  fresh()
+  const topShared = gh.sharedModel('acme', 'bots', SHA, '')
+  const topBack = await gh.lookUp(topShared).catch((e) => ({ calls: -1, path: e.message, scopes: [], files: [] }))
+  check(topShared === `gh:acme/bots@${SHA}/` && topBack.calls === 1 && topBack.path === '' && topBack.scopes[0] === '' && topBack.files.length === 7,
+    `github: the top of a repository's shared link reads back to the top (${topShared}; calls ${topBack.calls}, path ${JSON.stringify(topBack.path)}, ${topBack.files.length} files)`)
+  keep(log)
+  // a commit the repository does not have
+  fresh()
+  let msg = await gh.lookUp(gh.sharedModel('acme', 'bots', 'b'.repeat(40), 'bot_description/urdf/bot.urdf')).then(() => 'no error', (e) => `${e.code}|${e.message}`)
+  check(msg.startsWith('not found|') && msg.includes('bbbbbbb') && msg.includes('acme/bots') && apiCalls() === 1 && rawCalls().length === 0,
+    `github: a commit the repository does not have is reported as not found (${msg}; ${apiCalls()} calls)`)
+  keep(log)
+
+  // the Raw button's links name the branch or tag in full (refs/heads/<name>, refs/tags/<name>): no try is spent on "refs"
+  fresh()
+  const rawHeads = await gh.lookUp('https://raw.githubusercontent.com/acme/bots/refs/heads/main/bot_description/urdf/bot.urdf').catch((e) => ({ calls: -1, path: e.message }))
+  check(rawHeads.calls === 2 && rawHeads.path === 'bot_description/urdf/bot.urdf' && log[0].url === 'https://api.github.com/repos/acme/bots/commits/refs/heads/main',
+    `github: a refs/heads/ link takes 2 API calls (calls ${rawHeads.calls}, path ${rawHeads.path}, first ${log[0]?.url})`)
+  keep(log)
+  fresh({ refs: { 'feature/x': SHA } })
+  const rawSlash = await gh.lookUp('https://raw.githubusercontent.com/acme/bots/refs/heads/feature/x/bot_description/urdf/bot.urdf').catch((e) => ({ calls: -1, path: e.message }))
+  check(rawSlash.calls === 3 && rawSlash.path === 'bot_description/urdf/bot.urdf' && log[1].url === 'https://api.github.com/repos/acme/bots/commits/refs/heads/feature/x',
+    `github: a refs/heads/ branch with a slash is found on the second try (calls ${rawSlash.calls}, ${log.slice(0, 2).map((x) => x.url.split('/commits/')[1]).join(', ')})`)
+  keep(log)
+  fresh({ refs: { v1: SHA } })
+  const rawTag = await gh.lookUp('https://github.com/acme/bots/blob/refs/tags/v1/bot_description/urdf/bot.urdf').catch((e) => ({ calls: -1, path: e.message }))
+  check(rawTag.calls === 2 && rawTag.path === 'bot_description/urdf/bot.urdf', `github: a refs/tags/ link takes 2 API calls (calls ${rawTag.calls}, path ${rawTag.path})`)
+  keep(log)
+  fresh({ refs: {} })
+  r = await failsWith('not found', () => gh.lookUp('https://raw.githubusercontent.com/acme/bots/refs/heads/nope/a/b/c.urdf'))
+  check(r === true && apiCalls() === 3 && log.every((x) => !x.url.includes('/commits/refs/heads/nope/a/b/')) && log[0].url.endsWith('/commits/refs/heads/nope'),
+    `github: an unknown refs/heads/ branch stops after 3 tries, starting at the name (${r}; ${log.map((x) => x.url.split('/commits/')[1]).join(', ')})`)
+  keep(log)
+
+  // a symbolic link is not followed: it is listed, never downloaded, and a link to one is refused
+  fresh({ links: { 'bot_description/meshes/link.stl': 'base.stl', 'bot_description/meshes_link': '../common/other_pkg/meshes', 'unrelated_pkg/meshes/y.stl': 'x.stl' } })
+  const linkPlan = await gh.lookUp(blob)
+  const linkGot = await gh.fetchPlan(linkPlan)
+  check(JSON.stringify(linkPlan.links) === JSON.stringify(['bot_description/meshes/link.stl', 'bot_description/meshes_link'])
+    && !linkPlan.files.some((f) => f.path.includes('link')) && !rawCalls().some((p) => p.includes('link') || p.startsWith('unrelated_pkg/'))
+    && JSON.stringify(linkGot.links) === JSON.stringify(linkPlan.links) && linkGot.files.length === 5,
+    `github: symbolic links in the package are listed and not downloaded, one elsewhere is not listed (${JSON.stringify(linkPlan.links)}; fetch ${JSON.stringify(linkGot.links)}; ${linkGot.files.length} files; raw ${rawCalls().join(', ')})`)
+  keep(log)
+  fresh({ links: { 'bot_description/urdf/alias.urdf': 'bot.urdf' } })
+  msg = await gh.lookUp('https://github.com/acme/bots/blob/main/bot_description/urdf/alias.urdf').then(() => 'no error', (e) => `${e.code}|${e.message}`)
+  check(msg.startsWith('path|') && msg.includes('symbolic link') && rawCalls().length === 0, `github: a link to a symbolic link is refused (${msg}; ${rawCalls().length} downloads)`)
+  keep(log)
+
+  // refused before any file is downloaded
+  fresh({ truncated: true })
+  r = await failsWith('truncated', () => gh.lookUp(blob))
+  check(r === true && rawCalls().length === 0, `github: a file list GitHub cut short is refused (${r}; ${rawCalls().length} downloads)`)
+  keep(log)
+  const many = { 'big/package.xml': '<package/>', 'big/r.urdf': '<robot name="r"/>' }
+  for (let i = 0; i < 1999; i++) many[`big/meshes/m${i}.stl`] = 'solid\nendsolid\n'
+  fresh({ files: many })
+  r = await failsWith('too many', () => gh.lookUp('https://github.com/acme/bots/blob/main/big/r.urdf'))
+  check(r === true && rawCalls().length === 0, `github: 2001 files are refused before any download (${r}; ${rawCalls().length} downloads)`)
+  keep(log)
+  const heavy = { 'big/package.xml': '<package/>', 'big/r.urdf': '<robot name="r"/>' }
+  for (let i = 0; i < 3; i++) heavy[`big/meshes/m${i}.stl`] = { size: 200 * MiB }
+  fresh({ files: heavy })
+  r = await failsWith('too many', () => gh.lookUp('https://github.com/acme/bots/blob/main/big/r.urdf'))
+  check(r === true && rawCalls().length === 0, `github: 600 MiB of files are refused before any download (${r}; ${rawCalls().length} downloads)`)
+  keep(log)
+  fresh({ files: { 'big/package.xml': '<package/>', 'big/r.urdf': { size: 40 * MiB } } })
+  r = await gh.lookUp('https://github.com/acme/bots/blob/main/big/r.urdf').then(() => 'no error', (e) => (e.name === 'ImportRefused' && e.reason === 'too big' ? true : `${e.name} ${e.message}`))
+  check(r === true && rawCalls().length === 0, `github: a 40 MiB description file is refused by the importer's own cap before any download (${r})`)
+  keep(log)
+
+  // Git LFS: a pointer instead of the file is listed, never downloaded from an LFS host
+  fresh()
+  repo.files['bot_description/meshes/base.stl'] = LFS_POINTER
+  repo.files['bot_description/urdf/extra.xacro'] = LFS_POINTER
+  const lfsPlan = await gh.lookUp(blob)
+  const lfsGot = await gh.fetchPlan(lfsPlan)
+  check(JSON.stringify(lfsPlan.lfs) === JSON.stringify(['bot_description/urdf/extra.xacro'])
+    && JSON.stringify(lfsGot.lfs.sort()) === JSON.stringify(['bot_description/meshes/base.stl', 'bot_description/urdf/extra.xacro'])
+    && !lfsGot.files.some((f) => f.name === 'base.stl' || f.name === 'extra.xacro') && lfsGot.files.length === 4,
+    `github: Git LFS pointers are listed and left out (look-up ${lfsPlan.lfs.join(', ')}; fetch ${lfsGot.lfs.join(', ')}; ${lfsGot.files.length} files)`)
+  keep(log)
+  fresh()
+  repo.files['bot_description/urdf/bot.urdf'] = LFS_POINTER
+  r = await failsWith('lfs', () => gh.lookUp(blob))
+  check(r === true, `github: a linked file stored in Git LFS is refused (${r})`)
+  keep(log)
+
+  // GitHub's refusals
+  const reset = Math.floor(Date.now() / 1000) + 1800
+  fresh({ answer: (u) => (u.host === 'api.github.com' ? json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) }) : null) })
+  msg = await gh.lookUp(blob).then(() => 'no error', (e) => `${e.code}|${e.message}`)
+  check(msg.startsWith('rate|') && msg.includes('60 requests an hour') && apiCalls() === 1, `github: the hourly limit says when it resets (${msg}; ${apiCalls()} calls)`)
+  keep(log)
+  fresh({ answer: (u) => (u.host === 'api.github.com' ? json(429, { message: 'secondary rate limit' }, { 'retry-after': '120' }) : null) })
+  msg = await gh.lookUp(blob).then(() => 'no error', (e) => `${e.code}|${e.message}`)
+  check(msg.startsWith('rate|') && msg.includes('2 min'), `github: a 429 says how long to wait (${msg})`)
+  keep(log)
+  fresh({ answer: (u) => (u.host === 'api.github.com' ? json(404, { message: 'Not Found' }) : null) })
+  msg = await gh.lookUp(blob).then(() => 'no error', (e) => `${e.code}|${e.message}`)
+  check(msg.startsWith('not found|') && msg.includes('private') && apiCalls() === 1, `github: a missing or private repository says so, without retrying (${msg}; ${apiCalls()} calls)`)
+  keep(log)
+  fresh({ answer: (u) => (u.pathname.includes('/git/trees/') ? json(500, { message: 'boom' }) : null) })
+  r = await failsWith('http', () => gh.lookUp(blob))
+  check(r === true, `github: another error answer stops the look-up (${r})`)
+  keep(log)
+  fresh({ answer: (u) => (u.pathname.includes('/git/trees/') ? new Response('<html>not json</html>') : null) })
+  r = await failsWith('http', () => gh.lookUp(blob))
+  check(r === true, `github: a file list that is not JSON stops the look-up (${r})`)
+  keep(log)
+  fresh({ answer: (u) => (u.host === 'raw.githubusercontent.com' ? null : u.pathname.includes('/commits/') ? new Response('<html>sign in</html>') : null) })
+  r = await failsWith('http', () => gh.lookUp(blob))
+  check(r === true, `github: an answer for the branch that is not a commit stops the look-up (${r})`)
+  keep(log)
+  fresh()
+  repo.sizes['bot_description/urdf/bot.urdf'] = 99
+  r = await failsWith('http', () => gh.lookUp(blob))
+  check(r === true, `github: a file whose size differs from the file list is refused (${r})`)
+  keep(log)
+  fresh()
+  r = await failsWith('path', () => gh.lookUp('https://github.com/acme/bots/blob/main/bot_description/urdf/missing.urdf'))
+  check(r === true && rawCalls().length === 0, `github: a path not at that commit is refused (${r})`)
+  r = await failsWith('path', () => gh.lookUp('https://github.com/acme/bots/blob/main/bot_description/meshes/base.stl'))
+  check(r === true && rawCalls().length === 0, `github: a link to a mesh, not a description, is refused (${r})`)
+  keep(log)
+  fresh({ answer: () => { throw new TypeError('fetch failed') } })
+  r = await failsWith('network', () => gh.lookUp(blob))
+  check(r === true, `github: no connection is reported as such (${r})`)
+  keep(log)
+
+  // stopping: a closed dialog aborts the look-up and the download
+  fresh()
+  const stopped = new AbortController()
+  stopped.abort()
+  r = await gh.lookUp(blob, stopped.signal).then(() => 'no error', (e) => (e.name === 'AbortError' ? true : `${e.name} ${e.message}`))
+  check(r === true && rawCalls().length === 0, `github: an aborted look-up stops (${r})`)
+  fresh()
+  const p2 = await gh.lookUp(blob)
+  const mid = new AbortController()
+  log = []
+  r = await gh.fetchPlan(p2, mid.signal, () => mid.abort()).then(() => 'no error', (e) => (e.name === 'AbortError' ? true : `${e.name} ${e.message}`))
+  check(r === true, `github: an aborted download stops (${r})`)
+  keep(log)
+
+  // at most 6 downloads at once
+  const wide = { 'w/package.xml': '<package/>', 'w/r.urdf': '<robot name="r"/>' }
+  for (let i = 0; i < 20; i++) wide[`w/meshes/m${i}.stl`] = `solid m${i}\nendsolid\n`
+  fresh({ files: wide })
+  const wp = await gh.lookUp('https://github.com/acme/bots/blob/main/w/r.urdf')
+  maxInFlight = 0
+  const wg = await gh.fetchPlan(wp)
+  check(wg.files.length === 22 && maxInFlight > 1 && maxInFlight <= 6 && gh.GITHUB_LIMITS.parallel === 6, `github: downloads run ${maxInFlight} at once, at most 6`)
+  keep(log)
+
+  const hosts = new Set(all.map((q) => new URL(q.url).host))
+  const loose = all.filter((q) => q.init.credentials !== 'omit' || q.init.referrerPolicy !== 'no-referrer' || !q.init.signal)
+  check([...hosts].every((h) => h === 'api.github.com' || h === 'raw.githubusercontent.com') && hosts.size === 2,
+    `github: only api.github.com and raw.githubusercontent.com are asked (${[...hosts].join(', ')})`)
+  check(all.length > 50 && loose.length === 0, `github: all ${all.length} requests send no cookies and no referrer and can be stopped (${loose.length} do not)`)
+
+  const names = (s) => [...gh.namedPackages(s)].sort().join(',')
+  check(names('<mesh filename="package://a_pkg/meshes/x.stl"/> $(find b_pkg)/urdf <uri>model://c_model/meshes/y.dae</uri>') === 'a_pkg,b_pkg,c_model'
+    && names('$(find ${pkg}) package://$(arg p)/x.stl') === '', `github: the packages a file names are found, and substitutions are skipped (${names('$(find ${pkg}) package://$(arg p)/x.stl')})`)
+  globalThis.fetch = realFetch
+}
+
 finish('check-import')
 
 /**

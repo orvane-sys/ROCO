@@ -51,6 +51,10 @@ const csp = /const policy = \[([^\]]*)\]/.exec(vite)?.[1] ?? ''
 check(/name: 'roco-csp',\s*apply: 'build'/.test(vite) && /plugins:[^\]]*contentSecurityPolicy\(\)/.test(vite), 'vite.config.ts adds the roco-csp plugin to the build')
 check(/"object-src 'none'"/.test(csp) && /"base-uri 'self'"/.test(csp) && /"form-action 'none'"/.test(csp) && /"default-src 'self'"/.test(csp) && /script-src 'self' 'sha256-\$\{hash\}' 'wasm-unsafe-eval'`/.test(csp),
   'the policy: default-src self, scripts by origin and hash, WebAssembly, no plugins, no <base> or form elsewhere')
+// connect-src exactly: the bridge (ws/wss), blobs and data, and the two GitHub hosts of the import's GitHub links; any other host fails
+const connect = csp.match(/"connect-src [^"]*"/g) ?? []
+check(connect.length === 1 && connect[0] === `"connect-src 'self' ws: wss: blob: data: https://api.github.com https://raw.githubusercontent.com"`,
+  `connect-src is exactly self, ws:, wss:, blob:, data: and the two GitHub hosts (is ${connect.join(' | ') || 'missing'})`)
 check(csp.length > 0 && !/'unsafe-eval'/.test(csp) && !/script-src[^"`]*'unsafe-inline'/.test(csp) && !/(^|[\s"'`])\*/.test(csp), "the policy has no 'unsafe-eval', no inline scripts by default and no * source")
 
 // the logo: the README's two pictures hold the page's drawing, and the favicon is readable on a dark tab bar too

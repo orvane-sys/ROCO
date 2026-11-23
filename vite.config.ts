@@ -25,7 +25,8 @@ function contentSecurityPolicy(): Plugin {
           `script-src 'self' 'sha256-${hash}' 'wasm-unsafe-eval'`,
           "style-src 'self'",
           "img-src 'self' data: blob:",
-          "connect-src 'self' ws: wss: blob: data:",
+          // GitHub links (src/utils/githubSource.ts): the API for the file list, raw.githubusercontent.com for the files; no other host
+          "connect-src 'self' ws: wss: blob: data: https://api.github.com https://raw.githubusercontent.com",
           "object-src 'none'",
           "base-uri 'self'",
           "form-action 'none'",

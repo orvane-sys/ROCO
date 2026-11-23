@@ -83,6 +83,17 @@ import type {
 } from './types/telemetry'
 import { AlertTriangle, CircleHelp, ShieldAlert, X } from 'lucide-react'
 
+/**
+ * A shared GitHub link's `?model=` value, checked only for its shape here (owner, repository, a full commit, a path, which
+ * is empty for the top of the repository); the import
+ * dialog reads it fully (src/utils/githubSource.ts) and fetches nothing until Look up is clicked.
+ */
+function sharedModelFromQuery(): string | null {
+  if (typeof window === 'undefined') return null
+  const value = new URLSearchParams(window.location.search).get('model')
+  return value && value.length <= 2048 && /^gh:[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}@[0-9a-f]{40}\/[^\s]*$/.test(value) ? value : null
+}
+
 /** Which guided-check limits were reached and passed, kept between frames: one per hello, so another robot or recording starts over. */
 const latches = new WeakMap<object, ReachedOk>()
 const NO_HELLO = {}
@@ -121,7 +132,9 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const [isAppearanceOpen, setIsAppearanceOpen] = useState(false)
-  const [isImportOpen, setIsImportOpen] = useState(false)
+  // a shared GitHub link (?model=gh:owner/repo@sha/path) opens the import dialog with its field filled; nothing is fetched until Look up
+  const [sharedModel, setSharedModel] = useState<string | null>(sharedModelFromQuery)
+  const [isImportOpen, setIsImportOpen] = useState(sharedModel !== null)
   // files dropped on the 3D view, imported by the dialog so its report and checks are seen
   const [droppedFiles, setDroppedFiles] = useState<File[] | null>(null)
   const [isPaletteOpen, setIsPaletteOpen] = useState(false)
@@ -272,7 +285,7 @@ export function App() {
   const canPose = poseAllowed({ status, source: monitor.hello?.source ?? null, sample: telemetryService.isSample() })
   const showConnectScreen = !telemetry && !monitor.hello && (status === 'DISCONNECTED' || (status === 'CONNECTING' && sawDisconnect))
   const [tourWasSeen] = useState(tourSeen)
-  const tourDue = !tourWasSeen && !tourDismissed && isMonitor && monitor.hello !== null && !showConnectScreen && workspace === 'run'
+  const tourDue = !tourWasSeen && !tourDismissed && !isImportOpen && isMonitor && monitor.hello !== null && !showConnectScreen && workspace === 'run'
   const anyDialogOpen = isSettingsOpen || isHelpOpen || isImportOpen || isAppearanceOpen || isPaletteOpen || tourManual || tourDue
 
   const goToWorkspace = useCallback((w: Workspace, focus?: string) => {
@@ -825,9 +838,11 @@ export function App() {
           <ImportRobotDialog
             isOpen={isImportOpen}
             initialFiles={droppedFiles}
+            initialGithub={sharedModel}
             onClose={() => {
               setIsImportOpen(false)
               setDroppedFiles(null)
+              setSharedModel(null)
             }}
             onImportSuccess={(prof) => handleSelectProfile(prof.id)}
           />

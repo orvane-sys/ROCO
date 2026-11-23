@@ -515,7 +515,7 @@ try {
       await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
       await page.waitForSelector('canvas', { timeout: PAGE_READY_MS })
       await page.waitForTimeout(1500)
-      const IMPORTER = /ImportRobotDialog|robotImporter|modelFormatParser|xacro|mjcfConverter|sdfConverter|zipBundle|zipWorker/
+      const IMPORTER = /ImportRobotDialog|robotImporter|modelFormatParser|xacro|mjcfConverter|sdfConverter|zipBundle|zipWorker|githubSource/
       const cold = await Promise.all(scripts)
       const coldNames = cold.map((s) => s.url.split('/').pop())
       check(cold.length > 0, `${at}: scripts were seen (${cold.length})`)
@@ -598,6 +598,244 @@ try {
     }
   }
 
+  // a GitHub link (src/utils/githubSource.ts): a shared link only fills the field; Look up and Fetch and import ask the two hosts
+  // the CSP allows, answered here by fakes (nothing reaches GitHub); any other host is blocked by the CSP before a request is made
+  {
+    const at = 'github'
+    const SHA = 'c'.repeat(40)
+    const STL = 'solid arm\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 0.1 0 0\nvertex 0 0.1 0\nendloop\nendfacet\nendsolid arm\n'
+    const LFS_POINTER = 'version https://git-lfs.github.com/spec/v1\noid sha256:' + '0'.repeat(64) + '\nsize 123456\n'
+    // the moving link has no mass, so the model check keeps the dialog open after the import
+    const repoFiles = {
+      'gh_bot_description/package.xml': '<package><name>gh_bot_description</name></package>',
+      'gh_bot_description/urdf/gh_bot.urdf': `<robot name="gh_bot"><link name="base"/>
+<joint name="gh_joint" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>
+<link name="arm"><visual><geometry><mesh filename="package://gh_bot_description/meshes/arm.stl"/></geometry></visual></link></robot>`,
+      'gh_bot_description/meshes/arm.stl': STL,
+    }
+    const GH = `gh:acme/bots@${SHA}/gh_bot_description/urdf/gh_bot.urdf`
+    let rate = false
+    // slowRaw: the mesh answers after 2 s, to see the dialog while it downloads; links: symbolic links (path -> target)
+    let slowRaw = false
+    let links = {}
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+    const asked = []
+    const cors = { 'access-control-allow-origin': '*', 'access-control-expose-headers': 'X-RateLimit-Remaining, X-RateLimit-Reset' }
+    const fake = async (route) => {
+      const u = new URL(route.request().url())
+      asked.push(u.href)
+      const answer = (status, body, type = 'application/json', extra = {}) => route.fulfill({ status, body, headers: { ...cors, 'content-type': type, ...extra } })
+      if (u.host === 'api.github.com') {
+        if (rate) return answer(403, '{"message":"API rate limit exceeded"}', 'application/json', { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1800) })
+        if (u.pathname === '/repos/acme/bots/commits/main') return answer(200, SHA, 'application/vnd.github.sha')
+        // a branch that takes 2 s to answer, to edit the link while it is looked up
+        if (u.pathname === '/repos/acme/bots/commits/slow') return wait(2000).then(() => answer(200, SHA, 'application/vnd.github.sha')).catch(() => {})
+        if (u.pathname === `/repos/acme/bots/git/trees/${SHA}` && u.search === '?recursive=1') {
+          const dirs = ['gh_bot_description', 'gh_bot_description/urdf', 'gh_bot_description/meshes'].map((path) => ({ path, mode: '040000', type: 'tree', sha: 'e'.repeat(40) }))
+          const blobs = Object.entries(repoFiles).map(([path, body]) => ({ path, mode: '100644', type: 'blob', sha: 'f'.repeat(40), size: Buffer.byteLength(body) }))
+          const symlinks = Object.entries(links).map(([path, target]) => ({ path, mode: '120000', type: 'blob', sha: 'd'.repeat(40), size: Buffer.byteLength(target) }))
+          return answer(200, JSON.stringify({ sha: SHA, tree: [...dirs, ...blobs, ...symlinks], truncated: false }))
+        }
+        if (u.pathname === '/rate_limit') return answer(200, '{}')
+        return answer(404, '{"message":"Not Found"}')
+      }
+      if (u.host === 'raw.githubusercontent.com') {
+        const prefix = `/acme/bots/${SHA}/`
+        const at = u.pathname.startsWith(prefix) ? decodeURIComponent(u.pathname.slice(prefix.length)) : ''
+        const body = repoFiles[at] ?? links[at]
+        if (slowRaw && at.endsWith('.stl')) await wait(2000)
+        return (body === undefined ? answer(404, '404: Not Found', 'text/plain') : answer(200, body, 'text/plain')).catch(() => {})
+      }
+      return route.abort()
+    }
+    const openWith = async (query, { guard = true, tourSeen = true } = {}) => {
+      const page = await browser.newPage({ viewport: { width: 1366, height: 768 } })
+      page.errors = []
+      page.on('pageerror', (e) => page.errors.push(String(e)))
+      if (guard) await guardCsp(page)
+      if (tourSeen) await page.addInitScript(() => {
+        try {
+          localStorage.setItem('roco.tour.v1', '1')
+        } catch {}
+      })
+      await page.route(/^https:\/\//, fake)
+      await page.goto(url + query)
+      await page.waitForSelector('section[aria-labelledby=replay-heading]', { timeout: PAGE_READY_MS })
+      return page
+    }
+    const dialog = (page) => page.locator('[role=dialog]')
+
+    // a shared link opens the dialog with the field filled, before the tour, and asks GitHub nothing until Look up
+    let page = await openWith(`&model=${encodeURIComponent(GH)}`, { tourSeen: false })
+    try {
+      await page.locator('#gh-link').waitFor({ timeout: PAGE_READY_MS })
+      check((await page.locator('#gh-link').inputValue()) === GH, `${at}: a shared link fills the GitHub field (${await page.locator('#gh-link').inputValue()})`)
+      await page.waitForTimeout(2000)
+      check(asked.length === 0, `${at}: a shared link asks GitHub nothing until Look up (${asked.join(', ')})`)
+      check((await dialog(page).count()) === 1 && (await dialog(page).getByRole('form', { name: 'Import from GitHub' }).count()) === 1,
+        `${at}: the shared link's dialog shows, not the tour (${await dialog(page).count()} dialogs)`)
+
+      // Look up: the file list and the description files only; the card says what Fetch would download
+      await dialog(page).getByRole('button', { name: 'Look up' }).click()
+      const card = dialog(page).getByRole('region', { name: 'GitHub files' })
+      await card.waitFor({ timeout: PAGE_READY_MS })
+      const cardText = await card.innerText()
+      check(/acme\/bots/.test(cardText) && cardText.includes(SHA.slice(0, 7)) && /3 files/.test(cardText) && cardText.includes('gh_bot_description/urdf/gh_bot.urdf'),
+        `${at}: the card names the repository, commit, file and download (${JSON.stringify(cardText)})`)
+      check(asked.filter((a) => a.startsWith('https://api.github.com/')).length === 1 && !asked.some((a) => a.endsWith('.stl')),
+        `${at}: Look up on a shared link makes one API call and downloads no mesh (${asked.join(', ')})`)
+
+      // Copy link: the link it gives is the same shared link
+      await card.getByRole('button', { name: 'Copy link' }).click()
+      const shared = await card.getByRole('textbox', { name: 'Link to this model' }).inputValue()
+      check(new URL(shared).searchParams.get('model') === GH, `${at}: Copy link gives the shared link back (${shared})`)
+
+      // Fetch and import: the mesh is downloaded and the robot imported, with its mesh found
+      const before = asked.length
+      await card.getByRole('button', { name: 'Fetch and import' }).click()
+      const done = await dialog(page).getByText('Imported gh bot (1 joint)!').waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      const text = await dialog(page).innerText()
+      check(done && !text.includes('Problems'), `${at}: Fetch and import imports the robot with its mesh (${JSON.stringify(text.slice(0, 300))})`)
+      check(asked.slice(before).length === 1 && asked.at(-1).endsWith('/gh_bot_description/meshes/arm.stl'), `${at}: Fetch downloads only the mesh (${asked.slice(before).join(', ')})`)
+
+      // a mesh stored in Git LFS is listed under Problems, and no LFS host is asked
+      repoFiles['gh_bot_description/meshes/arm.stl'] = LFS_POINTER
+      await page.locator('#gh-link').fill('https://github.com/acme/bots/blob/main/gh_bot_description/urdf/gh_bot.urdf')
+      await dialog(page).getByRole('button', { name: 'Look up' }).click()
+      await card.getByRole('button', { name: 'Fetch and import' }).click()
+      const lfsShown = await dialog(page).getByText('Stored in Git LFS').first().waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      check(lfsShown && (await dialog(page).innerText()).includes('Problems'), `${at}: a mesh stored in Git LFS is listed under Problems`)
+      repoFiles['gh_bot_description/meshes/arm.stl'] = STL
+
+      // the hourly limit: the dialog says when it resets
+      rate = true
+      await page.locator('#gh-link').fill('https://github.com/acme/bots/blob/main/gh_bot_description/urdf/gh_bot.urdf')
+      await dialog(page).getByRole('button', { name: 'Look up' }).click()
+      const rateShown = await dialog(page).getByText(/60 requests an hour/).waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      check(rateShown, `${at}: the hourly limit is explained in the dialog`)
+      rate = false
+
+      // editing the link while it is looked up stops that look-up: its card never shows under the edited link
+      const lookingUp = dialog(page).getByText('Looking up the link…')
+      const lookUpButton = dialog(page).getByRole('button', { name: 'Look up' })
+      const slowLink = 'https://github.com/acme/bots/blob/slow/gh_bot_description/urdf/gh_bot.urdf'
+      const mainLink = 'https://github.com/acme/bots/blob/main/gh_bot_description/urdf/gh_bot.urdf'
+      await page.locator('#gh-link').fill(slowLink)
+      await lookUpButton.click()
+      await lookingUp.waitFor({ timeout: PAGE_READY_MS })
+      await page.locator('#gh-link').fill(mainLink)
+      const stoppedAtOnce = (await lookingUp.count()) === 0 && (await lookUpButton.isEnabled())
+      await page.waitForTimeout(3000)
+      check(stoppedAtOnce && (await card.count()) === 0 && (await page.locator('#gh-link').inputValue()) === mainLink,
+        `${at}: editing the link during a look-up stops it, and its card never shows (stopped at once ${stoppedAtOnce}, cards ${await card.count()})`)
+      await lookUpButton.click()
+      await card.waitFor({ timeout: PAGE_READY_MS })
+      check((await card.innerText()).includes('gh_bot_description/urdf/gh_bot.urdf'), `${at}: Look up after the edit shows the edited link's card`)
+      // the same slow look-up, left alone, does show its card
+      await page.locator('#gh-link').fill(slowLink)
+      await lookUpButton.click()
+      const slowCard = await card.waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      check(slowCard && (await lookingUp.count()) === 0, `${at}: a slow look-up left alone shows its card`)
+
+      // while a confirmed download runs, the link cannot be edited
+      // (the earlier import's success line stays until the new files are imported, so the download is seen ending instead)
+      slowRaw = true
+      const fetchedFrom = asked.length
+      await card.getByRole('button', { name: 'Fetch and import' }).click()
+      const downloading = dialog(page).getByText(/^Downloading/)
+      await downloading.waitFor({ timeout: PAGE_READY_MS })
+      const readOnly = await page.locator('#gh-link').evaluate((el) => el.readOnly)
+      const ended = await downloading.waitFor({ state: 'hidden', timeout: PAGE_READY_MS }).then(() => true, () => false)
+      const imported = ended && await dialog(page).getByText('Imported gh bot (1 joint)!').waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      const meshAsked = asked.slice(fetchedFrom).some((a) => a.endsWith('/gh_bot_description/meshes/arm.stl'))
+      check(readOnly && imported && meshAsked && !(await page.locator('#gh-link').evaluate((el) => el.readOnly)) && !(await dialog(page).innerText()).includes('The download failed'),
+        `${at}: the link is read-only while its files download, then editable (read-only ${readOnly}, ended ${ended}, imported ${imported}, mesh ${meshAsked})`)
+      slowRaw = false
+
+      // a symbolic link is shown on the card, not downloaded, and listed in the report as not supported
+      links = { 'gh_bot_description/meshes/alias.stl': 'arm.stl' }
+      await page.locator('#gh-link').fill(mainLink)
+      await lookUpButton.click()
+      await card.waitFor({ timeout: PAGE_READY_MS })
+      const linkCard = await card.innerText()
+      await card.getByRole('button', { name: 'Fetch and import' }).click()
+      const linkReported = await dialog(page).getByText(/A symbolic link, which ROCO does not follow/).first().waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      const linkText = await dialog(page).innerText()
+      check(/One file is a symbolic link/.test(linkCard) && linkCard.includes('gh_bot_description/meshes/alias.stl') && linkReported
+        && linkText.includes('Not supported') && linkText.includes('alias.stl') && !asked.some((a) => a.endsWith('/alias.stl')),
+        `${at}: a symbolic link is on the card and in the report, and is not downloaded (${JSON.stringify(linkCard)})`)
+      links = {}
+
+      // a link that is not GitHub's is refused in the dialog, with no request
+      const n = asked.length
+      await page.locator('#gh-link').fill('https://example.com/acme/bots/blob/main/r.urdf')
+      await dialog(page).getByRole('button', { name: 'Look up' }).click()
+      const refused = await dialog(page).getByText(/not a GitHub link ROCO can read/).waitFor({ timeout: PAGE_READY_MS }).then(() => true, () => false)
+      check(refused && asked.length === n, `${at}: a link off GitHub is refused without a request (${asked.slice(n).join(', ')})`)
+      check(asked.every((a) => /^https:\/\/(api\.github\.com|raw\.githubusercontent\.com)\//.test(a)), `${at}: only the two GitHub hosts were asked (${asked.join(', ')})`)
+      check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    } finally {
+      await page.close()
+    }
+
+    // the top of a repository's shared link (Copy link on a link to the top) opens the dialog too, and asks nothing until Look up
+    {
+      const TOP = `gh:acme/bots@${SHA}/`
+      asked.length = 0
+      page = await openWith(`&model=${encodeURIComponent(TOP)}`)
+      try {
+        const field = await page.locator('#gh-link').waitFor({ timeout: PAGE_READY_MS }).then(() => page.locator('#gh-link').inputValue(), () => null)
+        await page.waitForTimeout(1000)
+        check(field === TOP && asked.length === 0, `${at}: the top of a repository's shared link fills the field and asks nothing (${field}; ${asked.join(', ')})`)
+        const card = dialog(page).getByRole('region', { name: 'GitHub files' })
+        if (field === TOP) {
+          await dialog(page).getByRole('button', { name: 'Look up' }).click()
+          await card.waitFor({ timeout: PAGE_READY_MS })
+          const cardText = await card.innerText()
+          await card.getByRole('button', { name: 'Copy link' }).click()
+          const back = new URL(await card.getByRole('textbox', { name: 'Link to this model' }).inputValue()).searchParams.get('model')
+          check(cardText.includes('(top of the repository)') && /3 files/.test(cardText) && back === TOP,
+            `${at}: Look up on it shows the top of the repository, and Copy link gives it back (${JSON.stringify(cardText)}; ${back})`)
+        }
+        check(page.errors.length === 0, `${at}: the top of a repository's shared link: no page errors (${page.errors[0] ?? ''})`)
+      } finally {
+        await page.close()
+      }
+    }
+
+    // a ?model= that is not a shared link's shape opens nothing
+    for (const bad of [`gh:acme/bots@${SHA.slice(0, 7)}/r.urdf`, 'https://evil.example/r.urdf', `gh:acme/bots@${SHA}`]) {
+      page = await openWith(`&model=${encodeURIComponent(bad)}`)
+      try {
+        await page.waitForTimeout(1000)
+        check((await dialog(page).count()) === 0, `${at}: ?model=${bad} opens no dialog`)
+        check(page.errors.length === 0, `${at}: ?model=${bad}: no page errors (${page.errors[0] ?? ''})`)
+      } finally {
+        await page.close()
+      }
+    }
+
+    // the CSP: GitHub's two hosts are allowed; any other host, Git LFS's included, is blocked before a request is made
+    page = await openWith('', { guard: false })
+    try {
+      asked.length = 0
+      const got = await page.evaluate(async (targets) => {
+        const seen = []
+        document.addEventListener('securitypolicyviolation', (e) => seen.push(`${e.blockedURI} ${e.effectiveDirective}`))
+        const out = []
+        for (const t of targets) out.push(await fetch(t, { credentials: 'omit' }).then((r) => `ok ${r.status}`, () => 'refused'))
+        await new Promise((r) => setTimeout(r, 300))
+        return { out, seen }
+      }, ['https://api.github.com/rate_limit', 'https://media.githubusercontent.com/media/acme/bots/main/a.stl', 'https://github.com/acme/bots', 'https://objects.githubusercontent.com/a', 'https://example.com/'])
+      check(got.out[0] === 'ok 200' && asked.length === 1 && asked[0] === 'https://api.github.com/rate_limit', `${at}: the CSP lets the page ask api.github.com (${got.out[0]}; ${asked.join(', ')})`)
+      const blocked = got.seen.filter((s) => s.endsWith(' connect-src'))
+      check(got.out.slice(1).every((o) => o === 'refused') && blocked.length === 4 && blocked.some((s) => s.startsWith('https://media.githubusercontent.com')),
+        `${at}: the CSP blocks Git LFS's host and every other host (${JSON.stringify(got)})`)
+    } finally {
+      await page.close()
+    }
+  }
+
   // a robot with no movable joints (a drone) imports as one rigid body: its joint table says so, not "Waiting for telemetry…"
   {
     const page = await open(1366, 768)
@@ -648,8 +886,17 @@ try {
   const viewOf = (page) => page.locator('section[aria-label$="digital twin"]')
   const shot = async (page) => {
     await page.mouse.move(0, 0)
-    await page.waitForTimeout(900) // the smoothing has settled
-    return viewOf(page).locator('[role=img]').screenshot()
+    await page.waitForTimeout(900)
+    // the smoothing has settled once two pictures in a row are the same (a slow software renderer can take longer than 900 ms)
+    const img = viewOf(page).locator('[role=img]')
+    let last = await img.screenshot()
+    for (const end = Date.now() + 6000; Date.now() < end; ) {
+      await page.waitForTimeout(300)
+      const next = await img.screenshot()
+      if (next.equals(last)) return next
+      last = next
+    }
+    return last
   }
   const startPosing = async (page) => {
     await page.getByText('Loading robot model…').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
