@@ -829,7 +829,7 @@ try {
       }, ['https://api.github.com/rate_limit', 'https://media.githubusercontent.com/media/acme/bots/main/a.stl', 'https://github.com/acme/bots', 'https://objects.githubusercontent.com/a', 'https://example.com/'])
       check(got.out[0] === 'ok 200' && asked.length === 1 && asked[0] === 'https://api.github.com/rate_limit', `${at}: the CSP lets the page ask api.github.com (${got.out[0]}; ${asked.join(', ')})`)
       const blocked = got.seen.filter((s) => s.endsWith(' connect-src'))
-      check(got.out.slice(1).every((o) => o === 'refused') && blocked.length === 4 && blocked.some((s) => s.startsWith('https://media.githubusercontent.com')),
+      check(got.out.slice(1).every((o) => o === 'refused') && blocked.length === 4 && blocked.some((s) => URL.canParse(s.split(' ')[0]) && new URL(s.split(' ')[0]).host === 'media.githubusercontent.com'),
         `${at}: the CSP blocks Git LFS's host and every other host (${JSON.stringify(got)})`)
     } finally {
       await page.close()
