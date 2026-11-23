@@ -239,6 +239,59 @@ function urdfInertial(urdf, link) {
   return { mass: Number(at('mass', 'value')), xyz, rpy: [r, p, y], raw: [g.ixx, g.iyy, g.izz, g.ixy, g.ixz, g.iyz], tensor: [T(0, 0), T(1, 1), T(2, 2), T(0, 1), T(0, 2), T(1, 2)] }
 }
 
+// --- posing by hand (src/utils/manualPose.ts) ------------------------------------------------------------------------
+{
+  const { poseAllowed, posableJoints, startPose, setPoseJoint, resetPose, stopPose, getPose } = await load('src/utils/manualPose.ts')
+  // allowed only while no live robot feed is on
+  const cases = [
+    [{ status: 'LIVE', source: 'sim', sample: false }, false],
+    [{ status: 'LIVE', source: 'robot', sample: false }, false],
+    [{ status: 'SAFETY_HALT', source: 'sim', sample: false }, false],
+    [{ status: 'SAFETY_HALT', source: 'robot', sample: false }, false],
+    [{ status: 'LIVE', source: null, sample: false }, false], // connected, the bridge has not said what it plays yet
+    [{ status: 'DISCONNECTED', source: null, sample: false }, true],
+    [{ status: 'CONNECTING', source: null, sample: false }, true],
+    [{ status: 'LIVE', source: null, sample: true }, true],
+    [{ status: 'LIVE', source: 'replay', sample: false }, true],
+  ]
+  for (const [arg, want] of cases) check(poseAllowed(arg) === want, `poseAllowed ${JSON.stringify(arg)} is ${want}`)
+
+  const lim = (lower, upper) => ({ lower, upper })
+  const joints = posableJoints({
+    knee: { jointType: 'revolute', limit: lim(-0.1, 2.5) },
+    wheel: { jointType: 'continuous', limit: lim(0, 0) },
+    lift: { jointType: 'prismatic', limit: lim(0, 0.2) },
+    copy: { jointType: 'revolute', limit: lim(-1, 1), type: 'URDFMimicJoint' },
+    stuck: { jointType: 'revolute', limit: lim(0, 0) },
+    upside: { jointType: 'revolute', limit: lim(1, -1) },
+    open: { jointType: 'revolute', limit: lim(-Infinity, 1) },
+    mount: { jointType: 'fixed', limit: lim(0, 0) },
+    ball: { jointType: 'floating', limit: lim(0, 0) },
+  })
+  check(JSON.stringify(joints) === JSON.stringify([
+    { name: 'knee', kind: 'revolute', lower: -0.1, upper: 2.5 },
+    { name: 'wheel', kind: 'continuous', lower: -Math.PI, upper: Math.PI },
+    { name: 'lift', kind: 'prismatic', lower: 0, upper: 0.2 },
+  ]), `posableJoints keeps a ranged revolute, a continuous (one turn) and a prismatic; leaves out mimic, no-range, reversed, open-ended, fixed and floating (${JSON.stringify(joints)})`)
+
+  startPose('p', joints, new Map([['knee', 3], ['lift', -1]]))
+  const p0 = getPose()
+  check(p0.values.get('knee') === 2.5 && p0.values.get('lift') === 0 && p0.values.get('wheel') === 0, 'startPose brings a value outside its range inside it, and a missing one is 0')
+  setPoseJoint('knee', 1)
+  setPoseJoint('nope', 1)
+  setPoseJoint('lift', Number.NaN)
+  const p1 = getPose()
+  check(p1.version === p0.version + 1 && p1.values.get('knee') === 1 && p1.values.get('lift') === 0 && !p1.values.has('nope'),
+    `setPoseJoint moves one joint and bumps the version once; an unknown joint or a non-number changes nothing (${p0.version} -> ${p1.version})`)
+  check(p0.values.get('knee') === 2.5, 'a change makes a new pose, so the view sees it changed')
+  resetPose()
+  check(getPose().values.get('knee') === 0 && getPose().values.get('lift') === 0, 'Back to zero: 0, or the end of the range nearest 0')
+  stopPose()
+  check(getPose() === null, 'Stop posing clears the pose')
+  setPoseJoint('knee', 1)
+  check(getPose() === null, 'no pose: a slider change does not start one')
+}
+
 // --- MJCF conversion, through the page's importer in Chrome ------------------------------------------------------------
 {
   const bundle = await rolldown({ input: fileURLToPath(new URL('scripts/import-harness.ts', root)), logLevel: 'silent',

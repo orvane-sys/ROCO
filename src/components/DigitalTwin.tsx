@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import URDFLoader, { type URDFRobot } from 'urdf-loader'
@@ -22,12 +22,16 @@ import {
   RefreshCw,
   X,
   Upload,
+  SlidersHorizontal,
 } from 'lucide-react'
 // Small modules only: the importer and its converters load when the import dialog opens, not on the first visit.
 import { collectDroppedFiles } from '../utils/droppedFiles'
 import { configureMultiFormatMeshLoader } from '../utils/meshLoaders'
 import { getImportedAssetResolver } from '../utils/importedAssets'
+import { getPose, posableJoints, startPose, stopPose, subscribePose, type PoseJoint } from '../utils/manualPose'
 import { acceptUnitsFix, acceptedUnitsFix, applyUnitsFix, checkUnits, type UnitsFix, type UnitsOffer } from '../utils/unitsCheck'
+
+const PosePanel = lazy(() => import('./PosePanel').then((m) => ({ default: m.PosePanel })))
 
 // Standard/physical materials expose `emissive`; others (basic, line) do not, which the code checks at runtime.
 type EmissiveMaterial = THREE.Material & { emissive: THREE.Color; emissiveIntensity: number }
@@ -40,6 +44,8 @@ interface DigitalTwinProps {
   quality?: SceneQuality
   /** Files dropped on the view; the app opens the import dialog with them, so its report is seen. */
   onFilesDropped?: (files: File[]) => void
+  /** No live robot feed is on (no bridge, the sample, or a replay), so the joints may be posed by hand. See `poseAllowed`. */
+  canPose?: boolean
 }
 
 export type SceneQuality = 'full' | 'low' | 'off'
@@ -103,7 +109,7 @@ function supportsWebGL(): boolean {
 const WEBGL_UNAVAILABLE_MESSAGE =
   '3D view unavailable: WebGL could not start in this browser. Teleop and telemetry still work.'
 
-export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 'full', onFilesDropped }: DigitalTwinProps) {
+export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 'full', onFilesDropped, canPose = false }: DigitalTwinProps) {
   const containerRef = useRef<HTMLElement | null>(null)
   const mountRef = useRef<HTMLDivElement | null>(null)
   // Recolours the scene (background, floor, grid, markers) from the --scene-* tokens; set while the scene exists.
@@ -135,6 +141,10 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
   const [unitsOffer, setUnitsOffer] = useState<UnitsOffer | null>(null)
   const unitsFixRef = useRef<((fix: UnitsFix) => void) | null>(null)
   const [hudPose, setHudPose] = useState<{ x: number; y: number; yaw: number }>({ x: 0, y: 0, yaw: 0 })
+  // the loaded robot's joints that can be posed by hand, whether it is posed now, and the note said when posing is stopped for it
+  const [posable, setPosable] = useState<PoseJoint[]>([])
+  const posing = useSyncExternalStore(subscribePose, () => getPose() !== null)
+  const [poseNote, setPoseNote] = useState('')
 
   const controlsRef = useRef<OrbitControls | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
@@ -149,6 +159,8 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
 
   useEffect(() => {
     const container = mountRef.current
+    // no robot in the view until this run loads one, so nothing to pose (also while the 3D view is off)
+    setPosable((p) => (p.length ? [] : p))
     if (!container || !webglSupported || !enabled) return
     setIsLoading(true)
     setLoadProgress({ loaded: 0, total: 0 })
@@ -437,6 +449,7 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         setLoadError(`${failedMeshes} mesh file(s) failed to load — see console`)
       }
       setIsLoading(false)
+      setPosable(posableJoints(robot.joints))
       setRobotLoaded((k) => k + 1)
     }
 
@@ -464,8 +477,14 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         // parse() does not know where the file came from: without a working path "meshes/x.STL"
         // resolves against the page root instead of the URDF's directory.
         loader.workingPath = THREE.LoaderUtils.extractUrlBase(profile.urdfPath)
-        const parsed = loader.parse(rawText)
-        robot = parsed
+        // The description counts as one item, as in URDFLoader.load(): a robot made only of boxes, cylinders and spheres asks
+        // for no mesh, and without an item the manager never says it is done, so the view would stay on "Loading robot model…".
+        manager.itemStart(profile.urdfPath)
+        try {
+          robot = loader.parse(rawText)
+        } finally {
+          manager.itemEnd(profile.urdfPath)
+        }
       })
       .catch((err) => {
         console.error(`Error loading robot model (${profile.id}):`, err)
@@ -498,6 +517,9 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     let snapNext = false
     let lastHudUpdateTime = 0
     let lastDrawTime = 0
+    // posing by hand: the pose last applied, and the angles from before posing (put back when it stops with no data to return to)
+    let appliedPoseVersion = -1
+    let posedFrom: Map<string, number> | null = null
 
     // Nothing is drawn while the view is scrolled out of sight, behind another workspace, or in a hidden tab.
     let onScreen = true
@@ -533,7 +555,31 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
             }
           : livePose
 
-      if (snapshot && pose && robot && robotFinalized) {
+      // Posed by hand: the view holds still and shows the posed joints, applied only when they change.
+      const held = getPose()
+      const mp = held?.profileId === profile.id ? held : null
+      if (mp && robot && robotFinalized) {
+        if (mp.version !== appliedPoseVersion) {
+          appliedPoseVersion = mp.version
+          const rb = robot
+          if (!posedFrom) posedFrom = new Map(mp.joints.map((j) => [j.name, rb.joints[j.name]?.jointValue[0] ?? 0]))
+          mp.values.forEach((v, name) => {
+            rb.joints[name]?.setJointValue(v)
+            smoothedJoints.set(name, v) // so the data path eases back from the pose when posing stops
+          })
+        }
+      } else if (posedFrom) {
+        const rb = robot
+        if (!snapshot && rb) {
+          posedFrom.forEach((v, name) => {
+            rb.joints[name]?.setJointValue(v)
+            smoothedJoints.set(name, v)
+          })
+        }
+        posedFrom = null
+      }
+
+      if (!mp && snapshot && pose && robot && robotFinalized) {
         // 1. Joint articulation
         const defs = cs ? telemetryService.getActiveRobotProfile().joints : null
         const rb = robot
@@ -799,6 +845,28 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
     followHeadingRef.current = followHeading
   }, [followHeading])
 
+  // A live robot feed turns posing off at once, and says so. Nothing is ever sent: posing changes only this view.
+  useEffect(() => {
+    if (canPose || !getPose()) return
+    stopPose()
+    setPoseNote('Posing stopped: live data')
+  }, [canPose])
+  // another robot, a rebuilt or switched-off view, or leaving the page ends posing
+  useEffect(() => () => stopPose(), [profile.id, reloadKey, enabled])
+  useEffect(() => {
+    if (posing) setPoseNote('')
+    if (!poseNote) return
+    const t = window.setTimeout(() => setPoseNote(''), 8000)
+    return () => window.clearTimeout(t)
+  }, [posing, poseNote])
+
+  const togglePose = () => {
+    if (getPose()) return stopPose()
+    const robot = activeRobotRef.current
+    if (!robot || !canPose || posable.length === 0) return
+    startPose(profile.id, posable, new Map(posable.map((j) => [j.name, robot.joints[j.name]?.jointValue[0] ?? 0])))
+  }
+
   const resetCamera = () => {
     const camera = cameraRef.current
     const controls = controlsRef.current
@@ -890,13 +958,114 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
         </div>
       )}
 
-      {/* 3D Canvas Mount Point */}
-      <div
-        ref={mountRef}
-        role="img"
-        aria-label={!enabled ? '3D view is off' : `3D view of the Unitree G1 robot ${posAria}, heading ${Math.round((hudPose.yaw * 180) / Math.PI)} degrees`}
-        className="w-full flex-1 min-h-0 cursor-grab active:cursor-grabbing"
-      />
+      {/* Top Overlay Badge & Controls. Before the canvas in the page, so the keyboard goes Pose joints → its panel; z-[5] keeps it over the canvas and under the loading cover. */}
+      <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-2 z-[5] pointer-events-none">
+        <div className="flex items-center gap-2 pointer-events-auto bg-surface/90 backdrop-blur-md px-3 py-2 rounded-lg border border-line-strong text-sm min-w-0">
+          <div
+            aria-hidden="true"
+            className={`w-2 h-2 rounded-full ${
+              status === 'LIVE'
+                ? 'bg-ok'
+                : status === 'SAFETY_HALT'
+                ? 'bg-crit'
+                : 'bg-warn'
+            }`}
+          />
+          {/* the robot's name only takes the room left over (basis 0), so the replay position stays readable; the position truncates last */}
+          <span className="font-semibold text-ink truncate min-w-0 flex-1">
+            {profile.name}
+            <span className="hidden sm:inline"> · Digital twin</span>
+          </span>
+          <span className="text-accent-ink text-xs hidden sm:inline truncate min-w-0" title={statusLabel}>{statusLabel}</span>
+        </div>
+
+        <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
+          {canPose && posable.length > 0 && !showLoading && (
+            <button
+              type="button"
+              onClick={togglePose}
+              aria-pressed={posing}
+              title={posing ? 'Stop posing and show the data again' : 'Move the joints by hand in this view. Nothing is sent to a robot.'}
+              className={toolbarButton(posing)}
+            >
+              <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
+              <span className="sr-only">Pose joints</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setFollowHeading(!followHeading)}
+            aria-pressed={followHeading}
+            title={
+              followHeading
+                ? 'The camera turns with the robot. Click to keep it still.'
+                : 'The camera stays still and the robot turns in view. Click to turn the camera with the robot.'
+            }
+            className={`${toolbarButton(followHeading)} gap-1.5`}
+          >
+            <Navigation className="w-4 h-4" aria-hidden="true" />
+            <span className="sr-only 2xl:not-sr-only text-xs font-semibold">Follow heading</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setWireframe(!wireframe)}
+            aria-pressed={wireframe}
+            aria-label="Wireframe view"
+            title="Toggle wireframe"
+            className={toolbarButton(wireframe)}
+          >
+            <Layers className="w-4 h-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={resetCamera}
+            aria-label="Reset camera behind robot"
+            title="Reset camera"
+            className={toolbarButton(false)}
+          >
+            <RotateCcw className="w-4 h-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            aria-label="Toggle fullscreen"
+            title="Toggle fullscreen"
+            className={toolbarButton(false)}
+          >
+            <Maximize2 className="w-4 h-4" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      {/* 3D Canvas Mount Point. While posing, the joint panel sits beside it (under it on a narrow screen), so the robot stays in view. */}
+      <div className="flex-1 min-h-0 flex flex-col sm:flex-row">
+        <div className="relative flex-1 min-h-0 min-w-0 flex flex-col">
+          <div
+            ref={mountRef}
+            role="img"
+            aria-label={!enabled ? '3D view is off' : `3D view of the Unitree G1 robot ${posAria}, heading ${Math.round((hudPose.yaw * 180) / Math.PI)} degrees`}
+            className="w-full flex-1 min-h-0 cursor-grab active:cursor-grabbing"
+          />
+          {/* A badge that stays while the view is not showing data. Its box is a polite live region, so starting posing and posing
+              stopped by live data are both said. */}
+          <div role="status" className="absolute left-3 bottom-3 z-20 max-w-[calc(100%-1.5rem)] pointer-events-none">
+            {(posing || poseNote) && (
+              <span
+                className={`block truncate px-2.5 py-1 rounded-lg border text-xs font-semibold shadow ${
+                  posing ? 'bg-warn-soft/95 border-warn-line text-warn-ink' : 'bg-surface/95 border-line-strong text-ink'
+                }`}
+              >
+                {posing ? 'Posed by hand — not live data' : poseNote}
+              </span>
+            )}
+          </div>
+        </div>
+        {posing && (
+          <Suspense fallback={null}>
+            <PosePanel />
+          </Suspense>
+        )}
+      </div>
 
       {webglSupported && !enabled && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
@@ -993,73 +1162,6 @@ export function DigitalTwin({ status, activeProfile, selectedJointId, quality = 
           </button>
         </div>
       )}
-
-      {/* Top Overlay Badge & Controls */}
-      <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-2 pointer-events-none">
-        <div className="flex items-center gap-2 pointer-events-auto bg-surface/90 backdrop-blur-md px-3 py-2 rounded-lg border border-line-strong text-sm min-w-0">
-          <div
-            aria-hidden="true"
-            className={`w-2 h-2 rounded-full ${
-              status === 'LIVE'
-                ? 'bg-ok'
-                : status === 'SAFETY_HALT'
-                ? 'bg-crit'
-                : 'bg-warn'
-            }`}
-          />
-          {/* the robot's name only takes the room left over (basis 0), so the replay position stays readable; the position truncates last */}
-          <span className="font-semibold text-ink truncate min-w-0 flex-1">
-            {profile.name}
-            <span className="hidden sm:inline"> · Digital twin</span>
-          </span>
-          <span className="text-accent-ink text-xs hidden sm:inline truncate min-w-0" title={statusLabel}>{statusLabel}</span>
-        </div>
-
-        <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
-          <button
-            type="button"
-            onClick={() => setFollowHeading(!followHeading)}
-            aria-pressed={followHeading}
-            title={
-              followHeading
-                ? 'The camera turns with the robot. Click to keep it still.'
-                : 'The camera stays still and the robot turns in view. Click to turn the camera with the robot.'
-            }
-            className={`${toolbarButton(followHeading)} gap-1.5`}
-          >
-            <Navigation className="w-4 h-4" aria-hidden="true" />
-            <span className="sr-only lg:not-sr-only text-xs font-semibold">Follow heading</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setWireframe(!wireframe)}
-            aria-pressed={wireframe}
-            aria-label="Wireframe view"
-            title="Toggle wireframe"
-            className={toolbarButton(wireframe)}
-          >
-            <Layers className="w-4 h-4" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={resetCamera}
-            aria-label="Reset camera behind robot"
-            title="Reset camera"
-            className={toolbarButton(false)}
-          >
-            <RotateCcw className="w-4 h-4" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            aria-label="Toggle fullscreen"
-            title="Toggle fullscreen"
-            className={toolbarButton(false)}
-          >
-            <Maximize2 className="w-4 h-4" aria-hidden="true" />
-          </button>
-        </div>
-      </div>
 
       {/* Status strip under the canvas: a fixed height, so a longer text never resizes the 3D view. */}
       <div className="shrink-0 h-9 border-t border-line/80 bg-surface/90 px-3 flex items-center gap-3 text-xs text-ink-soft tabular-nums">

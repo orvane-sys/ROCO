@@ -4,6 +4,8 @@
 //   3. the keyboard: Tab through every workspace; each stop has a name, a visible focus mark and is not covered by another element
 //   4. the import dialog showing its report and xacro arguments form: axe in all three themes at 320, 768 and 1600 px, no sideways
 //      scroll at 320 px, and the keyboard stays in the dialog with each stop named, marked and uncovered
+//   5. the 3D view posed by hand: axe with the joint panel open in all three themes at 320, 768 and 1600 px, every slider named and
+//      its value said in words, and the keyboard reaches and moves the sliders
 // It needs a screen reader for the rest; docs/screen-reader-test.md is the script for that.
 //
 //   npm run build && npm run check:a11y
@@ -193,6 +195,63 @@ try {
       }
     }
     check(runs === 9, `axe ran on the import dialog ${runs} times`)
+  }
+
+  // 5. the 3D view posed by hand: axe on the view with its joint panel open in all three themes at 320, 768 and 1600 px; every
+  //    slider has a name and a value in words; the keyboard reaches each control in the panel and moves a slider
+  {
+    let runs = 0
+    for (const theme of ['dark', 'light', 'contrast']) {
+      for (const [w, h] of [
+        [320, 700],
+        [768, 900],
+        [1600, 900],
+      ]) {
+        const page = await open(w, h, theme)
+        const at = `pose panel, ${theme} ${w}px`
+        const view = page.locator('section[aria-label$="digital twin"]')
+        await page.getByText('Loading robot model…').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+        await view.getByRole('button', { name: 'Pose joints' }).click()
+        const panel = view.locator('section[aria-labelledby=pose-heading]')
+        await panel.waitFor({ timeout: PAGE_READY_MS })
+        await page.evaluate(axeSource)
+        runs++
+        const found = await page.evaluate((tags) => axe.run(document.querySelector('section[aria-label$="digital twin"]'), { runOnly: { type: 'tag', values: tags } }).then((r) => r.violations.flatMap((v) => v.nodes.map((n) => `${v.id} on ${n.target.join(' ')}: ${n.failureSummary?.split('\n').slice(1, 2).join(' ').trim() ?? ''}`))), TAGS)
+        for (const v of found) check(false, `${at}: axe ${v}`)
+        const sliders = await panel.getByRole('slider').evaluateAll((els) => els.map((e) => ({ name: e.labels?.[0]?.textContent?.trim() ?? '', text: e.getAttribute('aria-valuetext') ?? '' })))
+        check(sliders.length === 29, `${at}: one slider for each of the G1's 29 joints (${sliders.length})`)
+        const bad = sliders.filter((s) => !s.name || !/^-?\d+\.\d (degrees|millimetres)$/.test(s.text))
+        check(bad.length === 0, `${at}: every slider has a name and its value in words (${JSON.stringify(bad[0] ?? '')})`)
+        if (theme === 'dark' && w === 1600) {
+          await view.getByRole('button', { name: 'Pose joints' }).focus()
+          const stops = []
+          for (let i = 0; i < 40; i++) {
+            await page.keyboard.press('Tab')
+            const s = await page.evaluate(stopOf)
+            if (s === null) break
+            stops.push(s)
+            if (s.what.includes('right_wrist_yaw_joint')) break
+          }
+          const names = stops.map((s) => s.what).join(' | ')
+          check(['Back to zero', 'Stop posing', 'left_hip_pitch_joint', 'right_wrist_yaw_joint'].every((n) => names.includes(n)), `${at}: Tab reaches Back to zero, Stop posing and every slider (${names.slice(0, 300)})`)
+          for (const s of stops) {
+            check(s.named, `${at}: ${s.what} has a name`)
+            check(s.sized && s.inView && !s.covered, `${at}: ${s.what} is on screen and not covered when focused`)
+            check(s.mark, `${at}: ${s.what} shows a focus mark`)
+          }
+          const knee = panel.getByRole('slider', { name: 'left_knee_joint' })
+          await knee.focus()
+          const before = await knee.getAttribute('aria-valuetext')
+          await page.keyboard.press('ArrowRight')
+          await page.keyboard.press('PageUp')
+          const after = await knee.getAttribute('aria-valuetext')
+          check(parseFloat(after) > parseFloat(before), `${at}: the arrow and Page Up keys move a slider (${before} -> ${after})`)
+        }
+        check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+        await page.close()
+      }
+    }
+    check(runs === 9, `axe ran on the posed view ${runs} times`)
   }
 } finally {
   await close()

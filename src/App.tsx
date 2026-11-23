@@ -75,6 +75,7 @@ import {
 import type { RobotProfile } from './config/robotRegistry'
 import type { MonitorState } from './types/monitor'
 import { cn } from './utils/cn'
+import { poseAllowed } from './utils/manualPose'
 import type {
   ConnectionStatus,
   RobotTelemetry,
@@ -267,6 +268,8 @@ export function App() {
   // Read-only bridge: no drive panel and no browser E-stop (it could not stop anything).
   const isMonitor = monitor.hello?.readOnly === true || telemetryService.isMonitorMode()
   const workspace: Workspace | null = isMonitor ? ui.workspace : null
+  // posing the 3D view by hand is offered only while no live robot feed is on
+  const canPose = poseAllowed({ status, source: monitor.hello?.source ?? null, sample: telemetryService.isSample() })
   const showConnectScreen = !telemetry && !monitor.hello && (status === 'DISCONNECTED' || (status === 'CONNECTING' && sawDisconnect))
   const [tourWasSeen] = useState(tourSeen)
   const tourDue = !tourWasSeen && !tourDismissed && isMonitor && monitor.hello !== null && !showConnectScreen && workspace === 'run'
@@ -503,7 +506,7 @@ export function App() {
             </div>
           }
         >
-          <DigitalTwin status={status} activeProfile={activeProfile} selectedJointId={selectedJointId} quality={quality} onFilesDropped={handleFilesDropped} />
+          <DigitalTwin status={status} activeProfile={activeProfile} selectedJointId={selectedJointId} quality={quality} onFilesDropped={handleFilesDropped} canPose={canPose} />
         </Suspense>
       </ErrorBoundary>
     </div>

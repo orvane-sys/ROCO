@@ -94,6 +94,8 @@ const DEFAULT_CONFIG: TelemetryConfig = {
 export class TelemetryStreamService {
   private config: TelemetryConfig
   private socket: WebSocket | RecordedBridgeSocket | null = null
+  /** This socket has had a first message: a read-only bridge's is its hello, so until then no command may go out. */
+  private heardFromBridge = false
   private status: ConnectionStatus = 'CONNECTING'
   private telemetryListeners: Set<TelemetryListener> = new Set()
   private statusListeners: Set<StatusListener> = new Set()
@@ -280,9 +282,12 @@ export class TelemetryStreamService {
     this.socket.send(JSON.stringify({ type: 'replay_control', action, value }))
   }
 
-  /** True when teleop / profile / E-stop frames may go to the bridge. */
+  /**
+   * True when teleop / profile / E-stop frames may go to the bridge. Not before the bridge's first message: a read-only bridge
+   * says so in its hello, which it always sends first, so a command sent in the gap after the socket opens would reach it.
+   */
   private canSendCommands(): boolean {
-    return !this.isMonitorMode() && !!this.socket && this.socket.readyState === WebSocket.OPEN
+    return !this.isMonitorMode() && this.heardFromBridge && !!this.socket && this.socket.readyState === WebSocket.OPEN
   }
 
   /**
@@ -522,6 +527,7 @@ export class TelemetryStreamService {
     if (this.monitor.hello || this.monitor.aux || this.monitor.replay) this.setMonitor(emptyMonitorState())
     this.plotRing.clear()
     this.lastBinaryTimestamp = 0
+    this.heardFromBridge = false
 
     try {
       this.socket = this.sample ? new RecordedBridgeSocket(SAMPLE_URL) : new WebSocket(this.config.wsUrl)
@@ -548,6 +554,7 @@ export class TelemetryStreamService {
       }
 
       this.socket.onmessage = (event: MessageEvent) => {
+        this.heardFromBridge = true
         this.lastPacketTimestamp = performance.now()
         const isBinary = event.data instanceof ArrayBuffer
         if (isBinary) this.lastBinaryTimestamp = this.lastPacketTimestamp

@@ -6,6 +6,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gunzipSync } from 'node:zlib'
+import { rolldown } from 'rolldown'
 import { PAGE_READY_MS, REPORT_XACRO, guardCsp, openImportReport, startBrowser, tally } from './lib-browser.mjs'
 
 const { url, browser, close } = await startBrowser('check-layout')
@@ -637,6 +639,185 @@ try {
     } finally {
       await page.close()
       rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  // 10. Posing by hand (sample paused, so only the sliders move the robot): the joint panel and its badge fit the 3D view with no
+  // sideways scroll on a phone and on a desktop; a slider changes the picture; Stop posing gives back the exact picture of the data.
+  // Then an imported robot: only its posable joints get a slider (a mimic joint and a joint with no range get none).
+  const viewOf = (page) => page.locator('section[aria-label$="digital twin"]')
+  const shot = async (page) => {
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(900) // the smoothing has settled
+    return viewOf(page).locator('[role=img]').screenshot()
+  }
+  const startPosing = async (page) => {
+    await page.getByText('Loading robot model…').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+    await viewOf(page).getByRole('button', { name: 'Pose joints' }).click()
+    await viewOf(page).locator('section[aria-labelledby=pose-heading]').waitFor({ timeout: PAGE_READY_MS })
+  }
+  const nudge = async (page, name, presses) => {
+    await viewOf(page).getByRole('slider', { name }).focus()
+    for (let i = 0; i < presses; i++) await page.keyboard.press('PageUp')
+  }
+  for (const [w, h] of [
+    [390, 844],
+    [1366, 768],
+  ]) {
+    const page = await open(w, h)
+    const at = `posing ${w}x${h}`
+    try {
+      const play = page.locator('section[aria-labelledby=replay-heading] button').first()
+      if ((await play.textContent())?.includes('Pause')) await play.click()
+      await page.getByText('Loading robot model…').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+      const data = await shot(page)
+      await startPosing(page)
+      const fit = await page.evaluate(() => {
+        const view = document.querySelector('section[aria-label$="digital twin"]').getBoundingClientRect()
+        const canvas = document.querySelector('section[aria-label$="digital twin"] [role=img]').getBoundingClientRect()
+        const panel = document.querySelector('section[aria-labelledby=pose-heading]').getBoundingClientRect()
+        const badge = [...document.querySelectorAll('section[aria-label$="digital twin"] span')].find((s) => s.textContent === 'Posed by hand — not live data')
+        const b = badge?.getBoundingClientRect()
+        return {
+          hscroll: document.documentElement.scrollWidth > innerWidth,
+          panelInside: panel.left >= view.left - 0.5 && panel.right <= view.right + 0.5 && panel.width > 0 && panel.height > 0,
+          badgeInside: !!b && b.left >= canvas.left && b.right <= canvas.right + 0.5 && b.bottom <= canvas.bottom + 0.5 && b.top >= canvas.top,
+          canvas: Math.round(canvas.width) + 'x' + Math.round(canvas.height),
+        }
+      })
+      check(!fit.hscroll && fit.panelInside && fit.badgeInside, `${at}: the joint panel and the badge fit the 3D view, no sideways scroll (${JSON.stringify(fit)})`)
+      const held = await shot(page)
+      await nudge(page, 'left_knee_joint', 4)
+      const posed = await shot(page)
+      check(!posed.equals(held), `${at}: moving the knee slider changes the 3D view`)
+      await viewOf(page).getByRole('button', { name: 'Stop posing' }).click()
+      await viewOf(page).locator('section[aria-labelledby=pose-heading]').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+      const back = await shot(page)
+      check(back.equals(data), `${at}: Stop posing shows the data's picture again, exactly`)
+      check((await viewOf(page).getByText('Posed by hand — not live data').count()) === 0, `${at}: the badge goes with the panel`)
+      check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    } finally {
+      await page.close()
+    }
+  }
+  {
+    const page = await open(1366, 768)
+    const at = 'posing an imported robot'
+    const dir = mkdtempSync(join(tmpdir(), 'roco-pose-'))
+    try {
+      const file = join(dir, 'pose_bot.urdf')
+      const box = (x, y, z) => `<visual><geometry><box size="${x} ${y} ${z}"/></geometry></visual>`
+      writeFileSync(file, `<?xml version="1.0"?>
+<robot name="pose_bot">
+  <link name="base">${box(0.3, 0.3, 0.1)}</link>
+  <link name="arm">${box(0.05, 0.05, 0.5)}</link>
+  <link name="slide">${box(0.1, 0.1, 0.1)}</link>
+  <link name="wheel">${box(0.2, 0.02, 0.2)}</link>
+  <link name="twin">${box(0.05, 0.05, 0.2)}</link>
+  <link name="stuck">${box(0.05, 0.05, 0.05)}</link>
+  <joint name="shoulder" type="revolute"><parent link="base"/><child link="arm"/><origin xyz="0 0 0.3"/><axis xyz="0 1 0"/><limit lower="-1.5" upper="1.5" effort="1" velocity="1"/></joint>
+  <joint name="lift" type="prismatic"><parent link="base"/><child link="slide"/><origin xyz="0.3 0 0"/><axis xyz="0 0 1"/><limit lower="0" upper="0.2" effort="1" velocity="1"/></joint>
+  <joint name="spin" type="continuous"><parent link="base"/><child link="wheel"/><origin xyz="-0.3 0 0"/><axis xyz="0 1 0"/></joint>
+  <joint name="follow" type="revolute"><parent link="base"/><child link="twin"/><origin xyz="0 0.3 0"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/><mimic joint="shoulder"/></joint>
+  <joint name="no_range" type="revolute"><parent link="base"/><child link="stuck"/><origin xyz="0 -0.3 0"/><axis xyz="0 1 0"/><limit lower="0" upper="0" effort="1" velocity="1"/></joint>
+</robot>
+`)
+      await page.locator('[data-action="settings"]').first().click()
+      await page.getByRole('button', { name: /Import model/ }).click()
+      await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(file)
+      const dialog = page.locator('[role=dialog]')
+      await dialog.getByText(/Imported pose bot/).waitFor({ timeout: PAGE_READY_MS })
+      await dialog.getByRole('button', { name: 'Done', exact: true }).click()
+      await dialog.waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+      // the sample's data stays on (paused): it names none of this robot's joints, so they must come back from the pose by themselves
+      const play = page.locator('section[aria-labelledby=replay-heading] button').first()
+      if ((await play.textContent())?.includes('Pause')) await play.click()
+      await page.getByText('Loading robot model…').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+      const data = await shot(page)
+      await startPosing(page)
+      const sliders = await viewOf(page).getByRole('slider').evaluateAll((els) => els.map((e) => `${e.id}:${e.min}..${e.max}:${e.getAttribute('aria-valuetext')}`))
+      const ids = sliders.map((s) => s.split(':')[0]).sort().join(' ')
+      check(ids === 'pose-lift pose-shoulder pose-spin', `${at}: sliders for the revolute, sliding and turning joints only, none for the mimic or no-range joint (${sliders.join(' | ')})`)
+      check(sliders.some((s) => /^pose-lift:0\.\.200:0\.0 millimetres$/.test(s)) && sliders.some((s) => /^pose-spin:-180\.\.180:/.test(s)),
+        `${at}: a sliding joint in millimetres over its range, a turning joint over one turn (${sliders.join(' | ')})`)
+      const held = await shot(page)
+      await nudge(page, 'shoulder', 3)
+      check(!(await shot(page)).equals(held), `${at}: moving a slider changes the 3D view`)
+      await viewOf(page).getByRole('button', { name: 'Stop posing' }).click()
+      await viewOf(page).locator('section[aria-labelledby=pose-heading]').waitFor({ state: 'detached', timeout: PAGE_READY_MS })
+      check((await shot(page)).equals(data), `${at}: Stop posing with the sample's data on puts the joints the data does not name back, exactly`)
+      // switching the 3D view off ends posing and takes the Pose joints button away (no robot in the view to pose)
+      await startPosing(page)
+      await page.keyboard.press('Control+k')
+      await page.keyboard.type('3D view off')
+      await page.locator('[role=option]', { hasText: '3D view: Off' }).first().click()
+      await viewOf(page).getByText('3D view is off').waitFor({ timeout: PAGE_READY_MS })
+      check((await viewOf(page).locator('section[aria-labelledby=pose-heading]').count()) === 0, `${at}: switching the 3D view off closes the joint panel`)
+      check((await viewOf(page).getByRole('button', { name: 'Pose joints' }).count()) === 0, `${at}: no Pose joints button while the 3D view is off`)
+      check(page.errors.length === 0, `${at}: no page errors (${page.errors[0] ?? ''})`)
+    } finally {
+      await page.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  // 11. Nothing goes to a bridge before its first message. A read-only bridge says so in its hello, always its first message;
+  // the drive panel's 50 Hz loop must not reach it in the gap after the socket opens (the fake bridge waits 1 s before it speaks).
+  // A drive bridge (tools/sim-drive: no hello) still gets the drive commands once its first robot frame has come.
+  {
+    const b = await rolldown({ input: new URL('../src/services/recordedBridge.ts', import.meta.url).pathname, logLevel: 'silent' })
+    const { output } = await b.generate({ format: 'esm' })
+    await b.close()
+    const { parseSample } = await import('data:text/javascript;base64,' + Buffer.from(output[0].code).toString('base64'))
+    // a plain Uint8Array: a Node Buffer's slice() shares memory, so each frame would be the whole recording
+    const sample = parseSample(new Uint8Array(gunzipSync(readFileSync(new URL('../dist/demo/g1-sample.rocodemo.gz', import.meta.url)))))
+    const live = { ...JSON.parse(sample.greeting[0]), source: 'sim', readOnly: true }
+    delete live.demo
+    const hello = JSON.stringify(live)
+    const robotFrame = Buffer.from(sample.snapshots[0].find((f) => typeof f !== 'string'))
+    check(robotFrame.length < 4096, `the fake bridge's robot frame is one frame (${robotFrame.length} bytes)`)
+    const bridgeUrl = url.replace('?demo=1', '?ws=' + encodeURIComponent('ws://127.0.0.1:18799/'))
+    for (const [kind, greeting] of [
+      ['a read-only bridge', [hello]],
+      ['a drive bridge', []],
+    ]) {
+      const page = await browser.newPage({ viewport: { width: 1366, height: 768 } })
+      const errors = []
+      page.on('pageerror', (e) => errors.push(String(e)))
+      await guardCsp(page)
+      await page.addInitScript(() => {
+        try {
+          localStorage.setItem('roco.tour.v1', '1')
+        } catch {}
+      })
+      const got = []
+      let spokeAt = Infinity
+      let sockets = 0
+      let timer = 0
+      await page.routeWebSocket(/:18799\//, (ws) => {
+        sockets++
+        ws.onMessage((m) => got.push({ at: Date.now(), m }))
+        setTimeout(() => {
+          spokeAt = Date.now()
+          for (const g of greeting) ws.send(g)
+          ws.send(robotFrame)
+          timer = setInterval(() => ws.send(robotFrame), 20)
+        }, 1000)
+      })
+      try {
+        await page.goto(bridgeUrl)
+        await page.waitForTimeout(3000)
+        const early = got.filter((g) => g.at < spokeAt).length
+        const teleop = got.filter((g) => Buffer.isBuffer(g.m) && g.m.length >= 4 && g.m.readUInt32LE(0) === 0x524f434f).length
+        check(sockets === 1, `${kind}: the page opened one socket to it (${sockets})`)
+        check(early === 0, `${kind}: the page sent nothing before the bridge's first message (${early} sent)`)
+        if (greeting.length) check(got.length === 0, `${kind}: the page sent nothing at all (${got.length} sent)`)
+        else check(teleop > 0, `${kind}: the drive commands go out once its first robot frame has come (${teleop} sent)`)
+        check(errors.length === 0, `${kind}: no page errors (${errors[0] ?? ''})`)
+      } finally {
+        clearInterval(timer)
+        await page.close()
+      }
     }
   }
 } finally {
