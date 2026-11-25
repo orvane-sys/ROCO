@@ -2055,6 +2055,27 @@ def dashboard_url(host: str, port: int, token: Optional[str], page_port: int = 5
     return f"http://localhost:{page_port}/?monitor=1&ws={quote(ws, safe='')}"
 
 
+def stop_on_ctrl_c(loop: asyncio.AbstractEventLoop, task: "asyncio.Task") -> Dict[str, bool]:
+    """Ctrl-C cancels `task` (serve) instead of raising KeyboardInterrupt in whatever code runs at that moment. On Python 3.10,
+    asyncio.run sets no handler, and an interrupt that lands in another task (the server accepting a page) is kept by that task
+    and printed as "Task exception was never retrieved". Only the first Ctrl-C counts: in a terminal the bridge gets one from
+    the terminal and one forwarded by the launcher, and a second cancel would cut server.stop() short. Where the loop cannot
+    take signals (not the main thread), KeyboardInterrupt stays the way out."""
+    state = {"installed": False, "pressed": False}
+
+    def on_int():
+        if not state["pressed"]:
+            state["pressed"] = True
+            task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, on_int)
+        state["installed"] = True
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
+    return state
+
+
 async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer], dds: Optional[DdsSource]) -> int:
     ignored = {"n": 0}
 
@@ -2099,6 +2120,7 @@ async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer
     last_print = time.time()
     loop = asyncio.get_running_loop()
     next_t = time.perf_counter()
+    ctrl_c = stop_on_ctrl_c(loop, asyncio.current_task())
     try:
         while True:
             if replayer is not None:
@@ -2152,6 +2174,11 @@ async def serve(args, monitor: Monitor, hello: dict, replayer: Optional[Replayer
             if delay < -interval:
                 next_t, delay = time.perf_counter(), 0.0
             await asyncio.sleep(max(0.001, delay))
+    except asyncio.CancelledError:
+        if not ctrl_c["pressed"]:
+            raise
+        print("\n[ROCO DDS] stopped")
+        return 0
     finally:
         await server.stop()
 
@@ -2894,6 +2921,55 @@ def run_self_test() -> bool:
             check(cond, what)
     except asyncio.TimeoutError:
         check(False, "WebSocket server checks finished in 30 s (a stuck client holds up broadcast())")
+
+    print("\n--- Ctrl-C: stops serve() quietly, wherever it lands ---")
+    # A second task sends SIGINT while it runs Python code: the case CI's R6 hit once (the server accepting a page). With the
+    # handler, serve's task is cancelled and nothing is printed; without it, on Python 3.10, asyncio prints the interrupt as
+    # "Task exception was never retrieved". In "fixed", a second Ctrl-C arrives while stopping and must not cut the stop short.
+    ctrl_c_script = (
+        "import asyncio, os, signal, sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from roco_dds_bridge import stop_on_ctrl_c\n"
+        "fixed = sys.argv[2] == 'fixed'\n"
+        "async def other():\n"
+        "    os.kill(os.getpid(), signal.SIGINT)\n"
+        "    for _ in range(1000): pass\n"
+        "    await asyncio.sleep(0)\n"
+        "async def main():\n"
+        "    ctrl_c = stop_on_ctrl_c(asyncio.get_running_loop(), asyncio.current_task()) if fixed else {}\n"
+        "    print('installed', ctrl_c.get('installed'))\n"
+        "    asyncio.create_task(other())\n"
+        "    try:\n"
+        "        await asyncio.sleep(5)\n"
+        "    except asyncio.CancelledError:\n"
+        "        print('cancelled', ctrl_c.get('pressed'))\n"
+        "        os.kill(os.getpid(), signal.SIGINT)\n"
+        "        await asyncio.sleep(0.2)\n"
+        "        print('stop finished')\n"
+        "        return 0\n"
+        "    return 1\n"
+        "try:\n"
+        "    sys.exit(asyncio.run(main()))\n"
+        "except KeyboardInterrupt:\n"
+        "    print('KeyboardInterrupt')\n")
+    here = os.path.dirname(os.path.abspath(__file__))
+    runs = {}
+    for mode in ("fixed", "old"):
+        try:
+            p = subprocess.run([sys.executable, "-I", "-B", "-c", ctrl_c_script, here, mode], capture_output=True, text=True, timeout=20)
+            runs[mode] = (p.returncode, p.stdout, p.stderr)
+        except subprocess.TimeoutExpired:
+            runs[mode] = (None, "", "timed out")
+    code, out, err = runs["fixed"]
+    check(code == 0 and "installed True" in out and "cancelled True" in out and "stop finished" in out and not err.strip(),
+          f"Ctrl-C landing in another task cancels serve, a second one does not cut the stop short, nothing printed "
+          f"(exit {code}, stdout {out.split()}, stderr {err.strip()[:200]!r})")
+    code, out, err = runs["old"]
+    if sys.version_info < (3, 11):
+        check("Task exception was never retrieved" in err and "KeyboardInterrupt" in err,
+              f"without the handler the same Ctrl-C prints \"Task exception was never retrieved\" (the check sees the bug; exit {code})")
+    else:
+        print("  [-] without the handler: not shown on Python 3.11+, whose asyncio.run handles Ctrl-C itself")
 
     print("\n" + "=" * 72)
     print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
