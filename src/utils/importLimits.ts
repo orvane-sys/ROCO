@@ -18,6 +18,9 @@ export const LIMITS = {
   xacroElements: 2_000_000,
   macroDepth: 16,
   includeDepth: 8,
+  /** Links in the longest parent-to-child chain: three.js walks the robot recursively on every frame, and a chain of about
+   * 2 000 overflows Chrome's stack (less in a browser with a smaller one). Real robots are tens deep. */
+  chainDepth: 500,
   /** Characters in one `${}` expression, and in the value it gives. */
   exprChars: 10_000,
   /** The whole import after unzipping, checked by every converter loop (cooperative). */
@@ -101,7 +104,7 @@ export function refusalMessage(reason: RefusalReason, detail: string): string {
     case 'elements':
       return `The description expands to more than ${LIMITS.xacroElements.toLocaleString('en-US')} elements, so it was stopped (${detail}).`
     case 'depth':
-      return `The description nests too deeply (${detail}); xacro macros may nest ${LIMITS.macroDepth} deep and includes ${LIMITS.includeDepth} deep.`
+      return `The description nests too deeply (${detail}); xacro macros may nest ${LIMITS.macroDepth} deep, includes ${LIMITS.includeDepth} deep, and links may chain ${LIMITS.chainDepth} deep.`
     case 'expression':
       return `A xacro expression or its value is over ${LIMITS.exprChars.toLocaleString('en-US')} characters (${detail}).`
     case 'timeout':

@@ -251,7 +251,7 @@ const xmlCases = []
 const addXml = (name, { files, loose, browserCsp = false }, want, ms = 35_000) => xmlCases.push({ name, files, loose, browserCsp, want, ms })
 const BROWSER_CSP = 'Error: CSP blocked inline (style-src-attr)'
 {
-  const { refusalMessage: why } = await (async () => {
+  const { refusalMessage: why, LIMITS } = await (async () => {
     const b = await rolldown({ input: fileURLToPath(new URL('src/utils/importLimits.ts', root)), logLevel: 'silent' })
     const { output } = await b.generate({ format: 'esm' })
     await b.close()
@@ -316,15 +316,20 @@ const BROWSER_CSP = 'Error: CSP blocked inline (style-src-attr)'
     Array.from({ length: 100_000 }, (_, i) => `<frame name="f${i + 1}"><pose relative_to="f${i}">0 0 0.00001 0 0 0</pose></frame>`).join('\n') +
     `\n<link name="base"/><link name="arm"><pose relative_to="f100000">0 0 0 0 0 0</pose></link><joint name="j1" type="revolute"><parent>base</parent><child>arm</child><axis><xyz>0 0 1</xyz></axis></joint>\n</model>\n</sdf>\n`) } },
     ['Imported frames (1 joint)!'])
-  // a chain of fixed links: 2 000 imports and draws; 5 000 is past what three.js walks (recursively), and is refused (where
-  // between them the stack runs out depends on the browser)
+  // a chain of fixed links, n + 3 links deep (base, arm, c0 … cn). three.js walks the robot recursively on every frame, and
+  // about 2 000 overflows Chrome's stack, so the import counts the chain and refuses one over the limit; the limit draws
   const chain = (name, n) => Buffer.from(`${XML}<robot name="${name}">${joint}<link name="c0"/><joint name="c" type="fixed"><parent link="arm"/><child link="c0"/></joint>` +
     Array.from({ length: n }, (_, i) => `<link name="c${i + 1}"/><joint name="c${i + 1}" type="fixed"><parent link="c${i}"/><child link="c${i + 1}"/><origin xyz="0 0 0.0001"/></joint>`).join('') + '</robot>\n')
-  addXml('long_chain', { files: { 'robot/long.urdf': chain('long', 5000) } }, [why('depth', 'its links or bodies chain thousands deep')])
-  addXml('chain', { files: { 'robot/chain.urdf': chain('chain', 2000) } }, ['Imported chain (1 joint)!'])
+  const chained = (n) => why('depth', `its links chain ${n.toLocaleString('en-US')} deep`)
+  addXml('long_chain', { files: { 'robot/long.urdf': chain('long', 5000) } }, [chained(5003)])
+  addXml('chain', { files: { 'robot/chain.urdf': chain('chain', LIMITS.chainDepth - 3) } }, ['Imported chain (1 joint)!'])
+  addXml('chain_over', { files: { 'robot/over.urdf': chain('over', LIMITS.chainDepth - 2) } }, [chained(LIMITS.chainDepth + 1)])
   // MuJoCo bodies 4 900 deep (Chrome's XML parser stops at 5 000)
   addXml('mjcf_nested', { files: { 'robot/deep.xml': Buffer.from('<mujoco model="deep"><worldbody><body name="b0"><joint name="j0" type="hinge"/><geom type="sphere" size="0.1"/>' +
     '<body><geom type="sphere" size="0.1"/>'.repeat(4900) + '</body>'.repeat(4900) + '</body></worldbody></mujoco>\n') } }, [why('depth', 'its links or bodies chain thousands deep')])
+  // 600 MuJoCo bodies, each inside the one before: the converter copes, and the chain is counted after it (601 with the world)
+  addXml('mjcf_chain', { files: { 'robot/chain.xml': Buffer.from('<mujoco model="mchain"><worldbody><body name="b0"><joint name="j0" type="hinge"/><geom type="sphere" size="0.1"/>' +
+    '<body><geom type="sphere" size="0.1"/>'.repeat(599) + '</body>'.repeat(599) + '</body></worldbody></mujoco>\n') } }, [chained(601)])
   addXml('broken_urdf', { files: { 'robot/broken.urdf': Buffer.from(`${XML}<robot name="b">\n  <link name="a">\n</robot>\n`) }, browserCsp: true },
     [prefix('xml'), 'robot/broken.urdf, line '])
   // a value that doubles at each property: the fifth is 16 000 characters (properties are lazy, so a link uses it)
@@ -475,7 +480,8 @@ try {
       const ms = Date.now() - t0
       const shownText = ok ? '' : ` (the dialog says: ${JSON.stringify((await page.locator('[role=dialog]').first().innerText().catch(() => '')).slice(0, 300))})`
       check(ok && ms <= c.ms, `${c.name}: the page shows ${c.want.map((t) => JSON.stringify(t)).join(' and ')} within ${c.ms / 1000} s (took ${ms} ms)${shownText}`)
-      await page.waitForTimeout(300) // the CSP guard reports from a timer
+      // the CSP guard reports from a timer; an imported robot is drawn, so its errors are charged to its own case
+      await page.waitForTimeout(c.want.some((t) => t.startsWith('Imported ')) ? 2000 : 300)
       const mine = pageErrors.slice(errors0)
       if (c.browserCsp) check(mine.length > 0 && mine.every((e) => e === BROWSER_CSP), `${c.name}: its only page errors are the browser's own parse-error style (${mine.join(' | ') || 'none'})`)
       else unexpected.push(...mine.map((e) => `${c.name}: ${e}`))

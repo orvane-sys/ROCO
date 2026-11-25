@@ -220,6 +220,33 @@ export async function importRobotFiles(files: FileList | File[], options: Import
   }
 }
 
+/** Links in the URDF's longest parent-to-child chain, counted without recursion (the chain may be thousands long). */
+function longestChain(doc: Document): number {
+  const children = new Map<string, string[]>()
+  const isChild = new Set<string>()
+  for (const joint of Array.from(doc.documentElement.children)) {
+    if (joint.tagName !== 'joint') continue
+    const parent = joint.querySelector(':scope > parent')?.getAttribute('link')
+    const child = joint.querySelector(':scope > child')?.getAttribute('link')
+    if (!parent || !child) continue
+    const list = children.get(parent)
+    if (list) list.push(child)
+    else children.set(parent, [child])
+    isChild.add(child)
+  }
+  const stack: [string, number][] = Array.from(children.keys(), (root): [string, number] => [root, 1]).filter(([n]) => !isChild.has(n))
+  const seen = new Set<string>()
+  let longest = 0
+  while (stack.length) {
+    const [name, depth] = stack.pop()!
+    if (seen.has(name)) continue
+    seen.add(name)
+    longest = Math.max(longest, depth)
+    for (const c of children.get(name) ?? []) stack.push([c, depth + 1])
+  }
+  return longest
+}
+
 async function importFiles(files: FileList | File[], options: ImportOptions, progress: ImportProgress): Promise<ImportResult> {
   const given = Array.from(files)
   if (given.length === 0) {
@@ -302,6 +329,9 @@ async function importFiles(files: FileList | File[], options: ImportOptions, pro
   for (const f of fileArray) index.add(filePath(f), filePath(f))
   // A plain URDF is checked here (entities, well-formed, with the line of any error); a converted one is checked again.
   const urdfDoc = parseXmlSafe(parsedUrdf, mainPath, deadline)
+  // the 3D view walks the robot recursively on every frame, outside this import, so a chain too deep for it is refused here
+  const depth = longestChain(urdfDoc)
+  if (depth > LIMITS.chainDepth) throw refuse('depth', `its links chain ${depth.toLocaleString('en-US')} deep`)
   const { urdf: processedUrdf, meshes } = rewriteAssetRefs(parsedUrdf, urdfDoc, (ref) => index.resolve(ref, { from: mainPath, report }))
   for (const [ref, hit] of meshes) {
     if (!hit.url) {
